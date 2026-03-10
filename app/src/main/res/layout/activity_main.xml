@@ -85,60 +85,98 @@
                 android:paddingTop="56dp"
                 android:paddingBottom="8dp">
 
-                <!-- TRANSLATION label -->
-                <TextView
-                    android:id="@+id/labelTranslation"
-                    style="@style/Widget.PlayTranslate.SectionLabel"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:textColor="?attr/colorTextTranslation"
-                    android:text="@string/section_translation" />
-
-                <!-- Translation text -->
-                <TextView
-                    android:id="@+id/tvTranslation"
-                    style="@style/Widget.PlayTranslate.TranslationText"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="4dp"
-                    android:layout_marginBottom="14dp" />
-
-                <!-- Inline warning shown when using offline/degraded translation -->
-                <TextView
-                    android:id="@+id/tvTranslationNote"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:textColor="?attr/colorTextHint"
-                    android:textSize="11sp"
-                    android:layout_marginTop="6dp"
-                    android:visibility="gone" />
-
-                <!-- Anki + Copy buttons for translation section, right-aligned -->
+                <!-- Translation section (hidden when hideTranslation pref is on) -->
                 <LinearLayout
+                    android:id="@+id/translationSection"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical">
+
+                    <!-- TRANSLATION label -->
+                    <TextView
+                        android:id="@+id/labelTranslation"
+                        style="@style/Widget.PlayTranslate.SectionLabel"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:textColor="?attr/colorTextTranslation"
+                        android:text="@string/section_translation" />
+
+                    <!-- Translation text -->
+                    <TextView
+                        android:id="@+id/tvTranslation"
+                        style="@style/Widget.PlayTranslate.TranslationText"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="4dp"
+                        android:layout_marginBottom="14dp" />
+
+                    <!-- Inline warning shown when using offline/degraded translation -->
+                    <TextView
+                        android:id="@+id/tvTranslationNote"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:textColor="?attr/colorTextHint"
+                        android:textSize="11sp"
+                        android:layout_marginTop="6dp"
+                        android:visibility="gone" />
+
+                    <!-- Anki + Copy buttons for translation section, right-aligned -->
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="horizontal"
+                        android:gravity="end"
+                        android:layout_marginBottom="10dp">
+
+                        <ImageButton
+                            android:id="@+id/btnMainAddToAnki"
+                            android:layout_width="32dp"
+                            android:layout_height="32dp"
+                            android:layout_marginEnd="16dp"
+                            android:background="?attr/selectableItemBackgroundBorderless"
+                            android:contentDescription="Add to Anki"
+                            android:src="@drawable/ic_anki"
+                            android:tint="?attr/colorTextSecondary" />
+
+                        <ImageButton
+                            android:id="@+id/btnCopyTranslation"
+                            android:layout_width="32dp"
+                            android:layout_height="32dp"
+                            android:background="?attr/selectableItemBackgroundBorderless"
+                            android:contentDescription="Copy translation"
+                            android:src="@drawable/ic_copy"
+                            android:tint="?attr/colorTextSecondary" />
+
+                    </LinearLayout>
+
+                </LinearLayout>
+
+                <!-- Hidden-translation placeholder (shown when hideTranslation pref is on) -->
+                <LinearLayout
+                    android:id="@+id/translationHiddenSection"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:orientation="horizontal"
-                    android:gravity="end"
-                    android:layout_marginBottom="10dp">
+                    android:layout_marginTop="8dp"
+                    android:layout_marginBottom="14dp"
+                    android:visibility="gone">
 
-                    <ImageButton
-                        android:id="@+id/btnMainAddToAnki"
-                        android:layout_width="32dp"
-                        android:layout_height="32dp"
-                        android:layout_marginEnd="16dp"
-                        android:background="?attr/selectableItemBackgroundBorderless"
-                        android:contentDescription="Add to Anki"
-                        android:src="@drawable/ic_anki"
-                        android:tint="?attr/colorTextSecondary" />
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/btnRevealTranslation"
+                        style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:layout_marginEnd="8dp"
+                        android:text="@string/btn_reveal_translation" />
 
-                    <ImageButton
-                        android:id="@+id/btnCopyTranslation"
-                        android:layout_width="32dp"
-                        android:layout_height="32dp"
-                        android:background="?attr/selectableItemBackgroundBorderless"
-                        android:contentDescription="Copy translation"
-                        android:src="@drawable/ic_copy"
-                        android:tint="?attr/colorTextSecondary" />
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/btnAnkiNoTranslation"
+                        style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="@string/btn_add_to_anki" />
 
                 </LinearLayout>
 

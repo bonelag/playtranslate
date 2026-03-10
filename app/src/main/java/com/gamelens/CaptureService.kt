@@ -75,6 +75,7 @@ class CaptureService : Service() {
 
     private var gameDisplayId: Int = 0
     private var sourceLang: String = TranslateLanguage.JAPANESE
+    private var skipTranslation: Boolean = false
     private var captureTopFraction: Float    = 0f
     private var captureBottomFraction: Float = 1f
     private var captureLeftFraction: Float   = 0f
@@ -139,6 +140,7 @@ class CaptureService : Service() {
     ) {
         gameDisplayId    = displayId
         this.sourceLang  = sourceLang
+        this.skipTranslation = Prefs(this).hideTranslation
         this.captureTopFraction    = captureTopFraction
         this.captureBottomFraction = captureBottomFraction
         this.captureLeftFraction   = captureLeftFraction
@@ -347,7 +349,7 @@ class CaptureService : Service() {
 
             liveTranslationJob = serviceScope.launch {
                 try {
-                    val (translated, note) = translate(newText)
+                    val (translated, note) = if (skipTranslation) Pair("", null) else translate(newText)
                     if (gen != captureGeneration) return@launch
                     val timestamp = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
                     onResult?.invoke(
@@ -440,8 +442,12 @@ class CaptureService : Service() {
                 return
             }
 
-            onStatusUpdate?.invoke(getString(R.string.status_translating))
-            val (translated, note) = translate(ocrResult.fullText)
+            val (translated, note) = if (skipTranslation) {
+                Pair("", null)
+            } else {
+                onStatusUpdate?.invoke(getString(R.string.status_translating))
+                translate(ocrResult.fullText)
+            }
 
             // Discard stale results if a newer capture was started while this one
             // was in-flight (OkHttp blocking calls aren't cooperatively cancellable).
@@ -464,6 +470,9 @@ class CaptureService : Service() {
             onError?.invoke(e.message ?: "Unknown error")
         }
     }
+
+    /** On-demand translation for the "Show Translation" button when hideTranslation is active. */
+    suspend fun translateOnce(text: String): Pair<String, String?> = translate(text)
 
     /**
      * Translation waterfall: DeepL → Lingva → ML Kit.

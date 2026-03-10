@@ -47,6 +47,8 @@ class SettingsBottomSheet : DialogFragment() {
     var onDisplayChanged: (() -> Unit)? = null
     /** Called when the hide-live-mode switch changes. */
     var onHideLiveModeChanged: (() -> Unit)? = null
+    /** Called when the hide-translation switch changes. */
+    var onHideTranslationChanged: (() -> Unit)? = null
 
     private var deckEntries: List<Map.Entry<Long, String>> = emptyList()
     private var displayList: List<android.view.Display> = emptyList()
@@ -192,6 +194,14 @@ class SettingsBottomSheet : DialogFragment() {
         switchHideLiveMode.setOnCheckedChangeListener { _, checked ->
             prefs.hideLiveMode = checked
             onHideLiveModeChanged?.invoke()
+        }
+
+        // ── Hide translation (auto-save on toggle) ────────────────────────
+        val switchHideTranslation = view.findViewById<Switch>(R.id.switchHideTranslation)
+        switchHideTranslation.isChecked = prefs.hideTranslation
+        switchHideTranslation.setOnCheckedChangeListener { _, checked ->
+            prefs.hideTranslation = checked
+            onHideTranslationChanged?.invoke()
         }
 
         // ── Theme picker ──────────────────────────────────────────────────

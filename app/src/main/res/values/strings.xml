@@ -100,6 +100,11 @@
     <string name="label_rename_region">Rename region</string>
     <string name="hint_region_name">e.g. Dialogue box</string>
 
+    <!-- Hide translation -->\
+    <string name="btn_reveal_translation">Show Translation</string>
+    <string name="settings_hide_translation">Hide translation</string>
+    <string name="settings_hide_translation_hint">Skip automatic translation. Tap "Show Translation" on the results screen to see it on demand.</string>
+
     <!-- Anki integration -->
     <string name="section_anki_deck">Anki Deck</string>
     <string name="anki_not_installed">Install AnkiDroid to create flashcards</string>

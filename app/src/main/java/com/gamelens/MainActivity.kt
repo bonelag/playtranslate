@@ -88,6 +88,10 @@ class MainActivity : AppCompatActivity() {
     private lateinit var labelTranslation: TextView
     private lateinit var tvNoWords: TextView
     private lateinit var tvTransliteration: TextView
+    private lateinit var translationSection: android.widget.LinearLayout
+    private lateinit var translationHiddenSection: android.widget.LinearLayout
+    private lateinit var btnRevealTranslation: com.google.android.material.button.MaterialButton
+    private lateinit var btnAnkiNoTranslation: com.google.android.material.button.MaterialButton
 
     private val romajiTransliterator by lazy {
         try { android.icu.text.Transliterator.getInstance("Any-Latin; NFD; [:Nonspacing Mark:] Remove; NFC") }
@@ -256,8 +260,12 @@ class MainActivity : AppCompatActivity() {
         onboardingContainer  = findViewById(R.id.onboardingContainer)
         pageNotif            = findViewById(R.id.pageNotif)
         pageA11y             = findViewById(R.id.pageA11y)
-        editOverlay          = findViewById(R.id.editOverlay)
-        etEditOriginal       = findViewById(R.id.etEditOriginal)
+        editOverlay              = findViewById(R.id.editOverlay)
+        etEditOriginal           = findViewById(R.id.etEditOriginal)
+        translationSection       = findViewById(R.id.translationSection)
+        translationHiddenSection = findViewById(R.id.translationHiddenSection)
+        btnRevealTranslation     = findViewById(R.id.btnRevealTranslation)
+        btnAnkiNoTranslation     = findViewById(R.id.btnAnkiNoTranslation)
     }
 
     private fun setupRegionButton() {
@@ -420,6 +428,58 @@ class MainActivity : AppCompatActivity() {
                     ).show(supportFragmentManager, AnkiReviewBottomSheet.TAG)
             }
         }
+
+        btnRevealTranslation.setOnClickListener {
+            val result = lastResult ?: return@setOnClickListener
+            val text = result.originalText
+            btnRevealTranslation.isEnabled = false
+            btnRevealTranslation.text = "…"
+            lifecycleScope.launch {
+                try {
+                    val svc = captureService
+                    val (translated, note) = if (svc != null) {
+                        svc.translateOnce(text)
+                    } else {
+                        val tm = editTranslationManager
+                            ?: TranslationManager(selectedSourceLang(), selectedTargetLang()).also { editTranslationManager = it }
+                        tm.ensureModelReady()
+                        Pair(tm.translate(text), null)
+                    }
+                    lastResult = result.copy(translatedText = translated)
+                    tvTranslation.text = translated
+                    tvTranslationNote.text = note ?: ""
+                    tvTranslationNote.visibility = if (note != null) View.VISIBLE else View.GONE
+                    translationSection.visibility       = View.VISIBLE
+                    translationHiddenSection.visibility = View.GONE
+                } catch (_: Exception) {
+                    btnRevealTranslation.isEnabled = true
+                    btnRevealTranslation.text = getString(R.string.btn_reveal_translation)
+                }
+            }
+        }
+
+        btnAnkiNoTranslation.setOnClickListener {
+            pauseLiveMode()
+            val result = lastResult ?: return@setOnClickListener
+            val ankiManager = AnkiManager(this)
+            when {
+                !ankiManager.isAnkiDroidInstalled() ->
+                    Toast.makeText(this, getString(R.string.anki_not_installed), Toast.LENGTH_SHORT).show()
+                !ankiManager.hasPermission() ->
+                    AlertDialog.Builder(this)
+                        .setTitle(R.string.anki_permission_rationale_title)
+                        .setMessage(R.string.anki_permission_rationale_message)
+                        .setPositiveButton(R.string.btn_continue) { _, _ ->
+                            requestAnkiPermission.launch(AnkiManager.PERMISSION)
+                        }
+                        .setNegativeButton(android.R.string.cancel, null)
+                        .show()
+                else ->
+                    AnkiReviewBottomSheet.newInstance(
+                        result.originalText, "", mainWordResults, result.screenshotPath
+                    ).show(supportFragmentManager, AnkiReviewBottomSheet.TAG)
+            }
+        }
     }
 
     private fun copyToClipboard(text: String) {
@@ -447,6 +507,9 @@ class MainActivity : AppCompatActivity() {
             }
             sheet.onHideLiveModeChanged = {
                 applyLiveModeVisibilitySetting()
+            }
+            sheet.onHideTranslationChanged = {
+                configureService()
             }
         }.show(supportFragmentManager, SettingsBottomSheet.TAG)
     }
@@ -493,6 +556,15 @@ class MainActivity : AppCompatActivity() {
                 tvTranslation.text = result.translatedText
                 tvTranslationNote.text = result.note ?: ""
                 tvTranslationNote.visibility = if (result.note != null) View.VISIBLE else View.GONE
+                if (prefs.hideTranslation) {
+                    translationSection.visibility       = View.GONE
+                    translationHiddenSection.visibility = View.VISIBLE
+                    btnRevealTranslation.isEnabled = true
+                    btnRevealTranslation.text = getString(R.string.btn_reveal_translation)
+                } else {
+                    translationSection.visibility       = View.VISIBLE
+                    translationHiddenSection.visibility = View.GONE
+                }
                 labelOriginal.text    = langDisplayName(selectedSourceLang())
                 labelTranslation.text = langDisplayName(selectedTargetLang())
                 statusContainer.visibility = View.GONE

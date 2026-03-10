@@ -88,6 +88,7 @@ class AnkiReviewBottomSheet : DialogFragment() {
         etJapanese.setText(original)
         etTranslation.setText(translation)
 
+
         if (screenshotPath != null) {
             val file = File(screenshotPath)
             if (file.exists()) {
@@ -406,12 +407,12 @@ class AnkiReviewBottomSheet : DialogFragment() {
     companion object {
         const val RESULT_ANKI_ADDED = "anki_added"
 
-        private const val ARG_ORIGINAL        = "original"
-        private const val ARG_TRANSLATION     = "translation"
-        private const val ARG_WORDS           = "words"
-        private const val ARG_READINGS        = "readings"
-        private const val ARG_MEANINGS        = "meanings"
-        private const val ARG_FREQ_SCORES     = "freq_scores"
+        private const val ARG_ORIGINAL              = "original"
+        private const val ARG_TRANSLATION           = "translation"
+        private const val ARG_WORDS                 = "words"
+        private const val ARG_READINGS              = "readings"
+        private const val ARG_MEANINGS              = "meanings"
+        private const val ARG_FREQ_SCORES           = "freq_scores"
         private const val ARG_SCREENSHOT_PATH = "screenshot_path"
         const val TAG = "AnkiReviewBottomSheet"
 
