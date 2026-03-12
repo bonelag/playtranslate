@@ -133,4 +133,6 @@
     <string name="btn_grant_anki_permission">Grant AnkiDroid Access</string>
     <string name="btn_remove_photo">Remove</string>
     <string name="label_screenshot">Screenshot</string>
+    <string name="anki_mode_sentence">Sentence</string>
+    <string name="anki_mode_word">Word</string>
 </resources>

@@ -48,6 +48,7 @@ class DragLookupController(
     private var currentEntry: JishoWord? = null
     /** Path to the screenshot captured at drag start — used for Anki export. */
     private var screenshotPath: String? = null
+    private var currentSentence: String? = null
 
     // Hold-still detection with wobble tolerance
     private var anchorX = 0f
@@ -313,6 +314,8 @@ class DragLookupController(
             .joinToString("") { it.text }
         val sentence = extractSentence(groupText, hitLine.text, matchedSurface, matchedIdx)
 
+        currentSentence = sentence
+
         withContext(Dispatchers.Main) {
             showPopup(entry, wordCenterX, fingerY)
             sendLineToMainApp(sentence)
@@ -472,6 +475,12 @@ class DragLookupController(
             }
             .joinToString("\n")
 
+        // Use cached sentence data from main app if it matches the current sentence
+        val cache = LastSentenceCache
+        val sentenceOrig = currentSentence
+        val hasCachedContext = sentenceOrig != null && cache.original != null
+            && cache.original!!.contains(sentenceOrig)
+
         val intent = Intent(service, WordAnkiReviewActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK
             putExtra(WordAnkiReviewActivity.EXTRA_WORD, word)
@@ -479,6 +488,12 @@ class DragLookupController(
             putExtra(WordAnkiReviewActivity.EXTRA_POS, pos)
             putExtra(WordAnkiReviewActivity.EXTRA_DEFINITION, definition)
             putExtra(WordAnkiReviewActivity.EXTRA_SCREENSHOT_PATH, screenshotPath)
+            if (hasCachedContext) {
+                putExtra(WordAnkiReviewActivity.EXTRA_SENTENCE_ORIGINAL, cache.original)
+                putExtra(WordAnkiReviewActivity.EXTRA_SENTENCE_TRANSLATION, cache.translation)
+            } else if (sentenceOrig != null) {
+                putExtra(WordAnkiReviewActivity.EXTRA_SENTENCE_ORIGINAL, sentenceOrig)
+            }
         }
         service.startActivity(intent)
         popup.dismiss()

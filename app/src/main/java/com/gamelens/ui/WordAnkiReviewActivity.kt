@@ -30,6 +30,8 @@ class WordAnkiReviewActivity : AppCompatActivity() {
         val pos = intent.getStringExtra(EXTRA_POS) ?: ""
         val definition = intent.getStringExtra(EXTRA_DEFINITION) ?: ""
         val screenshotPath = intent.getStringExtra(EXTRA_SCREENSHOT_PATH)
+        val sentenceOriginal = intent.getStringExtra(EXTRA_SENTENCE_ORIGINAL)
+        val sentenceTranslation = intent.getStringExtra(EXTRA_SENTENCE_TRANSLATION)
 
         if (!AnkiManager(this).hasPermission()) {
             AlertDialog.Builder(this)
@@ -46,14 +48,27 @@ class WordAnkiReviewActivity : AppCompatActivity() {
             return
         }
 
-        showReviewSheet(word, reading, pos, definition, screenshotPath)
+        // Read word results from cache if sentence context matches
+        val cachedWordResults = if (sentenceOriginal != null
+            && LastSentenceCache.original == sentenceOriginal
+        ) LastSentenceCache.wordResults else null
+
+        showReviewSheet(word, reading, pos, definition, screenshotPath,
+            sentenceOriginal, sentenceTranslation, cachedWordResults)
     }
 
     private fun showReviewSheet(
         word: String, reading: String, pos: String,
-        definition: String, screenshotPath: String?
+        definition: String, screenshotPath: String?,
+        sentenceOriginal: String?, sentenceTranslation: String?,
+        sentenceWordResults: Map<String, Triple<String, String, Int>>? = null
     ) {
-        val sheet = WordAnkiReviewSheet.newInstance(word, reading, pos, definition, screenshotPath)
+        val sheet = WordAnkiReviewSheet.newInstance(
+            word, reading, pos, definition, screenshotPath,
+            sentenceOriginal = sentenceOriginal,
+            sentenceTranslation = sentenceTranslation,
+            sentenceWordResults = sentenceWordResults
+        )
         sheet.onDismissListener = DialogInterface.OnDismissListener { finish() }
         sheet.show(supportFragmentManager, WordAnkiReviewSheet.TAG)
     }
@@ -75,5 +90,7 @@ class WordAnkiReviewActivity : AppCompatActivity() {
         const val EXTRA_POS = "extra_pos"
         const val EXTRA_DEFINITION = "extra_definition"
         const val EXTRA_SCREENSHOT_PATH = "extra_screenshot_path"
+        const val EXTRA_SENTENCE_ORIGINAL = "extra_sentence_original"
+        const val EXTRA_SENTENCE_TRANSLATION = "extra_sentence_translation"
     }
 }

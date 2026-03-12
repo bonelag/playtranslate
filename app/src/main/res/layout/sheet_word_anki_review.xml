@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <LinearLayout
     xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:orientation="vertical"
@@ -20,7 +21,7 @@
             style="@style/Widget.MaterialComponents.Button.TextButton"
             android:layout_width="64dp"
             android:layout_height="match_parent"
-            android:text="‹"
+            android:text="&#8249;"
             android:textColor="?attr/colorAccentPrimary"
             android:textSize="40sp"
             android:minWidth="0dp"
@@ -64,71 +65,183 @@
             android:orientation="vertical"
             android:padding="16dp">
 
-            <!-- Word (non-editable) -->
-            <TextView
+            <!-- Segmented control: Sentence | Word (hidden when no sentence data) -->
+            <com.google.android.material.button.MaterialButtonToggleGroup
+                android:id="@+id/toggleCardType"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:text="WORD"
-                android:textColor="?attr/colorTextSecondary"
-                android:textSize="11sp"
-                android:textAllCaps="true"
-                android:letterSpacing="0.08"
-                android:layout_marginBottom="4dp" />
-
-            <TextView
-                android:id="@+id/tvWordAnkiHeadword"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:textColor="?attr/colorTextPrimary"
-                android:textSize="22sp"
-                android:textStyle="bold"
-                android:background="?attr/colorBgCard"
-                android:padding="10dp"
-                android:layout_marginBottom="4dp" />
-
-            <TextView
-                android:id="@+id/tvWordAnkiReading"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:textColor="?attr/colorTextHint"
-                android:textSize="13sp"
-                android:layout_marginBottom="4dp"
-                android:visibility="gone" />
-
-            <TextView
-                android:id="@+id/tvWordAnkiPos"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:textColor="?attr/colorTextHint"
-                android:textSize="11sp"
                 android:layout_marginBottom="16dp"
-                android:visibility="gone" />
+                android:visibility="gone"
+                app:singleSelection="true"
+                app:selectionRequired="true">
 
-            <!-- Definition (editable) -->
-            <TextView
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/btnModeSentence"
+                    style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="@string/anki_mode_sentence" />
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/btnModeWord"
+                    style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="@string/anki_mode_word" />
+
+            </com.google.android.material.button.MaterialButtonToggleGroup>
+
+            <!-- ═══ Sentence container ═══ -->
+            <LinearLayout
+                android:id="@+id/containerSentence"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:text="DEFINITION"
-                android:textColor="?attr/colorTextSecondary"
-                android:textSize="11sp"
-                android:textAllCaps="true"
-                android:letterSpacing="0.08"
-                android:layout_marginBottom="4dp" />
+                android:orientation="vertical"
+                android:visibility="gone">
 
-            <EditText
-                android:id="@+id/etWordAnkiDefinition"
+                <!-- Japanese label -->
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="@string/section_original"
+                    android:textColor="?attr/colorTextSecondary"
+                    android:textSize="11sp"
+                    android:textAllCaps="true"
+                    android:letterSpacing="0.08"
+                    android:layout_marginBottom="4dp" />
+
+                <EditText
+                    android:id="@+id/etSentenceJapanese"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:textColor="?attr/colorTextPrimary"
+                    android:textSize="15sp"
+                    android:minLines="2"
+                    android:gravity="top|start"
+                    android:background="?attr/colorBgCard"
+                    android:padding="10dp"
+                    android:inputType="textMultiLine"
+                    android:layout_marginBottom="16dp" />
+
+                <!-- Translation label -->
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="@string/section_translation"
+                    android:textColor="?attr/colorTextSecondary"
+                    android:textSize="11sp"
+                    android:textAllCaps="true"
+                    android:letterSpacing="0.08"
+                    android:layout_marginBottom="4dp" />
+
+                <EditText
+                    android:id="@+id/etSentenceTranslation"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:textColor="?attr/colorTextPrimary"
+                    android:textSize="14sp"
+                    android:minLines="2"
+                    android:gravity="top|start"
+                    android:background="?attr/colorBgCard"
+                    android:padding="10dp"
+                    android:inputType="textMultiLine"
+                    android:layout_marginBottom="16dp" />
+
+                <!-- Vocabulary label -->
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="@string/section_words"
+                    android:textColor="?attr/colorTextSecondary"
+                    android:textSize="11sp"
+                    android:textAllCaps="true"
+                    android:letterSpacing="0.08"
+                    android:layout_marginBottom="8dp" />
+
+                <LinearLayout
+                    android:id="@+id/sentenceDefinitionsContainer"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical" />
+
+            </LinearLayout>
+
+            <!-- ═══ Word container ═══ -->
+            <LinearLayout
+                android:id="@+id/containerWord"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:textColor="?attr/colorTextPrimary"
-                android:textSize="14sp"
-                android:minLines="3"
-                android:gravity="top|start"
-                android:background="?attr/colorBgCard"
-                android:padding="10dp"
-                android:inputType="textMultiLine"
-                android:layout_marginBottom="16dp" />
+                android:orientation="vertical">
 
-            <!-- Screenshot (visibility set in code) -->
+                <!-- Word (non-editable) -->
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="WORD"
+                    android:textColor="?attr/colorTextSecondary"
+                    android:textSize="11sp"
+                    android:textAllCaps="true"
+                    android:letterSpacing="0.08"
+                    android:layout_marginBottom="4dp" />
+
+                <TextView
+                    android:id="@+id/tvWordAnkiHeadword"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:textColor="?attr/colorTextPrimary"
+                    android:textSize="22sp"
+                    android:textStyle="bold"
+                    android:background="?attr/colorBgCard"
+                    android:padding="10dp"
+                    android:layout_marginBottom="4dp" />
+
+                <TextView
+                    android:id="@+id/tvWordAnkiReading"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:textColor="?attr/colorTextHint"
+                    android:textSize="13sp"
+                    android:layout_marginBottom="4dp"
+                    android:visibility="gone" />
+
+                <TextView
+                    android:id="@+id/tvWordAnkiPos"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:textColor="?attr/colorTextHint"
+                    android:textSize="11sp"
+                    android:layout_marginBottom="16dp"
+                    android:visibility="gone" />
+
+                <!-- Definition (editable) -->
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="DEFINITION"
+                    android:textColor="?attr/colorTextSecondary"
+                    android:textSize="11sp"
+                    android:textAllCaps="true"
+                    android:letterSpacing="0.08"
+                    android:layout_marginBottom="4dp" />
+
+                <EditText
+                    android:id="@+id/etWordAnkiDefinition"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:textColor="?attr/colorTextPrimary"
+                    android:textSize="14sp"
+                    android:minLines="3"
+                    android:gravity="top|start"
+                    android:background="?attr/colorBgCard"
+                    android:padding="10dp"
+                    android:inputType="textMultiLine"
+                    android:layout_marginBottom="16dp" />
+
+            </LinearLayout>
+
+            <!-- ═══ Shared photo section ═══ -->
             <TextView
                 android:id="@+id/tvWordAnkiPhotoLabel"
                 android:layout_width="match_parent"

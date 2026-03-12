@@ -47,6 +47,7 @@ import com.gamelens.ui.AddCustomRegionSheet
 import com.gamelens.ui.AnkiReviewBottomSheet
 import com.gamelens.ui.RegionPickerSheet
 import com.gamelens.ui.SettingsBottomSheet
+import com.gamelens.ui.LastSentenceCache
 import com.gamelens.ui.WordDetailBottomSheet
 import com.google.mlkit.nl.translate.TranslateLanguage
 import kotlinx.coroutines.async
@@ -1097,8 +1098,13 @@ class MainActivity : AppCompatActivity() {
                             val lookupWord = displayWord
                             row.setOnClickListener {
                                 pauseLiveMode()
-                                WordDetailBottomSheet.newInstance(lookupWord, lastResult?.screenshotPath)
-                                    .show(supportFragmentManager, WordDetailBottomSheet.TAG)
+                                WordDetailBottomSheet.newInstance(
+                                    lookupWord,
+                                    lastResult?.screenshotPath,
+                                    sentenceOriginal = lastResult?.originalText,
+                                    sentenceTranslation = lastResult?.translatedText,
+                                    sentenceWordResults = mainWordResults.toMap()
+                                ).show(supportFragmentManager, WordDetailBottomSheet.TAG)
                             }
                             resultsArr[idx] = Pair(displayWord, Triple(reading, meaning, freqScore))
                         } else {
@@ -1115,6 +1121,11 @@ class MainActivity : AppCompatActivity() {
             tvMainWordsLoading.visibility = View.GONE
             tvNoWords.visibility = if (mainWordResults.isEmpty()) View.VISIBLE else View.GONE
             btnMainAddToAnki.isEnabled = true
+
+            // Update shared cache so floating-icon Anki cards include sentence context
+            LastSentenceCache.original = lastResult?.originalText
+            LastSentenceCache.translation = lastResult?.translatedText
+            LastSentenceCache.wordResults = mainWordResults.toMap()
 
             // Show romaji — deferred was already running concurrently with lookups.
             val romaji = romajiDeferred.await()

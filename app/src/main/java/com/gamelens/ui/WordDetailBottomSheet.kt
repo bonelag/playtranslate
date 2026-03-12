@@ -11,7 +11,7 @@ import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
 import androidx.core.content.ContextCompat
-import androidx.core.os.bundleOf
+
 import androidx.fragment.app.DialogFragment
 import androidx.lifecycle.lifecycleScope
 import com.gamelens.AnkiManager
@@ -30,13 +30,34 @@ class WordDetailBottomSheet : DialogFragment() {
         const val TAG = "WordDetailBottomSheet"
         private const val ARG_WORD            = "word"
         private const val ARG_SCREENSHOT_PATH = "screenshot_path"
+        private const val ARG_SENTENCE_ORIGINAL     = "sentence_original"
+        private const val ARG_SENTENCE_TRANSLATION  = "sentence_translation"
+        private const val ARG_SENTENCE_WORDS        = "sentence_words"
+        private const val ARG_SENTENCE_READINGS     = "sentence_readings"
+        private const val ARG_SENTENCE_MEANINGS     = "sentence_meanings"
+        private const val ARG_SENTENCE_FREQ_SCORES  = "sentence_freq_scores"
 
-        fun newInstance(word: String, screenshotPath: String? = null) =
-            WordDetailBottomSheet().apply {
-                arguments = bundleOf(
-                    ARG_WORD            to word,
-                    ARG_SCREENSHOT_PATH to screenshotPath
-                )
+        fun newInstance(
+            word: String,
+            screenshotPath: String? = null,
+            sentenceOriginal: String? = null,
+            sentenceTranslation: String? = null,
+            sentenceWordResults: Map<String, Triple<String, String, Int>>? = null
+        ) = WordDetailBottomSheet().apply {
+                arguments = Bundle().apply {
+                    putString(ARG_WORD, word)
+                    if (screenshotPath != null) putString(ARG_SCREENSHOT_PATH, screenshotPath)
+                    if (sentenceOriginal != null) {
+                        putString(ARG_SENTENCE_ORIGINAL, sentenceOriginal)
+                        putString(ARG_SENTENCE_TRANSLATION, sentenceTranslation ?: "")
+                        if (sentenceWordResults != null) {
+                            putStringArray(ARG_SENTENCE_WORDS, sentenceWordResults.keys.toTypedArray())
+                            putStringArray(ARG_SENTENCE_READINGS, sentenceWordResults.values.map { it.first }.toTypedArray())
+                            putStringArray(ARG_SENTENCE_MEANINGS, sentenceWordResults.values.map { it.second }.toTypedArray())
+                            putIntArray(ARG_SENTENCE_FREQ_SCORES, sentenceWordResults.values.map { it.third }.toIntArray())
+                        }
+                    }
+                }
             }
     }
 
@@ -120,8 +141,30 @@ class WordDetailBottomSheet : DialogFragment() {
             }
             .joinToString("\n")
 
-        WordAnkiReviewSheet.newInstance(word, reading, pos, definition, screenshotPath)
-            .show(childFragmentManager, WordAnkiReviewSheet.TAG)
+        // Pass sentence context from parent if available
+        val args = arguments
+        val sentenceOriginal = args?.getString(ARG_SENTENCE_ORIGINAL)
+        val sentenceTranslation = args?.getString(ARG_SENTENCE_TRANSLATION)
+        val sentenceWordResults: Map<String, Triple<String, String, Int>>? =
+            args?.getStringArray(ARG_SENTENCE_WORDS)?.let { words ->
+                val readings = args.getStringArray(ARG_SENTENCE_READINGS) ?: emptyArray()
+                val meanings = args.getStringArray(ARG_SENTENCE_MEANINGS) ?: emptyArray()
+                val freqScores = args.getIntArray(ARG_SENTENCE_FREQ_SCORES) ?: IntArray(0)
+                words.mapIndexed { i, w ->
+                    w to Triple(
+                        readings.getOrElse(i) { "" },
+                        meanings.getOrElse(i) { "" },
+                        freqScores.getOrElse(i) { 0 }
+                    )
+                }.toMap()
+            }
+
+        WordAnkiReviewSheet.newInstance(
+            word, reading, pos, definition, screenshotPath,
+            sentenceOriginal = sentenceOriginal,
+            sentenceTranslation = sentenceTranslation,
+            sentenceWordResults = sentenceWordResults
+        ).show(childFragmentManager, WordAnkiReviewSheet.TAG)
     }
 
     private suspend fun buildContent(content: LinearLayout, entry: JishoWord, dict: DictionaryManager) {
