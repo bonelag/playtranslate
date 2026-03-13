@@ -51,12 +51,9 @@ import com.gamelens.ui.LastSentenceCache
 import com.gamelens.ui.TranslationResultFragment
 import com.gamelens.ui.WordDetailBottomSheet
 import com.google.mlkit.nl.translate.TranslateLanguage
-import kotlinx.coroutines.async
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.supervisorScope
-import kotlinx.coroutines.withContext
 import java.util.Locale
 
 class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationResultHost {
@@ -167,7 +164,7 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
         ActivityResultContracts.StartActivityForResult()
     ) { result ->
         if (result.resultCode == RESULT_OK && result.data != null) {
-            captureService?.setMediaProjection(result.resultCode, result.data!!)
+            captureService?.setMediaProjection(result.resultCode, result.data ?: return@registerForActivityResult)
             prefs.captureMethod = "media_projection"
             pendingAfterMpGrant?.invoke()
             pendingAfterMpGrant = null

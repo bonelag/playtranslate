@@ -101,7 +101,7 @@ class WordAnkiReviewSheet : DialogFragment() {
         if (hasSentenceData && savedInstanceState == null) {
             val sentenceWords = buildWordEntries(args)
             val contentFragment = SentenceAnkiContentFragment.newInstance(
-                sentenceOriginal!!, sentenceTranslation, sentenceWords,
+                sentenceOriginal ?: return, sentenceTranslation, sentenceWords,
                 screenshotPath, targetWord = word
             )
             childFragmentManager.beginTransaction()

@@ -467,8 +467,7 @@ class DragLookupController(
     private fun prefetchWordLookups(sentence: String) {
         val cache = LastSentenceCache
         // Skip if the cache already has results for a text containing this sentence
-        if (cache.original != null && cache.wordResults != null
-            && cache.original!!.contains(sentence)) return
+        if (cache.original?.contains(sentence) == true && cache.wordResults != null) return
         val service = PlayTranslateAccessibilityService.instance ?: return
         wordLookupJob?.cancel()
         wordLookupJob = scope.launch {
@@ -513,8 +512,8 @@ class DragLookupController(
 
         val cache = LastSentenceCache
         val sentenceOrig = currentSentence
-        val hasCachedTranslation = sentenceOrig != null && cache.original != null
-            && cache.original!!.contains(sentenceOrig) && cache.translation != null
+        val hasCachedTranslation = sentenceOrig != null
+            && cache.original?.contains(sentenceOrig) == true && cache.translation != null
 
         popup.dismiss()
 

@@ -21,7 +21,6 @@ import com.gamelens.AnkiManager
 import com.gamelens.CaptureService
 import com.gamelens.Prefs
 import com.gamelens.R
-import com.gamelens.TranslationManager
 import com.gamelens.dictionary.Deinflector
 import com.gamelens.dictionary.DictionaryManager
 import com.gamelens.model.TranslationResult
@@ -86,7 +85,6 @@ class TranslationResultFragment : Fragment() {
     val mainWordResults = mutableMapOf<String, Triple<String, String, Int>>()
     var lastResult: TranslationResult? = null
         private set
-    private var editTranslationManager: TranslationManager? = null
 
     /** Maps character ranges in original text to (displayWord, reading). */
     private var wordSpans = mutableListOf<Triple<IntRange, String, String>>()
@@ -120,7 +118,6 @@ class TranslationResultFragment : Fragment() {
     override fun onDestroyView() {
         dismissFurigana()
         wordLookupJob?.cancel()
-        editTranslationManager?.close()
         super.onDestroyView()
     }
 

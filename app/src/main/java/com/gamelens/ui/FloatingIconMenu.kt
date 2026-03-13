@@ -236,7 +236,7 @@ class FloatingIconMenu(context: Context) : FrameLayout(context) {
         // Don't intercept while confirmation dialog is showing
         if (confirmDialog != null) {
             if (event.actionMasked == MotionEvent.ACTION_DOWN) {
-                val activeView = confirmDialog!!
+                val activeView = confirmDialog ?: return false
                 val loc = IntArray(2)
                 activeView.getLocationOnScreen(loc)
                 val rect = RectF(
