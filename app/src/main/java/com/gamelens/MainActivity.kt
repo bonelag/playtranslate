@@ -240,8 +240,8 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
             Deinflector.preload()
         }
 
-        // Wire up the fragment's original-tapped listener for edit overlay
-        resultFragment?.setOnOriginalTappedListener { offset -> showEditOverlay(offset) }
+        // Wire up the fragment's edit-original listener for edit overlay
+        resultFragment?.setOnEditOriginalListener { showEditOverlay() }
     }
 
     override fun onNewIntent(intent: Intent?) {
@@ -260,7 +260,7 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
         // Re-wire service callbacks in case TranslationResultActivity overwrote them
         if (serviceConnected) wireServiceCallbacks()
         // Re-wire fragment listeners after config change
-        resultFragment?.setOnOriginalTappedListener { offset -> showEditOverlay(offset) }
+        resultFragment?.setOnEditOriginalListener { showEditOverlay() }
         resultFragment?.onAnkiEnabledChanged = { enabled -> btnMainAddToAnki.isEnabled = enabled }
         PlayTranslateAccessibilityService.instance?.ensureFloatingIcon()
         checkOnboardingState()
@@ -806,11 +806,11 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
         Locale(langCode).getDisplayLanguage(Locale.ENGLISH)
             .replaceFirstChar { it.uppercase() }
 
-    private fun showEditOverlay(charOffset: Int) {
-        val currentText = resultFragment?.lastResult?.originalText ?: return
+    private fun showEditOverlay() {
+        val currentText = resultFragment?.getDisplayedOriginalText()?.takeIf { it.isNotBlank() }
+            ?: resultFragment?.lastResult?.originalText ?: return
         etEditOriginal.setText(currentText)
-        val safeOffset = charOffset.coerceIn(0, currentText.length)
-        etEditOriginal.setSelection(safeOffset)
+        etEditOriginal.setSelection(currentText.length)
         editOverlay.visibility = View.VISIBLE
         etEditOriginal.requestFocus()
         val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as android.view.inputmethod.InputMethodManager

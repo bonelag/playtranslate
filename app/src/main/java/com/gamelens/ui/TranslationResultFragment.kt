@@ -1,12 +1,16 @@
 package com.gamelens.ui
 
 import android.content.Context
+import android.graphics.Color
 import android.os.Bundle
+import android.util.TypedValue
+import android.view.Gravity
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
 import android.widget.ImageButton
 import android.widget.LinearLayout
+import android.widget.PopupWindow
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
@@ -21,6 +25,7 @@ import com.gamelens.TranslationManager
 import com.gamelens.dictionary.Deinflector
 import com.gamelens.dictionary.DictionaryManager
 import com.gamelens.model.TranslationResult
+import com.gamelens.themeColor
 import com.google.mlkit.nl.translate.TranslateLanguage
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -65,6 +70,7 @@ class TranslationResultFragment : Fragment() {
     private lateinit var mainWordsContainer: LinearLayout
     private lateinit var btnCopyOriginal: ImageButton
     private lateinit var btnCopyTranslation: ImageButton
+    private lateinit var btnEditOriginal: ImageButton
     private lateinit var btnToggleTranslation: ImageButton
     private lateinit var btnToggleOriginal: ImageButton
     private lateinit var btnToggleWords: ImageButton
@@ -81,6 +87,10 @@ class TranslationResultFragment : Fragment() {
     var lastResult: TranslationResult? = null
         private set
     private var editTranslationManager: TranslationManager? = null
+
+    /** Maps character ranges in original text to (displayWord, reading). */
+    private var wordSpans = mutableListOf<Triple<IntRange, String, String>>()
+    private var furiganaPopup: PopupWindow? = null
 
     /** Called when Anki button enabled state changes (e.g. after word lookups complete). */
     var onAnkiEnabledChanged: ((Boolean) -> Unit)? = null
@@ -108,6 +118,7 @@ class TranslationResultFragment : Fragment() {
     }
 
     override fun onDestroyView() {
+        dismissFurigana()
         wordLookupJob?.cancel()
         editTranslationManager?.close()
         super.onDestroyView()
@@ -126,6 +137,7 @@ class TranslationResultFragment : Fragment() {
         mainWordsContainer   = view.findViewById(R.id.mainWordsContainer)
         btnCopyOriginal      = view.findViewById(R.id.btnCopyOriginal)
         btnCopyTranslation   = view.findViewById(R.id.btnCopyTranslation)
+        btnEditOriginal      = view.findViewById(R.id.btnEditOriginal)
         btnToggleTranslation = view.findViewById(R.id.btnToggleTranslation)
         btnToggleOriginal    = view.findViewById(R.id.btnToggleOriginal)
         btnToggleWords       = view.findViewById(R.id.btnToggleWords)
@@ -144,6 +156,13 @@ class TranslationResultFragment : Fragment() {
         }
         btnCopyTranslation.setOnClickListener {
             copyToClipboard(tvTranslation.text?.toString() ?: return@setOnClickListener)
+        }
+        btnEditOriginal.setOnClickListener {
+            dismissFurigana()
+            onEditOriginalListener?.invoke()
+        }
+        resultsContent.setOnScrollChangeListener { _, _, scrollY, _, oldScrollY ->
+            if (scrollY != oldScrollY) dismissFurigana()
         }
         btnToggleTranslation.setOnClickListener {
             prefs.hideTranslationSection = !prefs.hideTranslationSection
@@ -185,7 +204,7 @@ class TranslationResultFragment : Fragment() {
         if (!isAdded || view == null) return
         lastResult = result
         tvOriginal.setSegments(result.segments)
-        tvOriginal.onTapAtOffset = { offset -> host?.onInteraction(); onOriginalTapped(offset) }
+        tvOriginal.onTapAtOffset = { offset -> onOriginalTapped(offset) }
         tvTranslation.text = result.translatedText
         tvTranslationNote.text = result.note ?: ""
         tvTranslationNote.visibility = if (result.note != null) View.VISIBLE else View.GONE
@@ -226,15 +245,104 @@ class TranslationResultFragment : Fragment() {
         }
     }
 
-    /** Called by the host when original text is tapped (for edit overlay in MainActivity). */
-    private var onOriginalTappedListener: ((Int) -> Unit)? = null
+    /** Called by the host when the edit button is tapped. */
+    private var onEditOriginalListener: (() -> Unit)? = null
 
-    fun setOnOriginalTappedListener(listener: (Int) -> Unit) {
-        onOriginalTappedListener = listener
+    fun setOnEditOriginalListener(listener: () -> Unit) {
+        onEditOriginalListener = listener
     }
 
     private fun onOriginalTapped(offset: Int) {
-        onOriginalTappedListener?.invoke(offset)
+        dismissFurigana()
+        // Find which word span the tap falls in
+        val span = wordSpans.firstOrNull { offset in it.first } ?: return
+        val reading = span.third
+        if (reading.isEmpty()) return
+        showFurigana(span.first, reading)
+    }
+
+    private fun showFurigana(range: IntRange, reading: String) {
+        val ctx = context ?: return
+        val layout = tvOriginal.layout ?: return
+        val textLen = tvOriginal.text?.length ?: return
+        val dm = resources.displayMetrics
+        fun dp(v: Float) = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, v, dm).toInt()
+
+        val bgColor = ctx.themeColor(R.attr.colorBgCard)
+        val arrowW = dp(12f)
+        val arrowH = dp(6f)
+
+        val cornerR = dp(6f).toFloat()
+        val tv = TextView(ctx).apply {
+            text = reading
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+            setTextColor(ctx.themeColor(R.attr.colorTextPrimary))
+            setPadding(dp(10f), dp(5f), dp(10f), dp(5f))
+            background = android.graphics.drawable.GradientDrawable().apply {
+                setColor(bgColor)
+                cornerRadius = cornerR
+            }
+            elevation = dp(4f).toFloat()
+        }
+
+        // Small triangle arrow pointing down
+        val arrowView = object : View(ctx) {
+            private val paint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply { color = bgColor }
+            override fun onDraw(canvas: android.graphics.Canvas) {
+                val path = android.graphics.Path().apply {
+                    moveTo(0f, 0f)
+                    lineTo(width.toFloat(), 0f)
+                    lineTo(width / 2f, height.toFloat())
+                    close()
+                }
+                canvas.drawPath(path, paint)
+            }
+        }
+
+        val container = LinearLayout(ctx).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER_HORIZONTAL
+            clipChildren = false
+            clipToPadding = false
+            addView(tv, LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
+            ))
+            addView(arrowView, LinearLayout.LayoutParams(arrowW, arrowH).apply {
+                gravity = Gravity.CENTER_HORIZONTAL
+            })
+        }
+
+        val popup = PopupWindow(container, ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+            setBackgroundDrawable(android.graphics.drawable.ColorDrawable(Color.TRANSPARENT))
+            isOutsideTouchable = true
+            setOnDismissListener { furiganaPopup = null }
+        }
+        furiganaPopup = popup
+
+        // Position above the tapped word, centered horizontally
+        val safeEnd = (range.last + 1).coerceAtMost(textLen)
+        val startLine = layout.getLineForOffset(range.first)
+        val startX = layout.getPrimaryHorizontal(range.first)
+        val endX = layout.getPrimaryHorizontal(safeEnd)
+        val midX = ((startX + endX) / 2).toInt()
+        val lineTop = layout.getLineTop(startLine)
+
+        // Measure popup to center it
+        container.measure(View.MeasureSpec.UNSPECIFIED, View.MeasureSpec.UNSPECIFIED)
+        val popupW = container.measuredWidth
+        val popupH = container.measuredHeight
+
+        val loc = IntArray(2)
+        tvOriginal.getLocationOnScreen(loc)
+        val anchorX = loc[0] + tvOriginal.totalPaddingLeft + midX - popupW / 2
+        val anchorY = loc[1] + tvOriginal.totalPaddingTop + lineTop - tvOriginal.scrollY - popupH
+
+        popup.showAtLocation(tvOriginal, Gravity.NO_GRAVITY, anchorX.coerceAtLeast(0), anchorY.coerceAtLeast(0))
+    }
+
+    private fun dismissFurigana() {
+        furiganaPopup?.dismiss()
+        furiganaPopup = null
     }
 
     fun clearResult() {
@@ -276,6 +384,9 @@ class TranslationResultFragment : Fragment() {
 
     fun getStatusText(): String = if (view != null) tvStatus.text.toString() else ""
 
+    /** Returns the displayed original text (with OCR line breaks preserved). */
+    fun getDisplayedOriginalText(): String = if (view != null) tvOriginal.text?.toString() ?: "" else ""
+
     fun isStatusVisible(): Boolean = view != null && statusContainer.visibility == View.VISIBLE
 
     /** Update original text directly (for edit overlay commit). */
@@ -298,7 +409,7 @@ class TranslationResultFragment : Fragment() {
     fun showTranslatingPlaceholder(originalText: String, segments: List<com.gamelens.model.TextSegment>) {
         if (!isAdded || view == null) return
         tvOriginal.setSegments(segments)
-        tvOriginal.onTapAtOffset = { offset -> host?.onInteraction(); onOriginalTapped(offset) }
+        tvOriginal.onTapAtOffset = { offset -> onOriginalTapped(offset) }
         labelOriginal.text = langDisplayName(selectedSourceLang())
         labelTranslation.text = langDisplayName(selectedTargetLang())
         statusContainer.visibility = View.GONE
@@ -321,6 +432,8 @@ class TranslationResultFragment : Fragment() {
         wordLookupJob?.cancel()
         mainWordsContainer.removeAllViews()
         mainWordResults.clear()
+        wordSpans.clear()
+        dismissFurigana()
         tvMainWordsLoading.visibility = View.VISIBLE
         tvMainWordsLoading.text = getString(R.string.words_loading)
         tvNoWords.visibility = View.GONE
@@ -333,6 +446,20 @@ class TranslationResultFragment : Fragment() {
             val allPairs = withContext(Dispatchers.IO) {
                 DictionaryManager.get(ctx.applicationContext).tokenizeWithSurfaces(text)
             }
+
+            // Build surface → character range mapping for furigana taps.
+            // Use the displayed text (with OCR newlines) so offsets match tap positions.
+            val displayedText = tvOriginal.text?.toString() ?: text
+            val pendingSpans = mutableListOf<Triple<IntRange, String, String>>() // range, surface, lookupForm
+            var searchFrom = 0
+            for ((surface, lookupForm) in allPairs) {
+                val idx = displayedText.indexOf(surface, searchFrom)
+                if (idx >= 0) {
+                    pendingSpans.add(Triple(idx until idx + surface.length, surface, lookupForm))
+                    searchFrom = idx + surface.length
+                }
+            }
+
             val seen = mutableSetOf<String>()
             val tokensWithSurface = allPairs.filter { seen.add(it.second) }
             val tokens = tokensWithSurface.map { it.second }
@@ -425,6 +552,29 @@ class TranslationResultFragment : Fragment() {
                 mainWordResults[dw] = rmt
             }
             val surfaces = surfaceArr.filterNotNull().toMap()
+
+            // Build furigana spans: map lookupForm → reading from completed lookups.
+            // tokens[idx] is the lookupForm; resultsArr[idx] has (displayWord, (reading, ...)).
+            val lookupToReading = mutableMapOf<String, String>()
+            tokens.forEachIndexed { idx, lookupForm ->
+                val result = resultsArr[idx] ?: return@forEachIndexed
+                val reading = result.second.first
+                if (reading.isNotEmpty()) {
+                    lookupToReading[lookupForm] = reading
+                    // Also map the surface form so conjugated forms resolve
+                    val surface = surfaceByToken[lookupForm]
+                    if (surface != null && surface != lookupForm) {
+                        lookupToReading[surface] = reading
+                    }
+                }
+            }
+            wordSpans.clear()
+            for ((range, surface, lookupForm) in pendingSpans) {
+                val reading = lookupToReading[lookupForm]
+                    ?: lookupToReading[surface] ?: ""
+                wordSpans.add(Triple(range, lookupForm, reading))
+            }
+
             tvMainWordsLoading.visibility = View.GONE
             tvNoWords.visibility = if (mainWordResults.isEmpty()) View.VISIBLE else View.GONE
             onAnkiEnabledChanged?.invoke(true)

@@ -160,6 +160,16 @@
                     android:text="@string/section_original" />
 
                 <ImageButton
+                    android:id="@+id/btnEditOriginal"
+                    android:layout_width="32dp"
+                    android:layout_height="32dp"
+                    android:layout_marginEnd="12dp"
+                    android:background="?attr/selectableItemBackgroundBorderless"
+                    android:contentDescription="Edit original text"
+                    android:src="@drawable/ic_edit"
+                    android:tint="?attr/colorTextSecondary" />
+
+                <ImageButton
                     android:id="@+id/btnCopyOriginal"
                     android:layout_width="32dp"
                     android:layout_height="32dp"
