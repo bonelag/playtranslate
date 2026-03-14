@@ -59,7 +59,7 @@
             android:layout_height="wrap_content"
             android:orientation="vertical"
             android:paddingHorizontal="14dp"
-            android:paddingTop="56dp"
+            android:paddingTop="8dp"
             android:paddingBottom="8dp">
 
             <!-- Divider above translation -->

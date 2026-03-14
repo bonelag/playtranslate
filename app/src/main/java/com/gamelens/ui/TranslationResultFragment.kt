@@ -186,6 +186,7 @@ class TranslationResultFragment : Fragment() {
         val hidden = prefs.hideOriginalSection
         originalContent.visibility = if (hidden) View.GONE else View.VISIBLE
         btnCopyOriginal.visibility = if (hidden) View.INVISIBLE else View.VISIBLE
+        btnEditOriginal.visibility = if (hidden) View.INVISIBLE else View.VISIBLE
         btnToggleOriginal.setImageResource(if (hidden) R.drawable.ic_visibility_off else R.drawable.ic_visibility)
     }
 
@@ -196,6 +197,18 @@ class TranslationResultFragment : Fragment() {
     }
 
     // ── Public API ────────────────────────────────────────────────────────
+
+    /**
+     * Sets extra top padding on the results scroll content (in dp).
+     * Used by MainActivity to clear the floating action buttons that
+     * overlay the fragment. TranslationResultActivity doesn't need this
+     * because it has its own toolbar above the fragment.
+     */
+    fun setResultsTopPaddingDp(dp: Int) {
+        val px = (dp * resources.displayMetrics.density).toInt()
+        val content = resultsContent.getChildAt(0) ?: return
+        content.setPadding(content.paddingLeft, px, content.paddingRight, content.paddingBottom)
+    }
 
     fun displayResult(result: TranslationResult) {
         if (!isAdded || view == null) return

@@ -196,18 +196,17 @@ class OcrManager {
     }
 
     /**
-     * Scales the bitmap up if its shorter side is ≤ 1600 px.
-     * Targets ~2000 px on that axis (capped at 3×) so that small dialogue text
-     * has enough pixels to be read correctly.
+     * Scales the bitmap up so that ML Kit has enough pixels to read fine text
+     * (small kanji strokes, dakuten marks, etc.) accurately.
      *
-     * The threshold is set above the Ayn Thor game-screen width (1080 px) so
-     * full-screen captures are also upscaled, giving ML Kit larger kanji strokes
-     * and reducing confusion between visually similar characters (e.g. 機 vs 横).
+     * Target: shorter side ≥ TARGET_MIN_DIM px after scaling, capped at 3×.
+     * This works regardless of device resolution — small crops get a larger
+     * boost while already-large bitmaps are returned unchanged.
      */
     private fun scaleBitmapForOcr(bitmap: Bitmap): Bitmap {
         val minDim = minOf(bitmap.width, bitmap.height)
-        if (minDim > 1600) return bitmap
-        val scale = (2000f / minDim).coerceAtMost(3f)
+        if (minDim >= TARGET_MIN_DIM) return bitmap
+        val scale = (TARGET_MIN_DIM.toFloat() / minDim).coerceAtMost(3f)
         return Bitmap.createScaledBitmap(
             bitmap,
             (bitmap.width * scale).toInt(),
@@ -374,6 +373,13 @@ class OcrManager {
     fun close() = recognizer.close()
 
     companion object {
+        /**
+         * Minimum pixel count on the shorter side before we skip upscaling.
+         * ML Kit needs roughly this many pixels to reliably distinguish
+         * visually similar kanji (e.g. 機 vs 横) and small diacritics.
+         */
+        private const val TARGET_MIN_DIM = 2000
+
         /**
          * Returns true if [c] belongs to a script that is native to [sourceLang].
          * Used to filter out OCR groups that contain no source-language characters —

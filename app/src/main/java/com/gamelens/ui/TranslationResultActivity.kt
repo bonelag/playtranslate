@@ -4,8 +4,10 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.ServiceConnection
+import android.graphics.BitmapFactory
 import android.os.Bundle
 import android.os.IBinder
+import android.view.View
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
@@ -83,9 +85,11 @@ class TranslationResultActivity : AppCompatActivity(), TranslationResultFragment
         findViewById<android.widget.ImageButton>(R.id.btnBack).setOnClickListener { finish() }
 
         val btnAnki = findViewById<android.widget.ImageButton>(R.id.btnMainAddToAnki)
+        btnAnki.visibility = View.GONE  // hidden until results are shown
         btnAnki.setOnClickListener { resultFragment?.onAnkiClicked() }
         resultFragment?.onAnkiEnabledChanged = { enabled ->
             btnAnki.isEnabled = enabled
+            btnAnki.visibility = if (enabled) View.VISIBLE else View.GONE
         }
 
         resultFragment?.showStatus(getString(R.string.status_capturing))
@@ -136,6 +140,19 @@ class TranslationResultActivity : AppCompatActivity(), TranslationResultFragment
             runOnUiThread { resultFragment?.showStatus(msg) }
         }
 
+        // If we have a pre-captured screenshot (single-screen: taken before this
+        // activity appeared so it shows the game, not this activity), process it
+        // directly instead of capturing a new one.
+        val screenshotPath = intent.getStringExtra(EXTRA_SCREENSHOT_PATH)
+        if (screenshotPath != null) {
+            val bitmap = BitmapFactory.decodeFile(screenshotPath)
+            if (bitmap != null) {
+                svc.processScreenshot(bitmap)
+                return
+            }
+        }
+        // Fallback: capture fresh (works on dual-screen where this activity
+        // doesn't cover the game display)
         svc.captureOnce()
     }
 
@@ -155,5 +172,6 @@ class TranslationResultActivity : AppCompatActivity(), TranslationResultFragment
         const val EXTRA_BOTTOM_FRAC = "extra_bottom_frac"
         const val EXTRA_LEFT_FRAC = "extra_left_frac"
         const val EXTRA_RIGHT_FRAC = "extra_right_frac"
+        const val EXTRA_SCREENSHOT_PATH = "extra_screenshot_path"
     }
 }

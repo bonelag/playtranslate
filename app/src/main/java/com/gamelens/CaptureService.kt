@@ -213,6 +213,66 @@ class CaptureService : Service() {
         captureJob = serviceScope.launch { runCaptureCycle(gen) }
     }
 
+    /**
+     * Processes a pre-captured screenshot bitmap instead of taking a new one.
+     * Used when the screenshot must be taken before an activity appears on screen
+     * (e.g. single-screen region capture from the floating menu).
+     */
+    fun processScreenshot(raw: Bitmap) {
+        captureJob?.cancel()
+        val gen = ++captureGeneration
+        captureJob = serviceScope.launch { runProcessCycle(gen, raw) }
+    }
+
+    private suspend fun runProcessCycle(generation: Int, raw: Bitmap) {
+        if (!isConfigured) {
+            onError?.invoke("Not configured — tap Translate to set up")
+            raw.recycle()
+            return
+        }
+        try {
+            onStatusUpdate?.invoke(getString(R.string.status_capturing))
+            val screenshotPath = saveScreenshotToCache(raw)
+
+            val statusBarHeight = getStatusBarHeightForDisplay(gameDisplayId)
+            val top    = maxOf((raw.height * captureTopFraction).toInt(), statusBarHeight)
+            val left   = (raw.width  * captureLeftFraction).toInt()
+            val bottom = (raw.height * captureBottomFraction).toInt()
+            val right  = (raw.width  * captureRightFraction).toInt()
+            val bitmap = cropBitmap(raw, top, bottom, left, right)
+
+            val ocrBitmap = blackoutFloatingIcon(bitmap, left, top)
+            onStatusUpdate?.invoke(getString(R.string.status_ocr))
+            val ocrResult = ocrManager.recognise(ocrBitmap, sourceLang)
+            ocrBitmap.recycle()
+
+            if (ocrResult == null) {
+                onStatusUpdate?.invoke(noTextMessage())
+                return
+            }
+
+            onStatusUpdate?.invoke(getString(R.string.status_translating))
+            val (translated, note) = translateGroups(ocrResult.groupTexts)
+
+            if (generation != captureGeneration) return
+
+            val timestamp = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
+            onResult?.invoke(
+                TranslationResult(
+                    originalText   = ocrResult.fullText,
+                    segments       = ocrResult.segments,
+                    translatedText = translated,
+                    timestamp      = timestamp,
+                    screenshotPath = screenshotPath,
+                    note           = note
+                )
+            )
+        } catch (e: Exception) {
+            Log.e(TAG, "Process cycle failed: ${e.message}", e)
+            onError?.invoke(e.message ?: "Unknown error")
+        }
+    }
+
     // ── Live mode ─────────────────────────────────────────────────────────
 
     private var liveJob: Job? = null

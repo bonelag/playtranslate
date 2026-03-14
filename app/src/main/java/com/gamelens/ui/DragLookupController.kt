@@ -149,7 +149,7 @@ class DragLookupController(
             }
         }
 
-        if (!holdTimerScheduled) {
+        if (!holdTimerScheduled && lookupJob?.isActive != true) {
             handler.postDelayed(holdStillRunnable, HOLD_STILL_MS)
             holdTimerScheduled = true
         }

@@ -239,6 +239,21 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
 
         // Wire up the fragment's edit-original listener for edit overlay
         resultFragment?.setOnEditOriginalListener { showEditOverlay() }
+        // Add extra top padding to clear the floating action buttons (settings, anki, clear).
+        // Must post because the fragment's views aren't created yet during activity onCreate.
+        supportFragmentManager.findFragmentById(R.id.resultsContainer)?.view?.post {
+            resultFragment?.setResultsTopPaddingDp(56)
+        } ?: run {
+            // Fragment not attached yet — wait for it
+            supportFragmentManager.registerFragmentLifecycleCallbacks(object : androidx.fragment.app.FragmentManager.FragmentLifecycleCallbacks() {
+                override fun onFragmentViewCreated(fm: androidx.fragment.app.FragmentManager, f: androidx.fragment.app.Fragment, v: View, savedInstanceState: Bundle?) {
+                    if (f is TranslationResultFragment) {
+                        f.setResultsTopPaddingDp(56)
+                        fm.unregisterFragmentLifecycleCallbacks(this)
+                    }
+                }
+            }, false)
+        }
     }
 
     override fun onNewIntent(intent: Intent?) {

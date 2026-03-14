@@ -429,20 +429,33 @@ class PlayTranslateAccessibilityService : AccessibilityService() {
 
     /**
      * Routes a drag-selected region to the appropriate activity:
-     * - If effectively single screen (or app not in foreground), launches TranslationResultActivity
-     * - Otherwise, sends ACTION_REGION_CAPTURE to MainActivity
+     * - If effectively single screen (or app not in foreground), captures the
+     *   screenshot NOW (while the game is still visible) and passes the path
+     *   to TranslationResultActivity so it can OCR the saved image.
+     * - Otherwise, sends ACTION_REGION_CAPTURE to MainActivity (which is on a
+     *   different display and doesn't cover the game).
      */
     private fun handleRegionSelection(displayId: Int, top: Float, bottom: Float, left: Float, right: Float) {
         val effectivelySingleScreen = Prefs.isSingleScreen(this) || !MainActivity.isInForeground
         if (effectivelySingleScreen) {
-            val intent = Intent(this, com.gamelens.ui.TranslationResultActivity::class.java).apply {
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                putExtra(com.gamelens.ui.TranslationResultActivity.EXTRA_TOP_FRAC, top)
-                putExtra(com.gamelens.ui.TranslationResultActivity.EXTRA_BOTTOM_FRAC, bottom)
-                putExtra(com.gamelens.ui.TranslationResultActivity.EXTRA_LEFT_FRAC, left)
-                putExtra(com.gamelens.ui.TranslationResultActivity.EXTRA_RIGHT_FRAC, right)
+            // Capture BEFORE launching the activity — once the activity appears
+            // on a single-screen device it would cover the game content.
+            captureDisplay(displayId) { bitmap ->
+                val intent = Intent(this, com.gamelens.ui.TranslationResultActivity::class.java).apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    putExtra(com.gamelens.ui.TranslationResultActivity.EXTRA_TOP_FRAC, top)
+                    putExtra(com.gamelens.ui.TranslationResultActivity.EXTRA_BOTTOM_FRAC, bottom)
+                    putExtra(com.gamelens.ui.TranslationResultActivity.EXTRA_LEFT_FRAC, left)
+                    putExtra(com.gamelens.ui.TranslationResultActivity.EXTRA_RIGHT_FRAC, right)
+                }
+                if (bitmap != null) {
+                    // Save to a known path so the activity can load it
+                    val path = savePreCapturedScreenshot(bitmap)
+                    bitmap.recycle()
+                    intent.putExtra(com.gamelens.ui.TranslationResultActivity.EXTRA_SCREENSHOT_PATH, path)
+                }
+                Handler(Looper.getMainLooper()).post { startActivity(intent) }
             }
-            startActivity(intent)
         } else {
             val intent = Intent(this, MainActivity::class.java).apply {
                 action = MainActivity.ACTION_REGION_CAPTURE
@@ -453,6 +466,22 @@ class PlayTranslateAccessibilityService : AccessibilityService() {
                 putExtra(MainActivity.EXTRA_RIGHT_FRAC, right)
             }
             startActivity(intent)
+        }
+    }
+
+    /**
+     * Saves a pre-captured screenshot to the app's cache directory so it can
+     * be loaded by TranslationResultActivity on single-screen devices.
+     */
+    private fun savePreCapturedScreenshot(bitmap: Bitmap): String? {
+        return try {
+            val dir = java.io.File(cacheDir, "screenshots").apply { mkdirs() }
+            val file = java.io.File(dir, "precapture_${System.currentTimeMillis()}.png")
+            file.outputStream().use { bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, it) }
+            file.absolutePath
+        } catch (e: Exception) {
+            Log.e(TAG, "savePreCapturedScreenshot failed: ${e.message}")
+            null
         }
     }
 
