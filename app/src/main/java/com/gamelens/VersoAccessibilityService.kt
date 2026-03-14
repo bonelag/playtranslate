@@ -10,6 +10,7 @@ import android.hardware.display.DisplayManager
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.view.Choreographer
 import android.util.Log
 import android.view.Display
 import android.view.InputDevice
@@ -154,7 +155,6 @@ class PlayTranslateAccessibilityService : AccessibilityService() {
     // ── Self-contained OCR debug overlay ─────────────────────────────────
 
     private val DEBUG_INTERVAL_MS = 2000L
-    private val OVERLAY_HIDE_DELAY_MS = 50L
 
     /**
      * Starts a self-contained loop: capture → OCR → draw bounding boxes.
@@ -570,9 +570,7 @@ class PlayTranslateAccessibilityService : AccessibilityService() {
         if (hadDebugOverlay) debugOverlayView?.visibility = android.view.View.INVISIBLE
         if (hadTranslationOverlay) translationOverlayView?.visibility = android.view.View.INVISIBLE
 
-        // Wait for the compositor to process the visibility change before capturing
-        val delay = if (hadDebugOverlay || hadTranslationOverlay) OVERLAY_HIDE_DELAY_MS else 0L
-        debugHandler.postDelayed({
+        val doCapture = {
             takeScreenshot(
                 displayId,
                 mainExecutor,
@@ -598,7 +596,18 @@ class PlayTranslateAccessibilityService : AccessibilityService() {
                     }
                 }
             )
-        }, delay)
+        }
+
+        if (hadDebugOverlay || hadTranslationOverlay) {
+            // Wait two vsync frames for the compositor to flush the overlay-free
+            // frame (~32 ms at 60 Hz). Frame-accurate and shorter than a fixed delay.
+            val choreographer = Choreographer.getInstance()
+            choreographer.postFrameCallback {
+                choreographer.postFrameCallback { doCapture() }
+            }
+        } else {
+            doCapture()
+        }
     }
 
     companion object {
