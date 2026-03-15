@@ -24,7 +24,9 @@ class TranslationOverlayView(context: Context) : View(context) {
     data class TextBox(
         val translatedText: String,
         /** Bounding box in original bitmap pixel coordinates. */
-        val bounds: Rect
+        val bounds: Rect,
+        /** Average color of the game content behind this box (ARGB). */
+        val bgColor: Int = Color.argb(200, 0, 0, 0)
     )
 
     private val dp = context.resources.displayMetrics.density
@@ -52,8 +54,9 @@ class TranslationOverlayView(context: Context) : View(context) {
     private var screenshotW = 1
     private var screenshotH = 1
 
+    private data class DrawnBox(val rect: RectF, val layout: StaticLayout, val bgColor: Int)
     /** Cached layouts to avoid recomputation on every draw. */
-    private var cachedLayouts: List<Pair<RectF, StaticLayout>>? = null
+    private var cachedLayouts: List<DrawnBox>? = null
 
     fun setBoxes(
         boxes: List<TextBox>,
@@ -95,21 +98,20 @@ class TranslationOverlayView(context: Context) : View(context) {
         val layouts = cachedLayouts ?: buildLayouts()
         cachedLayouts = layouts
 
-        for ((screenRect, layout) in layouts) {
-            // Draw background
-            canvas.drawRect(screenRect, bgPaint)
+        for (drawn in layouts) {
+            bgPaint.color = drawn.bgColor
+            canvas.drawRect(drawn.rect, bgPaint)
 
-            // Draw text centered in box
             canvas.save()
-            val textX = screenRect.left + textMargin
-            val textY = screenRect.top + (screenRect.height() - layout.height) / 2f
+            val textX = drawn.rect.left + textMargin
+            val textY = drawn.rect.top + (drawn.rect.height() - drawn.layout.height) / 2f
             canvas.translate(textX, textY)
-            layout.draw(canvas)
+            drawn.layout.draw(canvas)
             canvas.restore()
         }
     }
 
-    private fun buildLayouts(): List<Pair<RectF, StaticLayout>> {
+    private fun buildLayouts(): List<DrawnBox> {
         val displayW = width.toFloat()
         val displayH = height.toFloat()
 
@@ -170,8 +172,13 @@ class TranslationOverlayView(context: Context) : View(context) {
             // Text fills the full background box minus a small margin
             val availW = (screenRect.width() - 2 * textMargin).toInt().coerceAtLeast(1)
             val availH = (screenRect.height() - 2 * textMargin).coerceAtLeast(0f)
-            val layout = fitText(box.translatedText, availW, availH)
-            Pair(screenRect, layout)
+            val r = Color.red(box.bgColor)
+            val g = Color.green(box.bgColor)
+            val b = Color.blue(box.bgColor)
+            val luminance = 0.299 * r + 0.587 * g + 0.114 * b
+            val textColor = if (luminance > 128) Color.BLACK else Color.WHITE
+            val layout = fitText(box.translatedText, availW, availH, textColor)
+            DrawnBox(screenRect, layout, box.bgColor)
         }
     }
 
@@ -179,7 +186,7 @@ class TranslationOverlayView(context: Context) : View(context) {
      * Creates a [StaticLayout] for [text] that fits within [availW] x [availH] pixels.
      * Binary search for the largest font size where the text fits.
      */
-    private fun fitText(text: String, availW: Int, availH: Float): StaticLayout {
+    private fun fitText(text: String, availW: Int, availH: Float, textColor: Int = Color.WHITE): StaticLayout {
         var lo = minTextSizePx
         var hi = availH.coerceAtLeast(minTextSizePx)
 
@@ -204,6 +211,7 @@ class TranslationOverlayView(context: Context) : View(context) {
         // paint and render at whatever size was set last.
         val frozenPaint = TextPaint(textPaint)
         frozenPaint.textSize = lo
+        frozenPaint.color = textColor
         return StaticLayout.Builder.obtain(text, 0, text.length, frozenPaint, availW)
             .setAlignment(Layout.Alignment.ALIGN_NORMAL)
             .setIncludePad(false)

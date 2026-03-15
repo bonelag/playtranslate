@@ -654,16 +654,21 @@ class CaptureService : Service() {
                 Bitmap.createBitmap(raw, left, top, (right - left).coerceAtLeast(1), (bottom - top).coerceAtLeast(1))
             else raw
 
-            if (cycleGen != captureGeneration) { raw.recycle(); return } // invalidated during capture
+            // Small downsampled copy for color sampling — independent memory,
+            // survives ocrBitmap.recycle() which can invalidate raw on some devices.
+            val colorScale = 4
+            val colorRef = Bitmap.createScaledBitmap(raw, raw.width / colorScale, raw.height / colorScale, false)
+
+            if (cycleGen != captureGeneration) { colorRef.recycle(); raw.recycle(); return }
 
             val ocrBitmap = blackoutFloatingIcon(bitmap, left, top)
             val ocrResult = ocrManager.recognise(ocrBitmap, sourceLang)
             if (ocrBitmap !== raw) ocrBitmap.recycle()
 
-            if (cycleGen != captureGeneration) { raw.recycle(); return } // invalidated during OCR
+            if (cycleGen != captureGeneration) { colorRef.recycle(); raw.recycle(); return }
 
             if (ocrResult == null) {
-                // No text at all — reset dedup so the next hit retranslates, then notify.
+                colorRef.recycle()
                 raw.recycle()
                 lastLiveOcrText = null
                 cachedOverlayBoxes = null
@@ -678,7 +683,7 @@ class CaptureService : Service() {
             val dedupKey = newText.filter { c -> OcrManager.isSourceLangChar(c, sourceLang) }
 
             if (dedupKey.isEmpty()) {
-                // OCR found text but none in the source language — treat as no text.
+                colorRef.recycle()
                 raw.recycle()
                 lastLiveOcrText = null
                 cachedOverlayBoxes = null
@@ -692,6 +697,7 @@ class CaptureService : Service() {
             // slightly different outputs (e.g. one extra artifact character) for the
             // same static screen, which would fool an exact-match check every cycle.
             if (!isSignificantChange(lastLiveOcrText ?: "", dedupKey)) {
+                colorRef.recycle()
                 raw.recycle()
                 // Text unchanged — re-show the cached overlay (it was hidden on interaction)
                 if (cycleGen != captureGeneration) return // invalidated during OCR
@@ -735,9 +741,20 @@ class CaptureService : Service() {
                     )
                     // Show translation overlay on the game screen
                     if (liveGroupBounds.size == perGroup.size) {
-                        val overlayBoxes = perGroup.zip(liveGroupBounds).map { (tr, bounds) ->
-                            TranslationOverlayView.TextBox(tr.first, bounds)
+                        // Sample average colors from the downsampled reference
+                        val groupColors = liveGroupBounds.map { bounds ->
+                            averageColor(colorRef,
+                                (bounds.left + left) / colorScale,
+                                (bounds.top + top) / colorScale,
+                                (bounds.right + left) / colorScale,
+                                (bounds.bottom + top) / colorScale)
                         }
+                        colorRef.recycle()
+                        val overlayBoxes = perGroup.zip(liveGroupBounds).zip(groupColors)
+                            .map { (pair, color) ->
+                                val (tr, bounds) = pair
+                                TranslationOverlayView.TextBox(tr.first, bounds, color)
+                            }
                         // Cache for re-display after dedup-unchanged interactions
                         cachedOverlayBoxes = overlayBoxes
                         cachedOverlayCropLeft = left
@@ -749,6 +766,26 @@ class CaptureService : Service() {
                 } catch (e: Exception) { Log.w(TAG, "Live translation failed: ${e.message}") }
             }
         } catch (e: Exception) { Log.w(TAG, "Live capture cycle failed: ${e.message}") }
+    }
+
+    private fun averageColor(bitmap: Bitmap, l: Int, t: Int, r: Int, b: Int): Int {
+        val left = l.coerceIn(0, bitmap.width - 1)
+        val top = t.coerceIn(0, bitmap.height - 1)
+        val right = r.coerceIn(left + 1, bitmap.width)
+        val bottom = b.coerceIn(top + 1, bitmap.height)
+        var rSum = 0L; var gSum = 0L; var bSum = 0L; var count = 0
+        for (y in top until bottom step 4) {
+            for (x in left until right step 4) {
+                val pixel = bitmap.getPixel(x, y)
+                rSum += android.graphics.Color.red(pixel)
+                gSum += android.graphics.Color.green(pixel)
+                bSum += android.graphics.Color.blue(pixel)
+                count++
+            }
+        }
+        if (count == 0) return android.graphics.Color.argb(200, 0, 0, 0)
+        return android.graphics.Color.argb(200,
+            (rSum / count).toInt(), (gSum / count).toInt(), (bSum / count).toInt())
     }
 
     private fun noTextMessage(): String {
