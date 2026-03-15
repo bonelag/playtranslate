@@ -344,18 +344,18 @@ class CaptureService : Service() {
         liveTranslationJob?.cancel()
         liveTimerJob?.cancel()
 
+        // Buttons and touch are detected via onKeyEvent and touch sentinel.
+        PlayTranslateAccessibilityService.instance
+            ?.startInputMonitoring(gameDisplayId) { onUserInteraction() }
+
         if (useTimerBasedLive) {
             // API 34+: timer-based polling. MediaProjection captures only
-            // the game task — our overlays are excluded from OCR. Buttons
-            // and touch still hide the overlay and reset the timer.
-            PlayTranslateAccessibilityService.instance
-                ?.startInputMonitoring(gameDisplayId, joystick = false) { onUserInteraction() }
+            // the game task — our overlays are excluded from OCR.
             startLiveTimer()
         } else {
-            // API < 34: interaction-driven. Joystick sentinel polls for
-            // movement since we must hide overlays to get clean captures.
-            PlayTranslateAccessibilityService.instance
-                ?.startInputMonitoring(gameDisplayId, joystick = true) { onUserInteraction() }
+            // API < 34: interaction-driven capture. Scene-change detection
+            // via pixel-diff handles joystick/d-pad movement (no sentinel
+            // needed — zero key eating, zero nav bar flicker).
             interactionDebounceJob = serviceScope.launch { runLiveCaptureCycle() }
         }
     }
@@ -368,10 +368,130 @@ class CaptureService : Service() {
         interactionDebounceJob = null
         liveTranslationJob?.cancel()
         liveTranslationJob = null
+        stopSceneChangeDetection()
         lastLiveOcrText = null
         cachedOverlayBoxes = null
         PlayTranslateAccessibilityService.instance?.stopInputMonitoring()
         PlayTranslateAccessibilityService.instance?.hideTranslationOverlay()
+    }
+
+    // ── Scene-change detection (API < 34) ────────────────────────────────
+    //
+    // On API < 34, we can't use MediaProjection to capture without overlays,
+    // so we detect major scene changes (character movement / camera pan) by
+    // comparing screenshots. Takes a screenshot WITH overlays visible, then
+    // compares non-overlay pixels against a reference frame. If >80% of
+    // sampled pixels changed, the game is moving and overlays are stale.
+
+    private var sceneCheckJob: Job? = null
+    private val SCENE_CHECK_INTERVAL_MS = 500L
+    private val SCENE_CHANGE_THRESHOLD = 0.40f  // 40% of sampled pixels must change
+    private val PIXEL_DIFF_THRESHOLD = 30       // per-channel RGB difference
+
+    /**
+     * Start scene-change detection after overlays are shown.
+     * [overlayBoxes] are the overlay bounding rects in full-display coordinates.
+     * Everything runs inside a single coroutine on the main thread — no
+     * async callbacks, no shared mutable state, no race conditions.
+     */
+    private fun startSceneChangeDetection(overlayBoxes: List<android.graphics.Rect>) {
+        if (useTimerBasedLive) return
+        stopSceneChangeDetection()
+
+        sceneCheckJob = serviceScope.launch {
+            // Initial delay to let the overlay render before taking reference
+            delay(SCENE_CHECK_INTERVAL_MS)
+            val a11y = PlayTranslateAccessibilityService.instance ?: return@launch
+
+            // Take reference frame (with overlays visible)
+            val refBitmap = suspendCancellableCoroutine<Bitmap?> { cont ->
+                a11y.captureDisplayRaw(gameDisplayId) { cont.resume(it) }
+            } ?: return@launch
+
+            // Build sample positions, skipping overlay regions
+            val positions = mutableListOf<Pair<Int, Int>>()
+            for (y in 0 until refBitmap.height step 10) {
+                for (x in 0 until refBitmap.width step 10) {
+                    if (overlayBoxes.none { it.contains(x, y) }) {
+                        positions.add(x to y)
+                    }
+                }
+            }
+            if (positions.isEmpty()) { refBitmap.recycle(); return@launch }
+
+            val refPixels = IntArray(positions.size) { i ->
+                refBitmap.getPixel(positions[i].first, positions[i].second)
+            }
+            refBitmap.recycle()
+
+            // Poll loop
+            var sceneMoving = false
+            var prevFramePixels: IntArray? = null
+
+            while (liveActive) {
+                delay(SCENE_CHECK_INTERVAL_MS)
+
+                val bitmap = suspendCancellableCoroutine<Bitmap?> { cont ->
+                    a11y.captureDisplayRaw(gameDisplayId) { cont.resume(it) }
+                }
+                if (bitmap == null) continue
+
+                val currentPixels = IntArray(positions.size) { i ->
+                    val (x, y) = positions[i]
+                    if (x < bitmap.width && y < bitmap.height) bitmap.getPixel(x, y) else 0
+                }
+                bitmap.recycle()
+
+                if (!sceneMoving) {
+                    // Phase 1: compare against reference to detect movement start
+                    val pct = pixelDiffPercent(refPixels, currentPixels)
+                    if (pct >= SCENE_CHANGE_THRESHOLD) {
+                        sceneMoving = true
+                        PlayTranslateAccessibilityService.instance?.hideTranslationOverlay()
+                        liveTranslationJob?.cancel()
+                    }
+                } else {
+                    // Phase 2: compare consecutive frames to detect stabilization
+                    val prev = prevFramePixels
+                    if (prev != null) {
+                        val pct = pixelDiffPercent(prev, currentPixels)
+                        if (pct < 0.05f) {
+                            // Scene stabilized — recapture
+                            interactionDebounceJob?.cancel()
+                            interactionDebounceJob = serviceScope.launch {
+                                val settleMs = Prefs(this@CaptureService).captureIntervalSec * 1000L
+                                delay(settleMs)
+                                while (PlayTranslateAccessibilityService.instance?.isInputActive == true) {
+                                    delay(settleMs)
+                                }
+                                runLiveCaptureCycle()
+                            }
+                            return@launch
+                        }
+                    }
+                }
+                prevFramePixels = currentPixels
+            }
+        }
+    }
+
+    private fun stopSceneChangeDetection() {
+        sceneCheckJob?.cancel()
+        sceneCheckJob = null
+    }
+
+    private fun pixelDiffPercent(a: IntArray, b: IntArray): Float {
+        if (a.size != b.size || a.isEmpty()) return 0f
+        var changed = 0
+        for (i in a.indices) {
+            val dr = kotlin.math.abs(android.graphics.Color.red(a[i]) - android.graphics.Color.red(b[i]))
+            val dg = kotlin.math.abs(android.graphics.Color.green(a[i]) - android.graphics.Color.green(b[i]))
+            val db = kotlin.math.abs(android.graphics.Color.blue(a[i]) - android.graphics.Color.blue(b[i]))
+            if (dr > PIXEL_DIFF_THRESHOLD || dg > PIXEL_DIFF_THRESHOLD || db > PIXEL_DIFF_THRESHOLD) {
+                changed++
+            }
+        }
+        return changed.toFloat() / a.size
     }
 
     /** API 34+ timer-based polling: capture every N seconds. */
@@ -395,6 +515,7 @@ class CaptureService : Service() {
         // Hide overlay immediately so the game is fully visible
         PlayTranslateAccessibilityService.instance?.hideTranslationOverlay()
         liveTranslationJob?.cancel()
+        stopSceneChangeDetection()
 
         if (useTimerBasedLive) {
             // API 34+: restart the timer so next capture happens after
@@ -423,6 +544,18 @@ class CaptureService : Service() {
         val dm = getSystemService(DisplayManager::class.java)
         val display = dm.getDisplay(gameDisplayId) ?: return
         a11y.showTranslationOverlay(display, boxes, cropLeft, cropTop, screenshotW, screenshotH)
+
+        // Start scene-change detection (API < 34 only). The coroutine
+        // captures its own reference frame after a short delay.
+        val fullDisplayBoxes = boxes.map { b ->
+            android.graphics.Rect(
+                b.bounds.left + cropLeft,
+                b.bounds.top + cropTop,
+                b.bounds.right + cropLeft,
+                b.bounds.bottom + cropTop
+            )
+        }
+        startSceneChangeDetection(fullDisplayBoxes)
     }
 
     /**

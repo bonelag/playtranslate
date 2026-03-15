@@ -272,9 +272,6 @@ class PlayTranslateAccessibilityService : AccessibilityService() {
         cropLeft: Int, cropTop: Int,
         screenshotW: Int, screenshotH: Int
     ) {
-        // Don't show while user is actively interacting
-        if (joystickHeld) return
-
         // Reuse existing view if on the same display; otherwise recreate
         if (translationOverlayView != null && translationOverlayDisplayId == display.displayId) {
             translationOverlayView?.setBoxes(boxes, cropLeft, cropTop, screenshotW, screenshotH)
@@ -298,13 +295,6 @@ class PlayTranslateAccessibilityService : AccessibilityService() {
         translationOverlayWm = wm
         translationOverlayView = view
         translationOverlayDisplayId = display.displayId
-
-        // If joystick polling is active, trigger an immediate check so the
-        // overlay is hidden quickly if the stick is still being held.
-        if (joystickPolling) {
-            debugHandler.removeCallbacks(joystickPollRunnable)
-            debugHandler.post(joystickPollRunnable)
-        }
     }
 
     fun hideTranslationOverlay() {
@@ -331,7 +321,7 @@ class PlayTranslateAccessibilityService : AccessibilityService() {
      * showing the overlay during active interaction.
      */
     val isInputActive: Boolean
-        get() = buttonHeld || touchActive || joystickHeld
+        get() = buttonHeld || touchActive
 
     /**
      * Start monitoring gamepad buttons and screen touches on [displayId].
@@ -342,16 +332,12 @@ class PlayTranslateAccessibilityService : AccessibilityService() {
      *
      * [callback] fires on the main thread for every detected input.
      */
-    fun startInputMonitoring(displayId: Int, joystick: Boolean = true, callback: () -> Unit) {
+    fun startInputMonitoring(displayId: Int, callback: () -> Unit) {
         onGameInput = callback
         lastKeyEventTime = 0L
         buttonHeld = false
         touchActive = false
         addTouchSentinel(displayId)
-        if (joystick) {
-            addJoystickSentinel(displayId)
-            startJoystickPolling()
-        }
     }
 
     fun stopInputMonitoring() {
@@ -359,8 +345,6 @@ class PlayTranslateAccessibilityService : AccessibilityService() {
         buttonHeld = false
         touchActive = false
         debugHandler.removeCallbacks(touchTimeoutRunnable)
-        stopJoystickPolling()
-        removeJoystickSentinel()
         removeTouchSentinel()
     }
 
@@ -410,179 +394,6 @@ class PlayTranslateAccessibilityService : AccessibilityService() {
         touchSentinelWm = null
     }
 
-    // ── Joystick sentinel + polling ─────────────────────────────────────
-    //
-    // A separate 1×1 view used exclusively for joystick detection.
-    // Normally FLAG_NOT_FOCUSABLE so the game receives all input.
-    // Periodically toggled focusable for a brief sample window during
-    // "quiet" periods (no key events recently). While the joystick is
-    // held, the translation overlay stays hidden and polling continues
-    // until the stick is released.
-
-    private var joystickSentinelView: View? = null
-    private var joystickSentinelWm: WindowManager? = null
-    private var joystickSentinelParams: WindowManager.LayoutParams? = null
-
-    private val JOYSTICK_POLL_INTERVAL_MS = 500L
-    private val JOYSTICK_SAMPLE_WINDOW_MS = 60L
-    private val JOYSTICK_QUIET_THRESHOLD_MS = 500L
-
-    private var joystickDetected = false
-    private var joystickPolling = false
-    /** True while the joystick is being held — overlay stays hidden. */
-    private var joystickHeld = false
-    /** WindowContext for querying game display's nav bar state. */
-    private var immersiveCheckWm: WindowManager? = null
-
-    @Suppress("DEPRECATION")
-    private fun addJoystickSentinel(displayId: Int) {
-        if (joystickSentinelView != null) return
-        val dm = getSystemService(DisplayManager::class.java)
-        val display = dm.getDisplay(displayId) ?: return
-        val ctx = createDisplayContext(display)
-        val wm = ctx.getSystemService(WindowManager::class.java) ?: return
-        val view = View(ctx).apply {
-            isFocusable = true
-            isFocusableInTouchMode = true
-            setOnGenericMotionListener { _, event ->
-                if (event.source and InputDevice.SOURCE_JOYSTICK == InputDevice.SOURCE_JOYSTICK
-                    && event.action == MotionEvent.ACTION_MOVE
-                ) {
-                    val ax = event.getAxisValue(MotionEvent.AXIS_X)
-                    val ay = event.getAxisValue(MotionEvent.AXIS_Y)
-                    val az = event.getAxisValue(MotionEvent.AXIS_Z)
-                    val rz = event.getAxisValue(MotionEvent.AXIS_RZ)
-                    val hatX = event.getAxisValue(MotionEvent.AXIS_HAT_X)
-                    val hatY = event.getAxisValue(MotionEvent.AXIS_HAT_Y)
-                    if (ax * ax + ay * ay > 0.25f || az * az + rz * rz > 0.25f
-                        || hatX * hatX + hatY * hatY > 0.25f) {
-                        joystickDetected = true
-                    }
-                }
-                false
-            }
-        }
-        val params = WindowManager.LayoutParams(
-            1, 1,
-            WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
-                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
-            PixelFormat.TRANSLUCENT
-        )
-        wm.addView(view, params)
-        joystickSentinelView = view
-        joystickSentinelWm = wm
-        joystickSentinelParams = params
-
-        // Create a WindowContext for TYPE_APPLICATION_OVERLAY on the game
-        // display. Unlike TYPE_ACCESSIBILITY_OVERLAY, standard overlays sit
-        // below system bars and their WindowMetrics reflect the real nav bar
-        // state. We poll this right before each focus cycle.
-        if (Build.VERSION.SDK_INT >= 30) {
-            try {
-                val windowCtx = ctx.createWindowContext(
-                    WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY, null
-                )
-                immersiveCheckWm = windowCtx.getSystemService(WindowManager::class.java)
-            } catch (_: Exception) {}
-        }
-    }
-
-    private fun removeJoystickSentinel() {
-        try { joystickSentinelView?.let { joystickSentinelWm?.removeView(it) } } catch (_: Exception) {}
-        joystickSentinelView = null
-        joystickSentinelWm = null
-        joystickSentinelParams = null
-        immersiveCheckWm = null
-    }
-
-    private val joystickPollRunnable = object : Runnable {
-        override fun run() {
-            if (!joystickPolling || joystickSentinelView == null || onGameInput == null) return
-
-            // Only sample during quiet periods — no buttons or touches active
-            val keyQuiet = System.currentTimeMillis() - lastKeyEventTime > JOYSTICK_QUIET_THRESHOLD_MS
-            if (!keyQuiet || buttonHeld || touchActive) {
-                debugHandler.postDelayed(this, JOYSTICK_POLL_INTERVAL_MS)
-                return
-            }
-
-            // Toggle sentinel focusable to sample joystick state
-            joystickDetected = false
-            setSentinelFocusable(true)
-
-            // After the sample window, revert and check result
-            debugHandler.postDelayed({
-                setSentinelFocusable(false)
-
-                if (joystickDetected) {
-                    if (!joystickHeld) {
-                        // Joystick just started — hide overlay
-                        joystickHeld = true
-                        hideTranslationOverlay()
-                    }
-                    // Keep polling to detect when joystick stops
-                    debugHandler.postDelayed(this, JOYSTICK_POLL_INTERVAL_MS)
-                } else if (joystickHeld) {
-                    // Joystick was held but has now stopped — fire debounce
-                    joystickHeld = false
-                    onGameInput?.invoke()
-                } else if (joystickPolling) {
-                    // No joystick activity — schedule next poll
-                    debugHandler.postDelayed(this, JOYSTICK_POLL_INTERVAL_MS)
-                }
-            }, JOYSTICK_SAMPLE_WINDOW_MS)
-        }
-    }
-
-    private fun startJoystickPolling() {
-        if (onGameInput == null || joystickSentinelView == null) return
-        joystickPolling = true
-        debugHandler.removeCallbacks(joystickPollRunnable)
-        debugHandler.postDelayed(joystickPollRunnable, JOYSTICK_POLL_INTERVAL_MS)
-    }
-
-    private fun stopJoystickPolling() {
-        joystickPolling = false
-        joystickHeld = false
-        debugHandler.removeCallbacks(joystickPollRunnable)
-    }
-
-    @Suppress("DEPRECATION")
-    private fun setSentinelFocusable(focusable: Boolean) {
-        val view = joystickSentinelView ?: return
-        val wm = joystickSentinelWm ?: return
-        val params = joystickSentinelParams ?: return
-        if (focusable) {
-            params.flags = params.flags and WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE.inv()
-            // Query the game display's nav bar state via a TYPE_APPLICATION_OVERLAY
-            // WindowContext. Standard overlays sit below system bars, so their
-            // metrics reflect the real nav bar state (unlike our accessibility overlay).
-            var isGameImmersive = false
-            if (Build.VERSION.SDK_INT >= 30) {
-                immersiveCheckWm?.let { checkWm ->
-                    val navInsets = checkWm.currentWindowMetrics.windowInsets
-                        .getInsets(android.view.WindowInsets.Type.navigationBars())
-                    isGameImmersive = (navInsets.bottom == 0)
-                }
-            }
-            view.systemUiVisibility = if (isGameImmersive) {
-                View.SYSTEM_UI_FLAG_LAYOUT_STABLE or
-                    View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION or
-                    View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN or
-                    View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or
-                    View.SYSTEM_UI_FLAG_FULLSCREEN or
-                    View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
-            } else {
-                View.SYSTEM_UI_FLAG_VISIBLE
-            }
-        } else {
-            params.flags = params.flags or WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
-        }
-        try { wm.updateViewLayout(view, params) } catch (_: Exception) {}
-        if (focusable) view.post { view.requestFocus() }
-    }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {}
     override fun onInterrupt() {}
@@ -907,6 +718,29 @@ class PlayTranslateAccessibilityService : AccessibilityService() {
      */
     /** Single background thread for bitmap copies to keep the main thread free. */
     private val bitmapExecutor = Executors.newSingleThreadExecutor()
+
+    /**
+     * Takes a screenshot WITHOUT hiding overlays. Used for pixel-diff
+     * scene-change detection where we compare non-overlay regions.
+     */
+    fun captureDisplayRaw(displayId: Int, onResult: (Bitmap?) -> Unit) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) { onResult(null); return }
+        takeScreenshot(
+            displayId, mainExecutor,
+            object : TakeScreenshotCallback {
+                override fun onSuccess(screenshot: ScreenshotResult) {
+                    bitmapExecutor.execute {
+                        val bitmap = Bitmap
+                            .wrapHardwareBuffer(screenshot.hardwareBuffer, screenshot.colorSpace)
+                            ?.copy(Bitmap.Config.ARGB_8888, false)
+                        screenshot.hardwareBuffer.close()
+                        onResult(bitmap)
+                    }
+                }
+                override fun onFailure(errorCode: Int) { onResult(null) }
+            }
+        )
+    }
 
     fun captureDisplay(displayId: Int, onResult: (Bitmap?) -> Unit) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
