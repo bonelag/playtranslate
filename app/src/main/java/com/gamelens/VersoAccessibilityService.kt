@@ -803,6 +803,9 @@ class PlayTranslateAccessibilityService : AccessibilityService() {
                     regionLabel           = entry.label
                 )
             }
+            if (MainActivity.isInForeground) {
+                sendMainActivityIntent(MainActivity.ACTION_REFRESH_REGION_LABEL)
+            }
         }
         menu.onCaptureRegion = {
             dismissFloatingMenu()

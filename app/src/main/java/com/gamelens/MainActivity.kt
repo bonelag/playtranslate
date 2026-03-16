@@ -268,6 +268,7 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
             ACTION_START_LIVE -> if (!isLiveMode) withAccessibility { startLiveMode() }
             ACTION_STOP_LIVE -> if (isLiveMode) stopLiveMode()
             ACTION_ADD_CUSTOM_REGION -> openAddCustomRegionFromDropdown()
+            ACTION_REFRESH_REGION_LABEL -> updateRegionButton()
         }
     }
 
@@ -1098,6 +1099,7 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
         const val ACTION_START_LIVE = "com.gamelens.ACTION_START_LIVE"
         const val ACTION_STOP_LIVE = "com.gamelens.ACTION_STOP_LIVE"
         const val ACTION_ADD_CUSTOM_REGION = "com.gamelens.ACTION_ADD_CUSTOM_REGION"
+        const val ACTION_REFRESH_REGION_LABEL = "com.gamelens.ACTION_REFRESH_REGION_LABEL"
 
         @Volatile
         var isInForeground = false
