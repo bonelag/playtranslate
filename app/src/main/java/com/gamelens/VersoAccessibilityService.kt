@@ -604,6 +604,11 @@ class PlayTranslateAccessibilityService : AccessibilityService() {
         val menu = FloatingIconMenu(createDisplayContext(display))
         menu.isSingleScreen = Prefs.isSingleScreen(this)
 
+        // Suppress live captures while menu is open — the menu darkens
+        // the screen and we don't want overlays appearing behind it.
+        CaptureService.instance?.holdActive = true
+        hideTranslationOverlay()
+
         menu.isLiveMode = MainActivity.isLiveModeActive
         menu.onHideIcon = {
             dismissFloatingMenu()
@@ -614,7 +619,16 @@ class PlayTranslateAccessibilityService : AccessibilityService() {
             dismissFloatingMenu()
             hideFloatingIcon()
         }
-        menu.onDismiss = { dismissFloatingMenu() }
+        menu.onDismiss = {
+            // Only refresh if the menu is still showing — other handlers
+            // (onRegionSelected, onToggleLive, etc.) call dismissFloatingMenu
+            // first, so floatingMenu would already be null.
+            val needsRefresh = floatingMenu != null && MainActivity.isLiveModeActive
+            dismissFloatingMenu()
+            if (needsRefresh) {
+                CaptureService.instance?.refreshLiveOverlay()
+            }
+        }
         menu.onToggleLive = {
             dismissFloatingMenu()
             val effectivelySingleScreen = Prefs.isSingleScreen(this) || !MainActivity.isInForeground
@@ -696,9 +710,13 @@ class PlayTranslateAccessibilityService : AccessibilityService() {
     }
 
     private fun dismissFloatingMenu() {
+        val wasShowing = floatingMenu != null
         try { floatingMenu?.let { floatingMenuWm?.removeView(it) } } catch (_: Exception) {}
         floatingMenu = null
         floatingMenuWm = null
+        if (wasShowing) {
+            CaptureService.instance?.holdActive = false
+        }
     }
 
     /**

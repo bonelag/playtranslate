@@ -15,6 +15,7 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
 import com.gamelens.AnkiManager
 import com.gamelens.CaptureService
+import com.gamelens.MainActivity
 import com.gamelens.Prefs
 import com.gamelens.R
 import com.gamelens.model.TextSegment
@@ -112,21 +113,24 @@ class TranslationResultActivity : AppCompatActivity(), TranslationResultFragment
 
     override fun onDestroy() {
         // Restore the user's configured region so the dragged region
-        // doesn't persist for future captures.
-        val prefs = Prefs(this)
-        val entry = prefs.getRegionList().getOrElse(prefs.captureRegionIndex) {
-            Prefs.DEFAULT_REGION_LIST[0]
+        // doesn't persist — but only if live mode isn't running, since
+        // live mode may have set its own region that should be preserved.
+        if (!MainActivity.isLiveModeActive) {
+            val prefs = Prefs(this)
+            val entry = prefs.getRegionList().getOrElse(prefs.captureRegionIndex) {
+                Prefs.DEFAULT_REGION_LIST[0]
+            }
+            captureService?.configure(
+                displayId             = prefs.captureDisplayId,
+                sourceLang            = prefs.sourceLang,
+                targetLang            = prefs.targetLang,
+                captureTopFraction    = entry.top,
+                captureBottomFraction = entry.bottom,
+                captureLeftFraction   = entry.left,
+                captureRightFraction  = entry.right,
+                regionLabel           = entry.label
+            )
         }
-        captureService?.configure(
-            displayId             = prefs.captureDisplayId,
-            sourceLang            = prefs.sourceLang,
-            targetLang            = prefs.targetLang,
-            captureTopFraction    = entry.top,
-            captureBottomFraction = entry.bottom,
-            captureLeftFraction   = entry.left,
-            captureRightFraction  = entry.right,
-            regionLabel           = entry.label
-        )
         captureService?.onResult = null
         captureService?.onError = null
         captureService?.onStatusUpdate = null

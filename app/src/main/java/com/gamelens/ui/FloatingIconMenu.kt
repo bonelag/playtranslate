@@ -71,6 +71,20 @@ class FloatingIconMenu(context: Context) : FrameLayout(context) {
         strokeWidth = 2f * dp
         isAntiAlias = true
     }
+    private val regionFillPaint = Paint().apply {
+        color = Color.argb(100, 100, 180, 255)
+        style = Paint.Style.FILL
+    }
+    private val regionLabelPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.WHITE
+        textSize = 12f * dp
+        textAlign = Paint.Align.CENTER
+        typeface = Typeface.DEFAULT_BOLD
+    }
+    private val regionLabelBgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.argb(170, 0, 0, 0)
+        style = Paint.Style.FILL
+    }
 
     private var clearRegionButton: View? = null
 
@@ -258,7 +272,26 @@ class FloatingIconMenu(context: Context) : FrameLayout(context) {
                 canvas.drawRect(0f, 0f, w, h, dimPaint)
                 canvas.drawRect(regionRect, clearPaint)
                 canvas.restoreToCount(sc)
+                canvas.drawRect(regionRect, regionFillPaint)
                 canvas.drawRect(regionRect, regionStrokePaint)
+                // Label with rounded background centered in the region
+                val label = "Current capture region"
+                val labelW = regionLabelPaint.measureText(label)
+                val labelH = regionLabelPaint.descent() - regionLabelPaint.ascent()
+                val padH = 10f * dp
+                val padV = 6f * dp
+                val labelCx = regionRect.centerX()
+                val labelCy = regionRect.centerY()
+                val bgRect = RectF(
+                    labelCx - labelW / 2 - padH,
+                    labelCy - labelH / 2 - padV,
+                    labelCx + labelW / 2 + padH,
+                    labelCy + labelH / 2 + padV
+                )
+                canvas.drawRoundRect(bgRect, 8f * dp, 8f * dp, regionLabelBgPaint)
+                canvas.drawText(label, labelCx,
+                    labelCy - (regionLabelPaint.descent() + regionLabelPaint.ascent()) / 2,
+                    regionLabelPaint)
             } else {
                 canvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), dimPaint)
             }
