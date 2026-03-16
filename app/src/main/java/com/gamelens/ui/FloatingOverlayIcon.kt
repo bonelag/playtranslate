@@ -184,7 +184,7 @@ class FloatingOverlayIcon(context: Context) : View(context) {
 
     companion object {
         private const val FLING_THRESHOLD = 600f // px/s
-        private const val TAP_THRESHOLD_DP = 10f
+        private const val TAP_THRESHOLD_DP = 18f
         private const val SNAP_DURATION_MS = 250L
     }
 
