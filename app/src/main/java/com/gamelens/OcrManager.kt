@@ -27,7 +27,7 @@ import kotlin.coroutines.resumeWithException
  *  4. Drop individual elements that are purely UI decoration (arrows, angle
  *     brackets used as dialogue cursors, etc.).
  */
-class OcrManager {
+class OcrManager private constructor() {
 
     private val recognizer = TextRecognition.getClient(
         JapaneseTextRecognizerOptions.Builder().build()
@@ -383,9 +383,10 @@ class OcrManager {
         return lines.ifEmpty { null }
     }
 
-    fun close() = recognizer.close()
-
     companion object {
+        /** Process-scoped singleton. The TextRecognizer lives for the app's lifetime. */
+        val instance: OcrManager by lazy { OcrManager() }
+
         /**
          * Minimum pixel count on the shorter side before we skip upscaling.
          * ML Kit needs roughly this many pixels to reliably distinguish

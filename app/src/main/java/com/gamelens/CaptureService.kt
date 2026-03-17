@@ -63,7 +63,7 @@ class CaptureService : Service() {
 
     // ── Pipeline ──────────────────────────────────────────────────────────
 
-    private val ocrManager = OcrManager()
+    private val ocrManager get() = OcrManager.instance
     private var translationManager: TranslationManager? = null  // ML Kit offline fallback
     private var deeplTranslator: DeepLTranslator?  = null       // optional, key required
     private var lingvaTranslator: LingvaTranslator? = null      // always present after configure()
@@ -112,7 +112,6 @@ class CaptureService : Service() {
         instance = null
         stopLive()
         serviceScope.cancel()
-        ocrManager.close()
         translationManager?.close()
         deeplTranslator?.close()
         lingvaTranslator?.close()

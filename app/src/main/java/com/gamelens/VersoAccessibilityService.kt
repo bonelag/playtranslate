@@ -78,7 +78,7 @@ class PlayTranslateAccessibilityService : AccessibilityService() {
     private var regionIndicatorView: View? = null
     private var regionIndicatorWm: WindowManager? = null
     private val regionIndicatorHandler = Handler(Looper.getMainLooper())
-    private var debugOcrManager: OcrManager? = null
+    private val debugOcrManager get() = OcrManager.instance
     private val debugHandler = Handler(Looper.getMainLooper())
     private var debugRunning = false
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
@@ -322,7 +322,6 @@ class PlayTranslateAccessibilityService : AccessibilityService() {
     fun startDebugOcrLoop() {
         if (debugRunning) return
         debugRunning = true
-        if (debugOcrManager == null) debugOcrManager = OcrManager()
         scheduleDebugCapture()
     }
 
@@ -330,8 +329,6 @@ class PlayTranslateAccessibilityService : AccessibilityService() {
         debugRunning = false
         debugHandler.removeCallbacksAndMessages(null)
         hideDebugOverlay()
-        debugOcrManager?.close()
-        debugOcrManager = null
     }
 
     private fun scheduleDebugCapture() {
@@ -356,7 +353,7 @@ class PlayTranslateAccessibilityService : AccessibilityService() {
             val screenshotW = bitmap.width
             val screenshotH = bitmap.height
 
-            val ocr = debugOcrManager ?: run { bitmap.recycle(); scheduleDebugCapture(); return@launch }
+            val ocr = debugOcrManager
             val result = try {
                 kotlinx.coroutines.withContext(Dispatchers.Default) {
                     ocr.recognise(bitmap, prefs.sourceLang, collectDebugBoxes = true)
