@@ -32,6 +32,12 @@ class OcrDebugOverlayView(context: Context) : View(context) {
         strokeWidth = 4f * dp
     }
 
+    private val linePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.GREEN
+        style = Paint.Style.STROKE
+        strokeWidth = 1.5f * dp
+    }
+
     private var debugBoxes: OcrManager.OcrDebugBoxes? = null
     private var cropOffsetX = 0
     private var cropOffsetY = 0
@@ -80,6 +86,12 @@ class OcrDebugOverlayView(context: Context) : View(context) {
         for (box in boxes.blockBoxes) {
             val rf = mapRect(box.bounds, sf)
             canvas.drawRect(rf, blockPaint)
+        }
+
+        // Line boxes (thin green)
+        for (box in boxes.lineBoxes) {
+            val rf = mapRect(box.bounds, sf)
+            canvas.drawRect(rf, linePaint)
         }
 
         // Combined group boxes (blue)

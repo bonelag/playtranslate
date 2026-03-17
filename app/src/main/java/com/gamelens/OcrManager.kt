@@ -77,13 +77,12 @@ class OcrManager private constructor() {
 
         if (visionText.textBlocks.isEmpty()) return null
 
-        // 2. Group by similar line height.
+        // 2. Group lines by proximity, size, and alignment (not blocks — blocks
+        //    can contain spatially distant lines that shouldn't be merged).
         // 3. Discard groups that contain no character from the source language's script.
-        //    This correctly excludes pure-Latin romanizations ("Yuko"), symbols ("★☆:"),
-        //    and Latin-with-diacritics ("Yūko") while keeping mixed text ("裕子Hello").
-        val groups = groupBlocksBySize(visionText.textBlocks)
+        val groups = groupLinesByProximity(visionText.textBlocks)
             .filter { group ->
-                group.any { block -> block.text.any { c -> isSourceLangChar(c, sourceLang) } }
+                group.any { line -> line.text.any { c -> isSourceLangChar(c, sourceLang) } }
             }
 
         if (groups.isEmpty()) return null
@@ -94,25 +93,21 @@ class OcrManager private constructor() {
 
         groups.forEachIndexed { gi, group ->
             if (gi > 0) {
-                fullTextBuilder.append(" ")  // space for translation (no paragraph breaks)
+                fullTextBuilder.append(" ")
                 segments += TextSegment("\n\n", isSeparator = true)
             }
             val groupBuilder = StringBuilder()
-            // Blocks within the same group are continuous text (merged by proximity).
-            // No separator between them — they flow as one sentence.
-            group.forEach { block ->
-                block.lines.forEachIndexed { li, line ->
-                    if (li > 0) {
-                        fullTextBuilder.append(" ")  // space for translation (no line breaks)
-                        groupBuilder.append(" ")
-                        segments += TextSegment("\n", isSeparator = true)
-                    }
-                    line.elements.forEach { element ->
-                        if (!isUiDecoration(element.text)) {
-                            fullTextBuilder.append(element.text)
-                            groupBuilder.append(element.text)
-                            segments += TextSegment(element.text)
-                        }
+            group.forEachIndexed { li, line ->
+                if (li > 0) {
+                    fullTextBuilder.append(" ")
+                    groupBuilder.append(" ")
+                    segments += TextSegment("\n", isSeparator = true)
+                }
+                line.elements.forEach { element ->
+                    if (!isUiDecoration(element.text)) {
+                        fullTextBuilder.append(element.text)
+                        groupBuilder.append(element.text)
+                        segments += TextSegment(element.text)
                     }
                 }
             }
@@ -123,7 +118,7 @@ class OcrManager private constructor() {
         val fullText = fullTextBuilder.toString().trim()
         if (fullText.isBlank()) return null
 
-        // Compute group bounding boxes (union of blocks per group) in original bitmap coords
+        // Compute group bounding boxes (union of lines per group) in original bitmap coords
         val groupBounds = groups.map { group ->
             val rects = group.mapNotNull { it.boundingBox }
             Rect(
@@ -149,7 +144,7 @@ class OcrManager private constructor() {
                     }
                 }
             }
-            // Compute combined group bounding boxes (union of merged TextBlocks)
+            // Compute combined group bounding boxes (union of grouped lines)
             val groupBoxes = groups.map { group ->
                 val rects = group.mapNotNull { it.boundingBox }
                 val union = Rect(
@@ -266,40 +261,44 @@ class OcrManager private constructor() {
     }
 
     /**
-     * Groups TextBlocks into paragraphs based on proximity, size, and alignment.
+     * Extracts all lines from all TextBlocks and groups them by proximity,
+     * size, and alignment. Operating on lines (not blocks) avoids the issue
+     * where ML Kit groups spatially distant lines into a single TextBlock.
      *
-     * Blocks are processed in top-to-bottom order. A block is merged into the
-     * current group when ALL of the following hold:
-     *  1. Its median line height is within 20 % of the previous block's height.
+     * A line is merged into the current group when ALL of the following hold:
+     *  1. Its height is within 20% of the previous line's height.
      *  2. The vertical gap between them is ≤ 2.5× the larger line height.
      *  3. The current group's text does not end with sentence-final punctuation
      *     — those indicate a complete sentence boundary.
-     *  4. Horizontal alignment: the block's left edge is within one line height
+     *  4. Horizontal alignment: the line's left edge is within one line height
      *     of the group's left edge, OR the right edges are similarly aligned.
      */
-    private fun groupBlocksBySize(blocks: List<Text.TextBlock>): List<List<Text.TextBlock>> {
-        val sorted = blocks.sortedBy { it.boundingBox?.top ?: Int.MAX_VALUE }
-        if (sorted.isEmpty()) return emptyList()
+    private fun groupLinesByProximity(blocks: List<Text.TextBlock>): List<List<Text.Line>> {
+        // Extract all lines from all blocks, sorted top-to-bottom
+        val allLines = blocks.flatMap { it.lines }
+            .filter { it.boundingBox != null }
+            .sortedBy { it.boundingBox!!.top }
+        if (allLines.isEmpty()) return emptyList()
 
-        val groups = mutableListOf<MutableList<Text.TextBlock>>()
+        val groups = mutableListOf<MutableList<Text.Line>>()
 
-        for (block in sorted) {
-            val blockH = medianLineHeight(block)
-            val blockBox = block.boundingBox
-            val blockTop = blockBox?.top ?: Int.MAX_VALUE
+        for (line in allLines) {
+            val lineH = line.boundingBox?.height() ?: 0
+            val lineBox = line.boundingBox ?: continue
+            val lineTop = lineBox.top
 
             val lastGroup = groups.lastOrNull()
-            if (lastGroup != null && blockH > 0 && blockBox != null) {
-                val prev = lastGroup.last()
-                val prevH = medianLineHeight(prev)
-                val prevBottom = prev.boundingBox?.bottom ?: 0
+            if (lastGroup != null && lineH > 0) {
+                val prevLine = lastGroup.last()
+                val prevH = prevLine.boundingBox?.height() ?: 0
+                val prevBottom = prevLine.boundingBox?.bottom ?: 0
 
-                val gap = blockTop - prevBottom
-                val refH = maxOf(blockH, prevH)
+                val gap = lineTop - prevBottom
+                val refH = maxOf(lineH, prevH)
 
                 val sizeMatch = prevH > 0 && run {
-                    val lo = minOf(blockH, prevH)
-                    val hi = maxOf(blockH, prevH)
+                    val lo = minOf(lineH, prevH)
+                    val hi = maxOf(lineH, prevH)
                     (hi - lo).toDouble() / lo <= 0.20
                 }
                 val closeEnough = refH > 0 && gap <= (refH * 2.5f).toInt()
@@ -312,8 +311,8 @@ class OcrManager private constructor() {
                 val alignTolerance = refH
                 val groupLeft  = lastGroup.mapNotNull { it.boundingBox?.left }.minOrNull() ?: 0
                 val groupRight = lastGroup.mapNotNull { it.boundingBox?.right }.maxOrNull() ?: 0
-                val leftAligned  = kotlin.math.abs(blockBox.left - groupLeft) <= alignTolerance
-                val rightAligned = kotlin.math.abs(blockBox.right - groupRight) <= alignTolerance
+                val leftAligned  = kotlin.math.abs(lineBox.left - groupLeft) <= alignTolerance
+                val rightAligned = kotlin.math.abs(lineBox.right - groupRight) <= alignTolerance
                 val aligned = leftAligned || rightAligned
 
                 // Merge even past sentence-end punctuation if a quote is still open
@@ -324,20 +323,15 @@ class OcrManager private constructor() {
                 }
 
                 if (sizeMatch && closeEnough && aligned && (noSentenceEnd || hasOpenQuote)) {
-                    lastGroup += block
+                    lastGroup += line
                     continue
                 }
             }
 
-            groups += mutableListOf(block)
+            groups += mutableListOf(line)
         }
 
         return groups
-    }
-
-    private fun medianLineHeight(block: Text.TextBlock): Int {
-        val heights = block.lines.mapNotNull { it.boundingBox?.height() }.sorted()
-        return if (heights.isEmpty()) 0 else heights[heights.size / 2]
     }
 
     /** A line of OCR text with its bounding box in original (pre-scale) screen coordinates. */
@@ -371,48 +365,42 @@ class OcrManager private constructor() {
 
         if (visionText.textBlocks.isEmpty()) return null
 
-        // Group blocks using the same logic as the main OCR pipeline
-        val groups = groupBlocksBySize(visionText.textBlocks)
+        // Group lines using the same logic as the main OCR pipeline
+        val groups = groupLinesByProximity(visionText.textBlocks)
             .filter { group ->
-                group.any { block -> block.text.any { c -> isSourceLangChar(c, sourceLang) } }
+                group.any { line -> line.text.any { c -> isSourceLangChar(c, sourceLang) } }
             }
 
         val lines = mutableListOf<OcrLine>()
         groups.forEachIndexed { gi, group ->
-            // Build combined group text using the same logic as recognise():
-            // no separator between blocks, space between lines within a block.
             val groupTextBuilder = StringBuilder()
-            group.forEach { block ->
-                block.lines.forEachIndexed { li, line ->
-                    if (li > 0) groupTextBuilder.append(" ")
-                    line.elements.forEach { element ->
-                        if (!isUiDecoration(element.text)) {
-                            groupTextBuilder.append(element.text)
-                        }
+            group.forEachIndexed { li, line ->
+                if (li > 0) groupTextBuilder.append(" ")
+                line.elements.forEach { element ->
+                    if (!isUiDecoration(element.text)) {
+                        groupTextBuilder.append(element.text)
                     }
                 }
             }
             val combinedGroupText = groupTextBuilder.toString().trim()
 
-            for (block in group) {
-                for (line in block.lines) {
-                    val b = line.boundingBox ?: continue
-                    val text = line.elements
-                        .filter { !isUiDecoration(it.text) }
-                        .joinToString("") { it.text }
-                    if (text.isBlank()) continue
-                    lines += OcrLine(
-                        text = text,
-                        bounds = Rect(
-                            (b.left / scaleFactor).toInt(),
-                            (b.top / scaleFactor).toInt(),
-                            (b.right / scaleFactor).toInt(),
-                            (b.bottom / scaleFactor).toInt()
-                        ),
-                        groupIndex = gi,
-                        groupText = combinedGroupText
-                    )
-                }
+            for (line in group) {
+                val b = line.boundingBox ?: continue
+                val text = line.elements
+                    .filter { !isUiDecoration(it.text) }
+                    .joinToString("") { it.text }
+                if (text.isBlank()) continue
+                lines += OcrLine(
+                    text = text,
+                    bounds = Rect(
+                        (b.left / scaleFactor).toInt(),
+                        (b.top / scaleFactor).toInt(),
+                        (b.right / scaleFactor).toInt(),
+                        (b.bottom / scaleFactor).toInt()
+                    ),
+                    groupIndex = gi,
+                    groupText = combinedGroupText
+                )
             }
         }
         return lines.ifEmpty { null }
