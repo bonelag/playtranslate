@@ -463,35 +463,6 @@ class FloatingIconMenu(context: Context) : FrameLayout(context) {
         iconFrame.addView(icon)
         dialog.addView(iconFrame)
 
-        dialog.addView(TextView(context).apply {
-            text = "Hide $appName icon?"
-            setTextColor(Color.WHITE)
-            textSize = 17f
-            gravity = Gravity.CENTER
-            setTypeface(null, Typeface.BOLD)
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT
-            ).apply {
-                gravity = Gravity.CENTER_HORIZONTAL
-                bottomMargin = (8 * dp).toInt()
-            }
-        })
-
-        dialog.addView(TextView(context).apply {
-            text = "\u201CHide for Now\u201D brings it back next time you open the app. \u201CTurn Off\u201D disables it until re-enabled in settings."
-            setTextColor(Color.parseColor("#AAAAAA"))
-            textSize = 13f
-            gravity = Gravity.CENTER
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT
-            ).apply {
-                gravity = Gravity.CENTER_HORIZONTAL
-                bottomMargin = (20 * dp).toInt()
-            }
-        })
-
         val hPad = (20 * dp).toInt()
         val vPad = (10 * dp).toInt()
         val btnLp = LinearLayout.LayoutParams(
@@ -499,52 +470,144 @@ class FloatingIconMenu(context: Context) : FrameLayout(context) {
             ViewGroup.LayoutParams.WRAP_CONTENT
         )
 
-        val btnHideForNow = Button(context).apply {
-            text = "Hide for Now"
-            setTextColor(Color.WHITE)
-            textSize = 14f
-            background = GradientDrawable().apply {
-                setColor(Color.parseColor("#D4A020"))
-                cornerRadius = 8 * dp
-            }
-            isAllCaps = false
-            setPadding(hPad, vPad, hPad, vPad)
-            layoutParams = LinearLayout.LayoutParams(btnLp).apply {
-                bottomMargin = (8 * dp).toInt()
-            }
-            setOnClickListener { onHideTemporary?.invoke() }
-        }
+        if (isSingleScreen) {
+            // Single screen: "Disable PlayTranslate?"
+            dialog.addView(TextView(context).apply {
+                text = "Disable $appName?"
+                setTextColor(Color.WHITE)
+                textSize = 17f
+                gravity = Gravity.CENTER
+                setTypeface(null, Typeface.BOLD)
+                layoutParams = LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT
+                ).apply {
+                    gravity = Gravity.CENTER_HORIZONTAL
+                    bottomMargin = (8 * dp).toInt()
+                }
+            })
 
-        val btnTurnOff = Button(context).apply {
-            text = "Turn Off"
-            setTextColor(Color.WHITE)
-            textSize = 14f
-            background = GradientDrawable().apply {
-                setColor(Color.parseColor("#E04040"))
-                cornerRadius = 8 * dp
-            }
-            isAllCaps = false
-            setPadding(hPad, vPad, hPad, vPad)
-            layoutParams = LinearLayout.LayoutParams(btnLp).apply {
-                bottomMargin = (8 * dp).toInt()
-            }
-            setOnClickListener { onHideIcon?.invoke() }
-        }
+            dialog.addView(TextView(context).apply {
+                text = "Re-enable in the $appName settings"
+                setTextColor(Color.parseColor("#AAAAAA"))
+                textSize = 13f
+                gravity = Gravity.CENTER
+                layoutParams = LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT
+                ).apply {
+                    gravity = Gravity.CENTER_HORIZONTAL
+                    bottomMargin = (20 * dp).toInt()
+                }
+            })
 
-        val btnCancel = Button(context).apply {
-            text = "Cancel"
-            setTextColor(Color.parseColor("#AAAAAA"))
-            textSize = 14f
-            setBackgroundColor(Color.TRANSPARENT)
-            isAllCaps = false
-            setPadding(hPad, vPad, hPad, vPad)
-            layoutParams = LinearLayout.LayoutParams(btnLp)
-            setOnClickListener { onDismiss?.invoke() }
-        }
+            val btnTurnOff = Button(context).apply {
+                text = "Turn Off"
+                setTextColor(Color.WHITE)
+                textSize = 14f
+                background = GradientDrawable().apply {
+                    setColor(Color.parseColor("#E04040"))
+                    cornerRadius = 8 * dp
+                }
+                isAllCaps = false
+                setPadding(hPad, vPad, hPad, vPad)
+                layoutParams = LinearLayout.LayoutParams(btnLp).apply {
+                    bottomMargin = (8 * dp).toInt()
+                }
+                setOnClickListener { onHideIcon?.invoke() }
+            }
 
-        dialog.addView(btnHideForNow)
-        dialog.addView(btnTurnOff)
-        dialog.addView(btnCancel)
+            val btnCancel = Button(context).apply {
+                text = "Cancel"
+                setTextColor(Color.parseColor("#AAAAAA"))
+                textSize = 14f
+                setBackgroundColor(Color.TRANSPARENT)
+                isAllCaps = false
+                setPadding(hPad, vPad, hPad, vPad)
+                layoutParams = LinearLayout.LayoutParams(btnLp)
+                setOnClickListener { onDismiss?.invoke() }
+            }
+
+            dialog.addView(btnTurnOff)
+            dialog.addView(btnCancel)
+        } else {
+            // Dual screen: "Hide PlayTranslate game screen controls?"
+            dialog.addView(TextView(context).apply {
+                text = "Hide $appName game screen controls?"
+                setTextColor(Color.WHITE)
+                textSize = 17f
+                gravity = Gravity.CENTER
+                setTypeface(null, Typeface.BOLD)
+                layoutParams = LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT
+                ).apply {
+                    gravity = Gravity.CENTER_HORIZONTAL
+                    bottomMargin = (8 * dp).toInt()
+                }
+            })
+
+            dialog.addView(TextView(context).apply {
+                text = "\u201CHide for Now\u201D brings it back next time you open $appName. \u201CTurn Off\u201D disables it until re-enabled in settings."
+                setTextColor(Color.parseColor("#AAAAAA"))
+                textSize = 13f
+                gravity = Gravity.CENTER
+                layoutParams = LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT
+                ).apply {
+                    gravity = Gravity.CENTER_HORIZONTAL
+                    bottomMargin = (20 * dp).toInt()
+                }
+            })
+
+            val btnHideForNow = Button(context).apply {
+                text = "Hide for Now"
+                setTextColor(Color.WHITE)
+                textSize = 14f
+                background = GradientDrawable().apply {
+                    setColor(Color.parseColor("#D4A020"))
+                    cornerRadius = 8 * dp
+                }
+                isAllCaps = false
+                setPadding(hPad, vPad, hPad, vPad)
+                layoutParams = LinearLayout.LayoutParams(btnLp).apply {
+                    bottomMargin = (8 * dp).toInt()
+                }
+                setOnClickListener { onHideTemporary?.invoke() }
+            }
+
+            val btnTurnOff = Button(context).apply {
+                text = "Turn Off"
+                setTextColor(Color.WHITE)
+                textSize = 14f
+                background = GradientDrawable().apply {
+                    setColor(Color.parseColor("#E04040"))
+                    cornerRadius = 8 * dp
+                }
+                isAllCaps = false
+                setPadding(hPad, vPad, hPad, vPad)
+                layoutParams = LinearLayout.LayoutParams(btnLp).apply {
+                    bottomMargin = (8 * dp).toInt()
+                }
+                setOnClickListener { onHideIcon?.invoke() }
+            }
+
+            val btnCancel = Button(context).apply {
+                text = "Cancel"
+                setTextColor(Color.parseColor("#AAAAAA"))
+                textSize = 14f
+                setBackgroundColor(Color.TRANSPARENT)
+                isAllCaps = false
+                setPadding(hPad, vPad, hPad, vPad)
+                layoutParams = LinearLayout.LayoutParams(btnLp)
+                setOnClickListener { onDismiss?.invoke() }
+            }
+
+            dialog.addView(btnHideForNow)
+            dialog.addView(btnTurnOff)
+            dialog.addView(btnCancel)
+        }
 
         val maxW = (280 * dp).toInt()
         val dlp = LayoutParams(maxW, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
