@@ -33,6 +33,7 @@ class OcrManager private constructor() {
         JapaneseTextRecognizerOptions.Builder().build()
     )
 
+
     /** A bounding box with optional confidence for debug overlay. */
     data class DebugBox(val bounds: Rect, val confidence: Float = -1f)
 
@@ -61,23 +62,17 @@ class OcrManager private constructor() {
     )
 
     suspend fun recognise(bitmap: Bitmap, sourceLang: String = "ja", collectDebugBoxes: Boolean = false): OcrResult? {
-        // 1. Scale up if the shorter dimension is small — improves OCR on fine text.
-        val scaled = scaleBitmapForOcr(bitmap)
-        val scaleFactor = scaled.width.toFloat() / bitmap.width
-        // 2. Boost contrast — makes small diacritic marks (dakuten: ぞ vs そ, ば vs は, etc.)
-        //    unambiguous by pushing near-white pixels to white and near-black to black.
-        //    Game text on flat backgrounds binarises cleanly, reducing ML Kit flip-flopping.
-        val enhanced = enhanceContrast(scaled)
+        val processed = prepareForOcr(bitmap)
+        val scaleFactor = processed.width.toFloat() / bitmap.width
 
         val visionText: Text = try {
             suspendCancellableCoroutine { cont ->
-                recognizer.process(InputImage.fromBitmap(enhanced, 0))
+                recognizer.process(InputImage.fromBitmap(processed, 0))
                     .addOnSuccessListener { cont.resume(it) }
                     .addOnFailureListener { cont.resumeWithException(it) }
             }
         } finally {
-            if (enhanced !== scaled) enhanced.recycle()
-            if (scaled !== bitmap) scaled.recycle()
+            if (processed !== bitmap) processed.recycle()
         }
 
         if (visionText.textBlocks.isEmpty()) return null
@@ -185,47 +180,89 @@ class OcrManager private constructor() {
     }
 
     /**
-     * Applies a strong contrast boost so that small diacritic marks (dakuten, handakuten)
-     * are pushed to clearly-on or clearly-off rather than sitting in a grey zone that
-     * ML Kit reads inconsistently across frames.
+     * Combined OCR preprocessing: scale + grayscale + contrast + auto-invert
+     * in a single bitmap allocation and one GPU-accelerated Canvas draw.
      *
-     * The ColorMatrix formula: output = input * scale + translate.
-     * With scale=2.0, translate=-127: a pixel at 200 → 273 (clipped to 255, stays white);
-     * a pixel at 30 → -67 (clipped to 0, stays black). Grey mid-tones snap to one extreme.
+     * - Grayscale removes color noise so contrast operates on pure luminance.
+     * - Contrast (2×) pushes mid-tones to black/white for clean binarization.
+     * - Auto-invert detects light-on-dark text (common in JRPGs) and flips it
+     *   to dark-on-light, which OCR engines are trained on.
      */
-    private fun enhanceContrast(bitmap: Bitmap): Bitmap {
-        val out = Bitmap.createBitmap(bitmap.width, bitmap.height, Bitmap.Config.ARGB_8888)
-        val scale = 2.0f
-        val translate = (1f - scale) / 2f * 255f   // -127.5
-        val cm = ColorMatrix(floatArrayOf(
-            scale, 0f, 0f, 0f, translate,
-            0f, scale, 0f, 0f, translate,
-            0f, 0f, scale, 0f, translate,
+    private fun prepareForOcr(bitmap: Bitmap): Bitmap {
+        // Determine scale factor
+        val minDim = minOf(bitmap.width, bitmap.height)
+        val scaleFactor = if (minDim < TARGET_MIN_DIM)
+            (TARGET_MIN_DIM.toFloat() / minDim).coerceAtMost(3f)
+        else 1f
+        val outW = (bitmap.width * scaleFactor).toInt()
+        val outH = (bitmap.height * scaleFactor).toInt()
+
+        // Detect if image is light-on-dark by sampling corner brightness
+        val isDark = sampleIsDarkBackground(bitmap)
+
+        // Build combined color matrix: grayscale → contrast → optional inversion
+        // Grayscale: standard NTSC luminance weights
+        val gray = ColorMatrix().apply { setSaturation(0f) }
+
+        // Contrast: output = input * 2.0 - 127.5
+        val contrastScale = 2.0f
+        val contrastTranslate = (1f - contrastScale) / 2f * 255f
+        val contrast = ColorMatrix(floatArrayOf(
+            contrastScale, 0f, 0f, 0f, contrastTranslate,
+            0f, contrastScale, 0f, 0f, contrastTranslate,
+            0f, 0f, contrastScale, 0f, contrastTranslate,
             0f, 0f, 0f, 1f, 0f
         ))
-        val paint = Paint().apply { colorFilter = ColorMatrixColorFilter(cm) }
-        Canvas(out).drawBitmap(bitmap, 0f, 0f, paint)
+        gray.postConcat(contrast)
+
+        // Inversion for light-on-dark: output = 255 - input
+        if (isDark) {
+            val invert = ColorMatrix(floatArrayOf(
+                -1f, 0f, 0f, 0f, 255f,
+                0f, -1f, 0f, 0f, 255f,
+                0f, 0f, -1f, 0f, 255f,
+                0f, 0f, 0f, 1f, 0f
+            ))
+            gray.postConcat(invert)
+        }
+
+        val out = Bitmap.createBitmap(outW, outH, Bitmap.Config.ARGB_8888)
+        val paint = Paint(Paint.FILTER_BITMAP_FLAG).apply {
+            colorFilter = ColorMatrixColorFilter(gray)
+        }
+        val canvas = Canvas(out)
+        if (scaleFactor != 1f) canvas.scale(scaleFactor, scaleFactor)
+        canvas.drawBitmap(bitmap, 0f, 0f, paint)
         return out
     }
 
     /**
-     * Scales the bitmap up so that ML Kit has enough pixels to read fine text
-     * (small kanji strokes, dakuten marks, etc.) accurately.
-     *
-     * Target: shorter side ≥ TARGET_MIN_DIM px after scaling, capped at 3×.
-     * This works regardless of device resolution — small crops get a larger
-     * boost while already-large bitmaps are returned unchanged.
+     * Samples corner pixels to estimate whether the image has a dark background
+     * (suggesting light-on-dark text that should be inverted for OCR).
      */
-    private fun scaleBitmapForOcr(bitmap: Bitmap): Bitmap {
-        val minDim = minOf(bitmap.width, bitmap.height)
-        if (minDim >= TARGET_MIN_DIM) return bitmap
-        val scale = (TARGET_MIN_DIM.toFloat() / minDim).coerceAtMost(3f)
-        return Bitmap.createScaledBitmap(
-            bitmap,
-            (bitmap.width * scale).toInt(),
-            (bitmap.height * scale).toInt(),
-            true   // bilinear filtering for better quality
+    private fun sampleIsDarkBackground(bitmap: Bitmap): Boolean {
+        val w = bitmap.width
+        val h = bitmap.height
+        val margin = (minOf(w, h) * 0.05f).toInt().coerceAtLeast(1)
+        // Sample 8 points around the edges (corners + midpoints)
+        val points = listOf(
+            margin to margin,                   // top-left
+            w - margin to margin,               // top-right
+            margin to h - margin,               // bottom-left
+            w - margin to h - margin,           // bottom-right
+            w / 2 to margin,                    // top-center
+            w / 2 to h - margin,                // bottom-center
+            margin to h / 2,                    // left-center
+            w - margin to h / 2                 // right-center
         )
+        var brightnessSum = 0
+        for ((x, y) in points) {
+            val px = bitmap.getPixel(x.coerceIn(0, w - 1), y.coerceIn(0, h - 1))
+            brightnessSum += (android.graphics.Color.red(px) +
+                android.graphics.Color.green(px) +
+                android.graphics.Color.blue(px)) / 3
+        }
+        return brightnessSum / points.size < 100
     }
 
     /**
@@ -319,19 +356,17 @@ class OcrManager private constructor() {
      * Used by drag-to-lookup to hit-test finger position against text lines.
      */
     suspend fun recogniseWithPositions(bitmap: Bitmap, sourceLang: String = "ja"): List<OcrLine>? {
-        val scaled = scaleBitmapForOcr(bitmap)
-        val scaleFactor = scaled.width.toFloat() / bitmap.width
-        val enhanced = enhanceContrast(scaled)
+        val processed = prepareForOcr(bitmap)
+        val scaleFactor = processed.width.toFloat() / bitmap.width
 
         val visionText: Text = try {
             suspendCancellableCoroutine { cont ->
-                recognizer.process(InputImage.fromBitmap(enhanced, 0))
+                recognizer.process(InputImage.fromBitmap(processed, 0))
                     .addOnSuccessListener { cont.resume(it) }
                     .addOnFailureListener { cont.resumeWithException(it) }
             }
         } finally {
-            if (enhanced !== scaled) enhanced.recycle()
-            if (scaled !== bitmap) scaled.recycle()
+            if (processed !== bitmap) processed.recycle()
         }
 
         if (visionText.textBlocks.isEmpty()) return null
@@ -389,10 +424,10 @@ class OcrManager private constructor() {
 
         /**
          * Minimum pixel count on the shorter side before we skip upscaling.
-         * ML Kit needs roughly this many pixels to reliably distinguish
-         * visually similar kanji (e.g. 機 vs 横) and small diacritics.
+         * 1200px balances OCR accuracy against memory usage (~6.6MB vs ~18MB
+         * for full-screen captures). ML Kit downscales internally if larger.
          */
-        private const val TARGET_MIN_DIM = 2000
+        private const val TARGET_MIN_DIM = 1200
 
         /**
          * Returns true if [c] belongs to a script that is native to [sourceLang].
