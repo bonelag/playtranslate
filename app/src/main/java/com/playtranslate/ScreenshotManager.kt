@@ -57,13 +57,17 @@ class ScreenshotManager(private val a11y: PlayTranslateAccessibilityService) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return null
         awaitScreenshotInterval()
 
-        // Hide overlays so they don't appear in the screenshot
         val state = a11y.prepareForCleanCapture()
         if (state.hadAnyOverlay) waitVsync(2)
 
-        val bitmap = doTakeScreenshot(displayId)
+        var bitmap = doTakeScreenshot(displayId)
 
-        // Restore overlays
+        // Retry once on failure (e.g. transient OS error)
+        if (bitmap == null) {
+            awaitScreenshotInterval()
+            bitmap = doTakeScreenshot(displayId)
+        }
+
         a11y.restoreAfterCapture(state)
         return bitmap
     }
@@ -78,7 +82,11 @@ class ScreenshotManager(private val a11y: PlayTranslateAccessibilityService) {
     suspend fun requestRaw(displayId: Int): Bitmap? {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return null
         awaitScreenshotInterval()
-        return doTakeScreenshot(displayId)
+        return doTakeScreenshot(displayId) ?: run {
+            // Retry once on failure
+            awaitScreenshotInterval()
+            doTakeScreenshot(displayId)
+        }
     }
 
     /**

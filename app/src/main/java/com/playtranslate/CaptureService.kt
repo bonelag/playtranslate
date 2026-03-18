@@ -283,6 +283,7 @@ class CaptureService : Service() {
         liveShowRegionFlash = true
         lastLiveOcrText = null
         cachedOverlayBoxes = null
+        captureJob?.cancel()
         interactionDebounceJob?.cancel()
         liveCaptureJob?.cancel()
 
@@ -509,7 +510,7 @@ class CaptureService : Service() {
         cropLeft: Int, cropTop: Int,
         screenshotW: Int, screenshotH: Int
     ) {
-        if (holdActive) return // suppress while user is holding the icon
+        if (holdActive) return
         val a11y = PlayTranslateAccessibilityService.instance ?: return
         val dm = getSystemService(DisplayManager::class.java)
         val display = dm.getDisplay(gameDisplayId) ?: return
@@ -544,7 +545,16 @@ class CaptureService : Service() {
         if (!isConfigured) { preCaptured?.recycle(); return }
         val mgr = PlayTranslateAccessibilityService.instance?.screenshotManager
 
-        val raw: Bitmap = preCaptured ?: captureScreen(gameDisplayId) ?: return
+        val raw: Bitmap = preCaptured ?: captureScreen(gameDisplayId) ?: run {
+            // Manager already retried once — persistent failure.
+            // Stop live mode so it doesn't become a zombie.
+            if (liveActive) {
+                stopLive()
+                MainActivity.isLiveModeActive = false
+                onError?.invoke("Screenshot failed — live mode stopped. Check accessibility settings and try again.")
+            }
+            return
+        }
         var colorRef: Bitmap? = null
 
         try {
@@ -591,8 +601,9 @@ class CaptureService : Service() {
                 return
             }
 
-            // Dedup: if text hasn't changed significantly, re-show cached overlay
-            if (!isSignificantChange(lastLiveOcrText ?: "", dedupKey)) {
+            // Dedup: if text hasn't changed significantly, re-show cached overlay.
+            // Skip dedup entirely if we have no previous text (first cycle after start/clear).
+            if (lastLiveOcrText != null && !isSignificantChange(lastLiveOcrText!!, dedupKey)) {
                 val boxes = cachedOverlayBoxes
                 if (boxes != null) {
                     showLiveOverlay(boxes, cachedOverlayCropLeft, cachedOverlayCropTop,
@@ -655,8 +666,8 @@ class CaptureService : Service() {
             }
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
-        } catch (e: Exception) {
-            Log.w(TAG, "Live capture cycle failed: ${e.message}")
+        } catch (e: Throwable) {
+            Log.e(TAG, "Live capture cycle failed: ${e.javaClass.simpleName}: ${e.message}", e)
         } finally {
             // Guarantee cleanup on all paths (normal, cancellation, exception)
             colorRef?.recycle()
@@ -715,11 +726,16 @@ class CaptureService : Service() {
             diff += kotlin.math.abs((freqA[c] ?: 0) - (freqB[c] ?: 0))
             if (diff > LIVE_DEDUP_TOLERANCE) return true
         }
+        // For short text, use percentage: "屋上" → "屋下" is 50% different
+        // even though absolute diff (2) is within tolerance
+        val maxLen = maxOf(a.length, b.length)
+        if (maxLen > 0 && diff.toFloat() / maxLen > LIVE_DEDUP_PCT_THRESHOLD) return true
         return false
     }
 
     companion object {
-        private const val LIVE_DEDUP_TOLERANCE = 3  // max character-count drift treated as noise
+        private const val LIVE_DEDUP_TOLERANCE = 3    // max character-count drift treated as noise
+        private const val LIVE_DEDUP_PCT_THRESHOLD = 0.3f  // 30% change = significant for short text
 
         /** Process-scoped reference for in-process callers (e.g. DragLookupController). */
         @Volatile

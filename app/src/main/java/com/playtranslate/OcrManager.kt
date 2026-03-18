@@ -186,9 +186,14 @@ class OcrManager private constructor() {
     private fun prepareForOcr(bitmap: Bitmap): Bitmap {
         // Determine scale factor
         val minDim = minOf(bitmap.width, bitmap.height)
-        val scaleFactor = if (minDim < TARGET_MIN_DIM)
+        var scaleFactor = if (minDim < TARGET_MIN_DIM)
             (TARGET_MIN_DIM.toFloat() / minDim).coerceAtMost(3f)
         else 1f
+        // Cap total output size to avoid OOM on narrow crops (e.g. 1920×357 × 3 = 5760×1071)
+        val maxDim = 3000
+        if (bitmap.width * scaleFactor > maxDim || bitmap.height * scaleFactor > maxDim) {
+            scaleFactor = minOf(maxDim.toFloat() / bitmap.width, maxDim.toFloat() / bitmap.height)
+        }
         val outW = (bitmap.width * scaleFactor).toInt()
         val outH = (bitmap.height * scaleFactor).toInt()
 
