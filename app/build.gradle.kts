@@ -17,13 +17,19 @@ android {
         applicationId = "com.playtranslate"
         minSdk = 26
         targetSdk = 34
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 2
+        versionName = "0.2.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         buildConfigField("String", "DEEPL_API_KEY",
             "\"${localProps.getProperty("deepl.api.key", "")}\"")
+    }
+
+    signingConfigs {
+        getByName("debug") {
+            // Uses default debug keystore at ~/.android/debug.keystore
+        }
     }
 
     buildTypes {
@@ -34,6 +40,7 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+            signingConfig = signingConfigs.getByName("debug")
         }
     }
 
