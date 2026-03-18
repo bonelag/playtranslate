@@ -316,6 +316,7 @@ class CaptureService : Service() {
     /** Trigger a fresh capture cycle in live mode (e.g. after hold-release). */
     fun refreshLiveOverlay() {
         if (!liveActive) return
+        Log.d(TAG, "REFRESH: refreshLiveOverlay called")
         // Clear all previous live mode work so the fresh cycle runs
         // without interference from stale scene detection or translation.
         lastLiveOcrText = null
@@ -442,6 +443,7 @@ class CaptureService : Service() {
                     // Phase 1: compare against reference to detect movement start
                     val pct = pixelDiffPercent(refPixels, current)
                     if (pct >= SCENE_CHANGE_THRESHOLD) {
+                        Log.d(TAG, "REFRESH: Scene Phase1 triggered (diff=${(pct*100).toInt()}%)")
                         bitmap.recycle()
                         sceneMoving = true
                         liveCaptureJob?.cancel()
@@ -466,6 +468,7 @@ class CaptureService : Service() {
                     if (hasPrev) {
                         val pct = pixelDiffPercent(prev, current)
                         if (pct < 0.05f) {
+                            Log.d(TAG, "REFRESH: Scene Phase2 stabilized (diff=${(pct*100).toInt()}%)")
                             // Scene stabilized — reuse this screenshot directly
                             // for OCR instead of taking another (saves ~1s rate limit).
                             // The bitmap is already clean: Phase 1 hid the overlay,
@@ -512,21 +515,15 @@ class CaptureService : Service() {
             val colorScale = 4
             colorRef = Bitmap.createScaledBitmap(bitmap, bitmap.width / colorScale, bitmap.height / colorScale, false)
 
-            // Fill overlay areas with surrounding background color
+            // Fill overlay areas with the overlay's own background color (fully opaque)
             val fillPadding = 30
             val fillPaint = Paint()
-            val colorBuffer = 10 / colorScale
             for (box in overlays) {
                 val l = (box.bounds.left + cropL - fillPadding).coerceAtLeast(0)
                 val t = (box.bounds.top + cropT - fillPadding).coerceAtLeast(0)
                 val r = (box.bounds.right + cropL + fillPadding).coerceAtMost(bitmap.width)
                 val b = (box.bounds.bottom + cropT + fillPadding).coerceAtMost(bitmap.height)
-                val sl = l / colorScale; val st = t / colorScale
-                val sr = r / colorScale; val sb = b / colorScale
-                val bgColor = averageColor(colorRef,
-                    sl - colorBuffer, st - colorBuffer, sr + colorBuffer, sb + colorBuffer,
-                    excludeInner = android.graphics.Rect(sl, st, sr, sb))
-                fillPaint.color = bgColor
+                fillPaint.color = box.bgColor or (0xFF shl 24)
                 Canvas(bitmap).drawRect(l.toFloat(), t.toFloat(), r.toFloat(), b.toFloat(), fillPaint)
             }
 
@@ -542,15 +539,29 @@ class CaptureService : Service() {
             else bitmap
 
             // OCR
-            val ocrResult = ocrManager.recognise(cropped, sourceLang)
+            val ocrResult = ocrManager.recognise(cropped, sourceLang, collectDebugBoxes = true)
             if (cropped !== bitmap) cropped.recycle()
             if (ocrResult == null) return false
+
+            // Log all detected text for diagnosing garbled OCR from filled areas
+            ocrResult.debugBoxes?.let { debug ->
+                debug.blockBoxes.forEachIndexed { i, box ->
+                    Log.d(TAG, "RECHECK-OCR: block[$i] text='${box.text.take(50)}' lang='${box.lang}' bounds=${box.bounds}")
+                }
+                debug.lineBoxes.forEachIndexed { i, box ->
+                    Log.d(TAG, "RECHECK-OCR: line[$i] text='${box.text.take(50)}' lang='${box.lang}' conf=${box.confidence} bounds=${box.bounds}")
+                }
+                debug.elementBoxes.forEachIndexed { i, box ->
+                    Log.d(TAG, "RECHECK-OCR: elem[$i] text='${box.text}' lang='${box.lang}' conf=${box.confidence} bounds=${box.bounds}")
+                }
+            }
 
             // Filter and compare against previous clean OCR text
             val newDedupKey = ocrResult.fullText.filter { c -> OcrManager.isSourceLangChar(c, sourceLang) }
             if (newDedupKey.isEmpty()) return false
             val prevText = lastLiveOcrText ?: return false
             if (!isSignificantChange(prevText, newDedupKey)) return false
+            Log.d(TAG, "RECHECK: prev='${prevText.take(30)}' new='${newDedupKey.take(30)}' groups=${ocrResult.groupTexts.size}")
 
             // New text found — check proximity to existing overlays
             val anyClose = ocrResult.groupBounds.any { newRect ->
@@ -563,7 +574,15 @@ class CaptureService : Service() {
             }
 
             if (anyClose) {
-                // New text near existing overlays → clean recapture for context
+                val nearTexts = ocrResult.groupTexts.zip(ocrResult.groupBounds).filter { (_, newRect) ->
+                    overlays.any { existing ->
+                        val dx = maxOf(0, maxOf(existing.bounds.left - newRect.right, newRect.left - existing.bounds.right))
+                        val dy = maxOf(0, maxOf(existing.bounds.top - newRect.bottom, newRect.top - existing.bounds.bottom))
+                        val threshold = maxOf((newRect.height() * 1.5f).toInt(), fillPadding + 15)
+                        dx < threshold && dy < threshold
+                    }
+                }
+                Log.d(TAG, "REFRESH: OCR recheck — new text near overlays: ${nearTexts.map { "'${it.first.take(30)}' bounds=${it.second}" }}")
                 liveCaptureJob?.cancel()
                 liveCaptureJob = serviceScope.launch { runLiveCaptureCycle() }
                 return true
@@ -599,6 +618,7 @@ class CaptureService : Service() {
                 } else emptyList()
 
                 if (newOverlayBoxes.isNotEmpty()) {
+                    Log.d(TAG, "REFRESH: OCR recheck — merging ${newOverlayBoxes.size} new boxes")
                     val merged = overlays + newOverlayBoxes
                     cachedOverlayBoxes = merged
                     lastLiveOcrText = prevText + newDedupKey
@@ -648,6 +668,7 @@ class CaptureService : Service() {
         // so the next screenshot is clean. Clear dedup state so the next
         // cycle always translates fresh — user input means the screen
         // likely changed, even if only a few characters differ.
+        Log.d(TAG, "REFRESH: onUserInteraction")
         liveCaptureJob?.cancel()
         recheckNeeded = false
         lastLiveOcrText = null
