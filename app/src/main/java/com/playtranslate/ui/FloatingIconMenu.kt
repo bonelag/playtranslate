@@ -259,19 +259,28 @@ class FloatingIconMenu(context: Context) : FrameLayout(context) {
             ViewGroup.LayoutParams.WRAP_CONTENT
         ))
 
-        // Instruction text at top center
+        // Instruction text at top center with pill background
         instructionText = TextView(context).apply {
             text = "Drag finger to capture a specific area"
             setTextColor(Color.WHITE)
             textSize = 14f
             gravity = Gravity.CENTER
             setPadding(
-                (16 * dp).toInt(), (16 * dp).toInt(),
-                (16 * dp).toInt(), (8 * dp).toInt()
+                (14 * dp).toInt(), (3 * dp).toInt(),
+                (14 * dp).toInt(), (9 * dp).toInt()
             )
+            background = GradientDrawable().apply {
+                setColor(Color.argb(180, 30, 30, 30))
+                cornerRadii = floatArrayOf(
+                    0f, 0f,           // top-left
+                    0f, 0f,           // top-right
+                    24 * dp, 24 * dp, // bottom-right
+                    24 * dp, 24 * dp  // bottom-left
+                )
+            }
         }
         addView(instructionText, LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT,
             ViewGroup.LayoutParams.WRAP_CONTENT
         ).apply {
             gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
