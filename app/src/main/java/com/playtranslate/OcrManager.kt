@@ -341,11 +341,7 @@ class OcrManager private constructor() {
                     val hi = maxOf(lineH, prevH)
                     (hi - lo).toDouble() / lo <= 0.20
                 }
-                val closeEnough = refH > 0 && gap <= (refH * 2.5f).toInt()
-                val noSentenceEnd = run {
-                    val tail = lastGroup.joinToString("") { it.text }.trimEnd()
-                    tail.isEmpty() || tail.last() !in SENTENCE_END_CHARS
-                }
+                val closeEnough = refH > 0 && gap <= (refH * 1.5f).toInt()
 
                 // Horizontal alignment: left edges or right edges within one line height
                 val alignTolerance = refH
@@ -355,14 +351,7 @@ class OcrManager private constructor() {
                 val rightAligned = kotlin.math.abs(lineBox.right - groupRight) <= alignTolerance
                 val aligned = leftAligned || rightAligned
 
-                // Merge even past sentence-end punctuation if a quote is still open
-                val hasOpenQuote = run {
-                    val text = lastGroup.joinToString("") { it.text }
-                    OPEN_QUOTES.sumOf { c -> text.count { it == c } } >
-                        CLOSE_QUOTES.sumOf { c -> text.count { it == c } }
-                }
-
-                if (sizeMatch && closeEnough && aligned && (noSentenceEnd || hasOpenQuote)) {
+                if (sizeMatch && closeEnough && aligned) {
                     lastGroup += line
                     continue
                 }
@@ -482,18 +471,6 @@ class OcrManager private constructor() {
                    c in '\u0900'..'\u097F'   // Devanagari
             else -> c.code > 0x007F            // Generic: any non-ASCII
         }
-
-        /** Sentence-ending punctuation across languages. */
-        private val SENTENCE_END_CHARS = setOf(
-            '.', '!', '?', '…',                         // Latin / general
-            '。', '！', '？',                             // CJK fullwidth
-        )
-
-        /** Opening quote/bracket characters for open-quote detection. */
-        private val OPEN_QUOTES = charArrayOf('「', '『', '(', '（', '【', '〔', '《', '〈', '\u201C', '\u2018')
-
-        /** Closing quote/bracket characters for open-quote detection. */
-        private val CLOSE_QUOTES = charArrayOf('」', '』', ')', '）', '】', '〕', '》', '〉', '\u201D', '\u2019')
 
         /** UI-only symbols that are never meaningful dialogue text on their own. */
         private val UI_DECORATION_CHARS = setOf(

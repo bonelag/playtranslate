@@ -129,30 +129,9 @@ class TranslationOverlayView(context: Context) : View(context) {
             )
         }
 
-        // Widen each box horizontally if it won't overlap others
-        val widenedRects = screenRects.mapIndexed { i, rect ->
-            val desiredExpand = rect.width() * 0.3f
-            var newLeft = (rect.left - desiredExpand / 2).coerceAtLeast(0f)
-            var newRight = (rect.right + desiredExpand / 2).coerceAtMost(displayW)
-
-            for (j in screenRects.indices) {
-                if (j == i) continue
-                val other = screenRects[j]
-                if (rect.top < other.bottom && rect.bottom > other.top) {
-                    if (newLeft < other.right && rect.left >= other.right) {
-                        newLeft = other.right
-                    }
-                    if (newRight > other.left && rect.right <= other.left) {
-                        newRight = other.left
-                    }
-                }
-            }
-            RectF(newLeft, rect.top, newRight, rect.bottom)
-        }
-
         // Resolve vertical overlaps: for each pair of rects that overlap,
         // trim their shared edge to the midpoint so backgrounds don't stack.
-        val finalRects = widenedRects.map { RectF(it) } // mutable copies
+        val finalRects = screenRects.map { RectF(it) } // mutable copies
         // Sort indices by top coordinate for pairwise overlap checks
         val sortedIndices = finalRects.indices.sortedBy { finalRects[it].top }
         for (a in sortedIndices.indices) {
