@@ -141,9 +141,10 @@ class ScreenshotManager(private val a11y: PlayTranslateAccessibilityService) {
                 object : AccessibilityService.TakeScreenshotCallback {
                     override fun onSuccess(screenshot: AccessibilityService.ScreenshotResult) {
                         bitmapExecutor.execute {
-                            val bmp = Bitmap
+                            val hwBitmap = Bitmap
                                 .wrapHardwareBuffer(screenshot.hardwareBuffer, screenshot.colorSpace)
-                                ?.copy(Bitmap.Config.ARGB_8888, true)
+                            val bmp = hwBitmap?.copy(Bitmap.Config.ARGB_8888, true)
+                            hwBitmap?.recycle()
                             screenshot.hardwareBuffer.close()
                             if (cont.isActive) cont.resume(bmp)
                             else bmp?.recycle()

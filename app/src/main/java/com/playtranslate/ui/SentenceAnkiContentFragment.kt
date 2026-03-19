@@ -37,6 +37,7 @@ class SentenceAnkiContentFragment : Fragment() {
     private lateinit var etJapanese: EditText
     private lateinit var etTranslation: EditText
     private lateinit var defsContainer: LinearLayout
+    private var ivPhoto: ImageView? = null
 
     // ── Public API ────────────────────────────────────────────────────────
 
@@ -62,6 +63,12 @@ class SentenceAnkiContentFragment : Fragment() {
         inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?
     ): View = inflater.inflate(R.layout.fragment_sentence_anki_content, container, false)
 
+    override fun onDestroyView() {
+        ivPhoto?.setImageBitmap(null)
+        ivPhoto = null
+        super.onDestroyView()
+    }
+
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
 
@@ -71,7 +78,7 @@ class SentenceAnkiContentFragment : Fragment() {
 
         val tvPhotoLabel   = view.findViewById<TextView>(R.id.tvSentencePhotoLabel)
         val layoutPhoto    = view.findViewById<FrameLayout>(R.id.layoutSentencePhoto)
-        val ivPhoto        = view.findViewById<ImageView>(R.id.ivSentencePhoto)
+        ivPhoto            = view.findViewById(R.id.ivSentencePhoto)
         val btnRemovePhoto = view.findViewById<Button>(R.id.btnSentenceRemovePhoto)
 
         val args = arguments ?: return
@@ -113,7 +120,7 @@ class SentenceAnkiContentFragment : Fragment() {
                 tvPhotoLabel.visibility = View.VISIBLE
                 layoutPhoto.visibility  = View.VISIBLE
                 val bmp = BitmapFactory.decodeFile(file.absolutePath)
-                if (bmp != null) ivPhoto.setImageBitmap(bmp)
+                if (bmp != null) ivPhoto?.setImageBitmap(bmp)
                 btnRemovePhoto.setOnClickListener {
                     includePhoto = false
                     tvPhotoLabel.visibility = View.GONE

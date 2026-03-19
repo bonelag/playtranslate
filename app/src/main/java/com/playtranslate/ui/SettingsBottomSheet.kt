@@ -58,6 +58,7 @@ class SettingsBottomSheet : DialogFragment() {
     private var displayList: List<android.view.Display> = emptyList()
     private var selectedDisplayIdx = 0
     private val displayThumbnails = HashMap<Int, Bitmap?>()
+    private var ivIconPreview: android.widget.ImageView? = null
 
     private lateinit var llDisplayOptions: LinearLayout
     private lateinit var spinnerAnkiDeck: android.widget.Spinner
@@ -70,6 +71,14 @@ class SettingsBottomSheet : DialogFragment() {
     }
 
     override fun getTheme(): Int = fullScreenDialogTheme(requireContext())
+
+    override fun onDestroyView() {
+        ivIconPreview?.setImageBitmap(null)
+        ivIconPreview = null
+        displayThumbnails.values.forEach { it?.recycle() }
+        displayThumbnails.clear()
+        super.onDestroyView()
+    }
 
     override fun onCreateView(
         inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?
@@ -134,8 +143,8 @@ class SettingsBottomSheet : DialogFragment() {
         val tvOverlayIconTitle = view.findViewById<TextView>(R.id.tvOverlayIconTitle)
         val tvOverlayIconHint = view.findViewById<TextView>(R.id.tvOverlayIconHint)
         // Draw half-circle icon preview matching the on-screen appearance
-        val ivPreview = view.findViewById<android.widget.ImageView>(R.id.ivFloatingIconPreview)
-        ivPreview.setImageBitmap(createFloatingIconPreview())
+        ivIconPreview = view.findViewById(R.id.ivFloatingIconPreview)
+        ivIconPreview?.setImageBitmap(createFloatingIconPreview())
 
         val isSingle = Prefs.isSingleScreen(requireContext())
         tvOverlayIconTitle.setText(
