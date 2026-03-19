@@ -489,4 +489,10 @@ class FloatingOverlayIcon(context: Context) : View(context) {
         val cy = (minCy + f * (maxCy - minCy)).toInt().coerceIn(minCy, maxCy)
         p.y = cy - viewHalf
     }
+
+    override fun onDetachedFromWindow() {
+        super.onDetachedFromWindow()
+        hideSpinnerWindow()
+        iconBitmap.recycle()
+    }
 }

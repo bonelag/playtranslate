@@ -116,6 +116,13 @@ class CaptureService : Service() {
         translationManager?.close()
         deeplTranslator?.close()
         lingvaTranslator?.close()
+        // Clear callbacks to release Activity references
+        onResult = null
+        onError = null
+        onStatusUpdate = null
+        onTranslationStarted = null
+        onLiveNoText = null
+        onLiveStopped = null
         super.onDestroy()
     }
 
@@ -214,6 +221,7 @@ class CaptureService : Service() {
             raw.recycle()
             return
         }
+        var bitmap: Bitmap = raw
         try {
             onStatusUpdate?.invoke(getString(R.string.status_capturing))
             val mgr = PlayTranslateAccessibilityService.instance?.screenshotManager
@@ -224,12 +232,14 @@ class CaptureService : Service() {
             val left   = (raw.width  * captureLeftFraction).toInt()
             val bottom = (raw.height * captureBottomFraction).toInt()
             val right  = (raw.width  * captureRightFraction).toInt()
-            val bitmap = cropBitmap(raw, top, bottom, left, right)
+            bitmap = cropBitmap(raw, top, bottom, left, right)
 
             val ocrBitmap = blackoutFloatingIcon(bitmap, left, top)
+            bitmap = ocrBitmap // track current bitmap for finally
             onStatusUpdate?.invoke(getString(R.string.status_ocr))
             val ocrResult = ocrManager.recognise(ocrBitmap, sourceLang, screenshotWidth = raw.width)
             ocrBitmap.recycle()
+            bitmap = raw // already recycled by cropBitmap or ocrBitmap.recycle()
 
             if (ocrResult == null) {
                 onStatusUpdate?.invoke(noTextMessage())
@@ -253,6 +263,8 @@ class CaptureService : Service() {
         } catch (e: Exception) {
             Log.e(TAG, "Process cycle failed: ${e.message}", e)
             onError?.invoke(e.message ?: "Unknown error")
+        } finally {
+            if (!bitmap.isRecycled) bitmap.recycle()
         }
     }
 
@@ -1007,6 +1019,7 @@ class CaptureService : Service() {
             return
         }
 
+        var bitmap: Bitmap? = null
         try {
             onStatusUpdate?.invoke(getString(R.string.status_capturing))
 
@@ -1014,6 +1027,7 @@ class CaptureService : Service() {
                 onError?.invoke("Screenshot failed for display $gameDisplayId. Try a different display in Settings.")
                 return
             }
+            bitmap = raw
 
             val mgr = PlayTranslateAccessibilityService.instance?.screenshotManager
             val screenshotPath = mgr?.saveToCache(raw)
@@ -1026,12 +1040,14 @@ class CaptureService : Service() {
             val left   = (raw.width  * captureLeftFraction).toInt()
             val bottom = (raw.height * captureBottomFraction).toInt()
             val right  = (raw.width  * captureRightFraction).toInt()
-            val bitmap = cropBitmap(raw, top, bottom, left, right)
+            bitmap = cropBitmap(raw, top, bottom, left, right)
 
             val ocrBitmap = blackoutFloatingIcon(bitmap, left, top)
+            bitmap = ocrBitmap // track current bitmap for finally
             onStatusUpdate?.invoke(getString(R.string.status_ocr))
             val ocrResult = ocrManager.recognise(ocrBitmap, sourceLang, screenshotWidth = raw.width)
             ocrBitmap.recycle()
+            bitmap = null // successfully recycled
 
             if (ocrResult == null) {
                 onStatusUpdate?.invoke(noTextMessage())
@@ -1056,6 +1072,8 @@ class CaptureService : Service() {
         } catch (e: Exception) {
             Log.e(TAG, "Capture cycle failed: ${e.message}", e)
             onError?.invoke(e.message ?: "Unknown error")
+        } finally {
+            bitmap?.let { if (!it.isRecycled) it.recycle() }
         }
     }
 
