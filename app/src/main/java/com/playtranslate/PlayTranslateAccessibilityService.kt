@@ -447,8 +447,10 @@ class PlayTranslateAccessibilityService : AccessibilityService() {
             return
         }
         hideTranslationOverlay()
-        val wm = createDisplayContext(display).getSystemService(WindowManager::class.java) ?: return
-        val view = TranslationOverlayView(createDisplayContext(display)).apply {
+        val displayCtx = createDisplayContext(display)
+        val themedCtx = android.view.ContextThemeWrapper(displayCtx, android.R.style.Theme_DeviceDefault)
+        val wm = displayCtx.getSystemService(WindowManager::class.java) ?: return
+        val view = TranslationOverlayView(themedCtx).apply {
             setBoxes(boxes, cropLeft, cropTop, screenshotW, screenshotH)
         }
         val params = WindowManager.LayoutParams(

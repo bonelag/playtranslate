@@ -1,25 +1,24 @@
 package com.playtranslate.ui
 
 import android.content.Context
-import android.graphics.Canvas
 import android.graphics.Color
-import android.graphics.Paint
 import android.graphics.Rect
 import android.graphics.RectF
 import android.graphics.Typeface
-import android.text.Layout
-import android.text.StaticLayout
-import android.text.TextPaint
-import android.view.View
+import android.util.TypedValue
+import android.view.Gravity
+import android.widget.FrameLayout
+import android.widget.TextView
+import androidx.core.widget.TextViewCompat
 
 /**
- * Transparent overlay that draws translated text inside bounding boxes
- * on the game screen during live mode. Each box corresponds to an OCR
+ * Transparent overlay that positions auto-sizing TextViews inside bounding
+ * boxes on the game screen during live mode. Each box corresponds to an OCR
  * text group and is filled with a semi-transparent background so the
  * translated text is readable over game graphics. Font size auto-scales
- * to fill each box.
+ * via Android's built-in [TextViewCompat.setAutoSizeTextTypeUniformWithConfiguration].
  */
-class TranslationOverlayView(context: Context) : View(context) {
+class TranslationOverlayView(context: Context) : FrameLayout(context) {
 
     data class TextBox(
         val translatedText: String,
@@ -33,20 +32,11 @@ class TranslationOverlayView(context: Context) : View(context) {
 
     private val dp = context.resources.displayMetrics.density
 
-    private val bgPaint = Paint().apply {
-        color = Color.argb(200, 0, 0, 0)
-        style = Paint.Style.FILL
-    }
-
-    private val textPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.WHITE
-        typeface = Typeface.DEFAULT_BOLD
-    }
-
-    private val minTextSizePx = 8f * dp
+    private val minTextSizeSp = 6
+    private val maxTextSizeSp = 200
     private val boxPadding = 6f * dp
     /** Small inset so text doesn't touch the edges of the background. */
-    private val textMargin = 3f * dp
+    private val textMargin = (3f * dp).toInt()
 
     private var boxes: List<TextBox> = emptyList()
     private var cropOffsetX = 0
@@ -55,10 +45,6 @@ class TranslationOverlayView(context: Context) : View(context) {
     private var displayScaleY = 1f
     private var screenshotW = 1
     private var screenshotH = 1
-
-    private data class DrawnBox(val rect: RectF, val layout: StaticLayout, val bgColor: Int)
-    /** Cached layouts to avoid recomputation on every draw. */
-    private var cachedLayouts: List<DrawnBox>? = null
 
     fun setBoxes(
         boxes: List<TextBox>,
@@ -70,15 +56,16 @@ class TranslationOverlayView(context: Context) : View(context) {
         cropOffsetY = cropTop
         this.screenshotW = screenshotW
         this.screenshotH = screenshotH
-        if (width > 0 && height > 0) updateScales()
-        cachedLayouts = null
-        invalidate()
+        if (width > 0 && height > 0) {
+            updateScales()
+            rebuildChildren()
+        }
     }
 
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
         super.onSizeChanged(w, h, oldw, oldh)
         updateScales()
-        cachedLayouts = null
+        post { rebuildChildren() }
     }
 
     private fun updateScales() {
@@ -94,31 +81,14 @@ class TranslationOverlayView(context: Context) : View(context) {
         return RectF(left, top, right, bottom)
     }
 
-    override fun onDraw(canvas: Canvas) {
+    private fun rebuildChildren() {
+        removeAllViews()
         if (boxes.isEmpty()) return
 
-        val layouts = cachedLayouts ?: buildLayouts()
-        cachedLayouts = layouts
-
-        for (drawn in layouts) {
-            bgPaint.color = drawn.bgColor
-            canvas.drawRect(drawn.rect, bgPaint)
-
-            canvas.save()
-            val textX = drawn.rect.left + textMargin
-            val textY = drawn.rect.top + (drawn.rect.height() - drawn.layout.height) / 2f
-            canvas.translate(textX, textY)
-            drawn.layout.draw(canvas)
-            canvas.restore()
-        }
-    }
-
-    private fun buildLayouts(): List<DrawnBox> {
         val displayW = width.toFloat()
         val displayH = height.toFloat()
 
         // Map OCR bounds to screen coordinates, expanded by boxPadding
-        // so the background extends beyond the tight OCR region.
         val screenRects = boxes.map { box ->
             val r = mapRect(box.bounds)
             RectF(
@@ -129,10 +99,8 @@ class TranslationOverlayView(context: Context) : View(context) {
             )
         }
 
-        // Resolve vertical overlaps: for each pair of rects that overlap,
-        // trim their shared edge to the midpoint so backgrounds don't stack.
-        val finalRects = screenRects.map { RectF(it) } // mutable copies
-        // Sort indices by top coordinate for pairwise overlap checks
+        // Resolve vertical overlaps: trim shared edge to midpoint
+        val finalRects = screenRects.map { RectF(it) }
         val sortedIndices = finalRects.indices.sortedBy { finalRects[it].top }
         for (a in sortedIndices.indices) {
             for (b in a + 1 until sortedIndices.size) {
@@ -140,7 +108,6 @@ class TranslationOverlayView(context: Context) : View(context) {
                 val j = sortedIndices[b]
                 val ri = finalRects[i]
                 val rj = finalRects[j]
-                // Check if they overlap vertically AND horizontally
                 if (ri.bottom > rj.top && ri.left < rj.right && ri.right > rj.left) {
                     val mid = (ri.bottom + rj.top) / 2f
                     ri.bottom = mid
@@ -149,49 +116,28 @@ class TranslationOverlayView(context: Context) : View(context) {
             }
         }
 
-        return boxes.zip(finalRects).map { (box, screenRect) ->
-            // Text fills the full background box minus a small margin
-            val availW = (screenRect.width() - 2 * textMargin).toInt().coerceAtLeast(1)
-            val availH = (screenRect.height() - 2 * textMargin).coerceAtLeast(0f)
-            val layout = fitText(box.translatedText, availW, availH, box.textColor)
-            DrawnBox(screenRect, layout, box.bgColor)
-        }
-    }
+        // Create a TextView for each box
+        boxes.zip(finalRects).forEach { (box, rect) ->
+            val rectW = rect.width().toInt().coerceAtLeast(1)
+            val rectH = rect.height().toInt().coerceAtLeast(1)
 
-    /**
-     * Creates a [StaticLayout] for [text] that fits within [availW] x [availH] pixels.
-     * Binary search for the largest font size where the text fits.
-     */
-    private fun fitText(text: String, availW: Int, availH: Float, textColor: Int = Color.WHITE): StaticLayout {
-        var lo = minTextSizePx
-        var hi = availH.coerceAtLeast(minTextSizePx)
-
-        // Binary search using the shared paint for measurement
-        repeat(10) {
-            val mid = (lo + hi) / 2f
-            textPaint.textSize = mid
-            val layout = StaticLayout.Builder.obtain(text, 0, text.length, textPaint, availW)
-                .setAlignment(Layout.Alignment.ALIGN_NORMAL)
-                .setIncludePad(false)
-                .setMaxLines(100)
-                .build()
-            if (layout.height <= availH) {
-                lo = mid
-            } else {
-                hi = mid
+            val tv = TextView(context).apply {
+                text = box.translatedText
+                setTextColor(box.textColor)
+                typeface = Typeface.DEFAULT_BOLD
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(textMargin, textMargin, textMargin, textMargin)
+                setBackgroundColor(box.bgColor)
+                TextViewCompat.setAutoSizeTextTypeUniformWithConfiguration(
+                    this, minTextSizeSp, maxTextSizeSp, 1, TypedValue.COMPLEX_UNIT_SP
+                )
             }
-        }
 
-        // Create the final layout with its own TextPaint copy so the
-        // text size is frozen — otherwise all layouts share the same
-        // paint and render at whatever size was set last.
-        val frozenPaint = TextPaint(textPaint)
-        frozenPaint.textSize = lo
-        frozenPaint.color = textColor
-        return StaticLayout.Builder.obtain(text, 0, text.length, frozenPaint, availW)
-            .setAlignment(Layout.Alignment.ALIGN_NORMAL)
-            .setIncludePad(false)
-            .setMaxLines(100)
-            .build()
+            val lp = LayoutParams(rectW, rectH).apply {
+                leftMargin = rect.left.toInt()
+                topMargin = rect.top.toInt()
+            }
+            addView(tv, lp)
+        }
     }
 }
