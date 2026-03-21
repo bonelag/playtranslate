@@ -115,11 +115,17 @@ class OcrManager private constructor() {
                     groupBuilder.append(" ")
                     segments += TextSegment("\n", isSeparator = true)
                 }
-                line.elements.forEach { element ->
+                line.elements.forEachIndexed { ei, element ->
                     if (!isUiDecoration(element.text)) {
-                        fullTextBuilder.append(element.text)
-                        groupBuilder.append(element.text)
-                        segments += TextSegment(element.text)
+                        var text = element.text
+                        // Strip leading | from first element, trailing | from last
+                        if (ei == 0) text = text.trimStart('|').trimStart()
+                        if (ei == line.elements.lastIndex) text = text.trimEnd('|').trimEnd()
+                        if (text.isNotEmpty()) {
+                            fullTextBuilder.append(text)
+                            groupBuilder.append(text)
+                            segments += TextSegment(text)
+                        }
                     }
                 }
             }
@@ -473,9 +479,12 @@ class OcrManager private constructor() {
             val groupTextBuilder = StringBuilder()
             group.forEachIndexed { li, line ->
                 if (li > 0) groupTextBuilder.append(" ")
-                line.elements.forEach { element ->
+                line.elements.forEachIndexed { ei, element ->
                     if (!isUiDecoration(element.text)) {
-                        groupTextBuilder.append(element.text)
+                        var text = element.text
+                        if (ei == 0) text = text.trimStart('|').trimStart()
+                        if (ei == line.elements.lastIndex) text = text.trimEnd('|').trimEnd()
+                        if (text.isNotEmpty()) groupTextBuilder.append(text)
                     }
                 }
             }
