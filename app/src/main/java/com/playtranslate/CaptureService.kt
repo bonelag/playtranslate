@@ -612,9 +612,9 @@ class CaptureService : Service() {
 
             // Dedup
             if (lastLiveOcrText != null && !isSignificantChange(lastLiveOcrText!!, dedupKey)) {
-                DetectionLog.log("processClean: dedup match, re-showing cached")
                 val boxes = cachedOverlayBoxes
                 if (boxes != null) {
+                    DetectionLog.log("processClean: dedup match, re-showing cached")
                     showLiveOverlay(boxes, cachedOverlayCropLeft, cachedOverlayCropTop,
                         cachedOverlayScreenW, cachedOverlayScreenH,
                         )
@@ -624,10 +624,10 @@ class CaptureService : Service() {
                             b.bounds.right + cachedOverlayCropLeft, b.bounds.bottom + cachedOverlayCropTop
                         )
                     }, boxes)
-                } else {
-                    DetectionLog.log("processClean: dedup match but no cached boxes")
+                    return
                 }
-                return
+                // No cached boxes (e.g. all selectively removed) — fall through to re-translate
+                DetectionLog.log("processClean: dedup match but no cached boxes, re-translating")
             }
             lastLiveOcrText = dedupKey
             DetectionLog.log("processClean: new text, ${ocrResult.groupTexts.size} groups, translating...")
