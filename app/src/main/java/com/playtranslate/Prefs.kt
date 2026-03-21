@@ -123,6 +123,10 @@ class Prefs(context: Context) {
         get() = sp.getBoolean(KEY_DEBUG_SHOW_OCR_BOXES, false)
         set(v) = sp.edit().putBoolean(KEY_DEBUG_SHOW_OCR_BOXES, v).apply()
 
+    var debugShowDetectionLog: Boolean
+        get() = sp.getBoolean(KEY_DEBUG_SHOW_DETECTION_LOG, false)
+        set(v) = sp.edit().putBoolean(KEY_DEBUG_SHOW_DETECTION_LOG, v).apply()
+
     /** Set before recreate() so MainActivity suppresses the window transition animation. */
     var suppressNextTransition: Boolean
         get() = sp.getBoolean(KEY_SUPPRESS_TRANSITION, false)
@@ -191,6 +195,7 @@ class Prefs(context: Context) {
         private const val KEY_HIDE_WORDS_SECTION             = "hide_words_section"
         private const val KEY_DEBUG_FORCE_SINGLE_SCREEN      = "debug_force_single_screen"
         private const val KEY_DEBUG_SHOW_OCR_BOXES           = "debug_show_ocr_boxes"
+        private const val KEY_DEBUG_SHOW_DETECTION_LOG      = "debug_show_detection_log"
 
         /** Single source of truth for single-screen detection. */
         fun isSingleScreen(context: Context): Boolean {

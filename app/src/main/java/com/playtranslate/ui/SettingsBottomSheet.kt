@@ -332,6 +332,14 @@ class SettingsBottomSheet : DialogFragment() {
             view.findViewById<View>(R.id.rowShowOcrBoxes).setOnClickListener {
                 switchShowOcrBoxes.toggle()
             }
+            val switchDetectionLog = view.findViewById<Switch>(R.id.switchDetectionLog)
+            switchDetectionLog.isChecked = prefs.debugShowDetectionLog
+            switchDetectionLog.setOnCheckedChangeListener { _, checked ->
+                prefs.debugShowDetectionLog = checked
+            }
+            view.findViewById<View>(R.id.rowDetectionLog).setOnClickListener {
+                switchDetectionLog.toggle()
+            }
         }
     }
 

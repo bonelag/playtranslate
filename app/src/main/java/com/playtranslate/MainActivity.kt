@@ -258,6 +258,7 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
     override fun onResume() {
         super.onResume()
         isInForeground = true
+        setupDetectionLog()
         // Re-wire service callbacks in case TranslationResultActivity overwrote them
         if (serviceConnected) wireServiceCallbacks()
         // Re-wire fragment listeners after config change
@@ -869,6 +870,14 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
                 frag.updateTranslation("—")
             }
         }
+    }
+
+    private fun setupDetectionLog() {
+        val tv = findViewById<android.widget.TextView>(R.id.tvDetectionLog)
+        val enabled = BuildConfig.DEBUG && prefs.debugShowDetectionLog
+        DetectionLog.enabled = enabled
+        tv.visibility = if (enabled) View.VISIBLE else View.GONE
+        DetectionLog.onUpdate = if (enabled) { text -> tv.text = text } else null
     }
 
     private fun setupEditOverlay() {

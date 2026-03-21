@@ -613,6 +613,29 @@
 
                 </LinearLayout>
 
+                <LinearLayout
+                    android:id="@+id/rowDetectionLog"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:gravity="center_vertical"
+                    android:layout_marginBottom="20dp">
+
+                    <TextView
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="Show detection log"
+                        android:textColor="?attr/colorTextPrimary"
+                        android:textSize="14sp" />
+
+                    <Switch
+                        android:id="@+id/switchDetectionLog"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content" />
+
+                </LinearLayout>
+
             </LinearLayout>
 
         </LinearLayout>

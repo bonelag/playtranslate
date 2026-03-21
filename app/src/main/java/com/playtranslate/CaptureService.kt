@@ -404,16 +404,16 @@ class CaptureService : Service() {
 
     private var sceneCheckJob: Job? = null
     private val SCENE_CHANGE_THRESHOLD = 0.30f  // 30% of sampled pixels must change
-    private val OVERLAY_CHANGE_THRESHOLD = 0.10f // 10% of overlay pixels must change (attenuated by alpha)
-    private val PIXEL_DIFF_THRESHOLD = 30       // per-channel RGB difference
+    private val OVERLAY_CHANGE_THRESHOLD = 0.10f // 10% of overlay pixels (per box) must change
+    private val PIXEL_DIFF_THRESHOLD = 30       // per-channel RGB difference for non-overlay pixels
+    private val OVERLAY_PIXEL_DIFF_THRESHOLD = 6 // lower threshold for overlay pixels (attenuated by ~90% alpha)
 
     /**
      * Start scene-change detection after overlays are shown.
      *
      * @param overlayBoxes Overlay bounding rects in full-display coordinates.
-     * @param overlayTextBoxes TextBox list with bgColor/alpha for blend computation.
-     * @param cleanRef Clean screenshot (before overlays) for overlay pixel diff.
-     *   Pixel values are read immediately during setup; the bitmap is NOT held.
+     * @param overlayTextBoxes TextBox list (unused currently, reserved for future).
+     * @param cleanRef Unused — kept for API compatibility during development.
      */
     private fun startSceneChangeDetection(
         overlayBoxes: List<android.graphics.Rect>,
@@ -423,82 +423,53 @@ class CaptureService : Service() {
         stopSceneChangeDetection()
         val mgr = PlayTranslateAccessibilityService.instance?.screenshotManager ?: return
 
-        // Build sample positions NOW (before coroutine), so we can read clean ref pixels.
-        // cleanRef is the raw screenshot from runLiveCaptureCycle, which will be
-        // recycled after this function returns — we must extract pixels here.
-        val screenW = cleanRef?.width ?: 0
-        val screenH = cleanRef?.height ?: 0
-        val regionTop = if (screenH > 0) (screenH * captureTopFraction).toInt() else 0
-        val regionBottom = if (screenH > 0) (screenH * captureBottomFraction).toInt() else 0
-        val regionLeft = if (screenW > 0) (screenW * captureLeftFraction).toInt() else 0
-        val regionRight = if (screenW > 0) (screenW * captureRightFraction).toInt() else 0
-
-        data class SamplePos(val x: Int, val y: Int, val overlayIdx: Int)  // -1 = non-overlay
-
-        val nonOverlayPositions = mutableListOf<Pair<Int, Int>>()
-        val overlayPositions = mutableListOf<SamplePos>()
-
-        if (regionBottom > regionTop && regionRight > regionLeft) {
-            for (y in regionTop until regionBottom step 10) {
-                for (x in regionLeft until regionRight step 10) {
-                    val boxIdx = overlayBoxes.indexOfFirst { it.contains(x, y) }
-                    if (boxIdx == -1) {
-                        nonOverlayPositions.add(x to y)
-                    } else {
-                        overlayPositions.add(SamplePos(x, y, boxIdx))
-                    }
-                }
-            }
-        }
-
-        // Pre-compute expected blended overlay pixel values from the clean reference.
-        // expected = cleanPixel * (1 - alpha) + bgColor * alpha
-        val expectedOverlayPixels = if (cleanRef != null && overlayPositions.isNotEmpty()) {
-            IntArray(overlayPositions.size) { i ->
-                val pos = overlayPositions[i]
-                val cx = pos.x.coerceIn(0, cleanRef.width - 1)
-                val cy = pos.y.coerceIn(0, cleanRef.height - 1)
-                val cleanPixel = cleanRef.getPixel(cx, cy)
-                val box = overlayTextBoxes.getOrNull(pos.overlayIdx)
-                if (box == null) cleanPixel
-                else {
-                    val alpha = android.graphics.Color.alpha(box.bgColor) / 255f
-                    val r = (android.graphics.Color.red(cleanPixel) * (1 - alpha) + android.graphics.Color.red(box.bgColor) * alpha).toInt()
-                    val g = (android.graphics.Color.green(cleanPixel) * (1 - alpha) + android.graphics.Color.green(box.bgColor) * alpha).toInt()
-                    val b = (android.graphics.Color.blue(cleanPixel) * (1 - alpha) + android.graphics.Color.blue(box.bgColor) * alpha).toInt()
-                    android.graphics.Color.rgb(r, g, b)
-                }
-            }
-        } else IntArray(0)
-
-        // Positions extracted — cleanRef can now be recycled by the caller.
-
         sceneCheckJob = serviceScope.launch {
             // Brief delay to let the overlay render before taking raw reference
             delay(300L)
 
-            // Take raw reference frame for non-overlay pixel comparison
+            // Take raw reference frame (overlays visible). This is both the
+            // non-overlay AND overlay pixel reference — we compare current raw
+            // frames against this. For overlay pixels, any change means the
+            // game content underneath changed (same overlay + different game = different pixel).
             var refBitmap: Bitmap? = null
             while (liveActive && refBitmap == null) {
                 refBitmap = mgr.requestRaw(gameDisplayId)
             }
             if (refBitmap == null) return@launch
 
-            // If positions weren't built (no cleanRef), build from raw reference
-            if (nonOverlayPositions.isEmpty() && overlayPositions.isEmpty()) {
-                val rTop = (refBitmap.height * captureTopFraction).toInt()
-                val rBottom = (refBitmap.height * captureBottomFraction).toInt()
-                val rLeft = (refBitmap.width * captureLeftFraction).toInt()
-                val rRight = (refBitmap.width * captureRightFraction).toInt()
-                for (y in rTop until rBottom step 10) {
-                    for (x in rLeft until rRight step 10) {
-                        if (overlayBoxes.none { it.contains(x, y) }) {
-                            nonOverlayPositions.add(x to y)
-                        }
+            // Build sample positions: separate non-overlay and overlay pixels
+            val regionTop = (refBitmap.height * captureTopFraction).toInt()
+            val regionBottom = (refBitmap.height * captureBottomFraction).toInt()
+            val regionLeft = (refBitmap.width * captureLeftFraction).toInt()
+            val regionRight = (refBitmap.width * captureRightFraction).toInt()
+
+            val nonOverlayPositions = mutableListOf<Pair<Int, Int>>()
+            val overlaySamples = mutableListOf<OverlaySampleData>()
+
+            // Non-overlay: sample every 10th pixel (coarse, for scene change detection)
+            for (y in regionTop until regionBottom step 10) {
+                for (x in regionLeft until regionRight step 10) {
+                    if (overlayBoxes.none { it.contains(x, y) }) {
+                        nonOverlayPositions.add(x to y)
                     }
                 }
             }
-            if (nonOverlayPositions.isEmpty() && overlayPositions.isEmpty()) {
+            // Overlay: sample every 3rd pixel (dense, for text change detection)
+            for (box in overlayBoxes) {
+                val boxIdx = overlayBoxes.indexOf(box)
+                val textColor = overlayTextBoxes.getOrNull(boxIdx)?.textColor ?: 0
+                val bTop = box.top.coerceIn(regionTop, regionBottom)
+                val bBottom = box.bottom.coerceIn(regionTop, regionBottom)
+                val bLeft = box.left.coerceIn(regionLeft, regionRight)
+                val bRight = box.right.coerceIn(regionLeft, regionRight)
+                for (y in bTop until bBottom step 3) {
+                    for (x in bLeft until bRight step 3) {
+                        overlaySamples.add(OverlaySampleData(x, y, textColor, boxIdx))
+                    }
+                }
+            }
+
+            if (nonOverlayPositions.isEmpty() && overlaySamples.isEmpty()) {
                 refBitmap.recycle(); return@launch
             }
 
@@ -506,7 +477,22 @@ class CaptureService : Service() {
                 val (x, y) = nonOverlayPositions[i]
                 if (x < refBitmap.width && y < refBitmap.height) refBitmap.getPixel(x, y) else 0
             }
+            // For overlay pixels, record reference values but skip pixels that
+            // match the overlay's text color (our translation text, not game content).
+            val refOverlayPixels = IntArray(overlaySamples.size)
+            val overlayPixelActive = BooleanArray(overlaySamples.size)  // false = skip this pixel
+            for (i in overlaySamples.indices) {
+                val s = overlaySamples[i]
+                val px = if (s.x < refBitmap.width && s.y < refBitmap.height) refBitmap.getPixel(s.x, s.y) else 0
+                refOverlayPixels[i] = px
+                // Skip if pixel matches our text color (it's our translation text, not game content)
+                overlayPixelActive[i] = !isColorMatch(px, s.textColor)
+            }
             refBitmap.recycle()
+
+            val activeCount = overlayPixelActive.count { it }
+            val totalOverlay = overlaySamples.size
+            DetectionLog.log("Setup: ${nonOverlayPositions.size} non-ovr, $totalOverlay ovr ($activeCount active, ${totalOverlay - activeCount} text-skipped)")
 
             // Poll loop — reuse pixel arrays to avoid GC pressure
             var sceneMoving = false
@@ -515,7 +501,7 @@ class CaptureService : Service() {
             val nonOverlayB = IntArray(nonOverlayPositions.size)
             var currentNonOverlay = nonOverlayA
             var prevNonOverlay = nonOverlayB
-            val currentOverlay = IntArray(overlayPositions.size)
+            val currentOverlay = IntArray(overlaySamples.size)
 
             while (liveActive) {
                 val bitmap = mgr.requestRaw(gameDisplayId)
@@ -527,15 +513,16 @@ class CaptureService : Service() {
                     currentNonOverlay[i] = if (x < bitmap.width && y < bitmap.height) bitmap.getPixel(x, y) else 0
                 }
                 // Read overlay pixels
-                for (i in overlayPositions.indices) {
-                    val pos = overlayPositions[i]
-                    currentOverlay[i] = if (pos.x < bitmap.width && pos.y < bitmap.height) bitmap.getPixel(pos.x, pos.y) else 0
+                for (i in overlaySamples.indices) {
+                    val s = overlaySamples[i]
+                    currentOverlay[i] = if (s.x < bitmap.width && s.y < bitmap.height) bitmap.getPixel(s.x, s.y) else 0
                 }
 
                 if (!sceneMoving) {
                     // CHECK A: Non-overlay pixel diff — detect major scene changes
                     val nonOverlayDiff = pixelDiffPercent(refNonOverlayPixels, currentNonOverlay)
                     if (nonOverlayDiff >= SCENE_CHANGE_THRESHOLD) {
+                        DetectionLog.log("A: Scene change (${"%.2f".format(nonOverlayDiff*100)}% non-overlay diff)")
                         Log.d(TAG, "DETECT: Scene change (non-overlay diff=${(nonOverlayDiff*100).toInt()}%)")
                         bitmap.recycle()
                         sceneMoving = true
@@ -544,10 +531,13 @@ class CaptureService : Service() {
                         cachedOverlayBoxes = null
                         PlayTranslateAccessibilityService.instance?.hideTranslationOverlay()
                     } else {
-                        // CHECK B: Overlay pixel diff — detect text changes under overlays
-                        val overlayDiff = if (expectedOverlayPixels.isNotEmpty())
-                            pixelDiffPercent(expectedOverlayPixels, currentOverlay) else 0f
+                        // CHECK B: Per-overlay pixel diff — compare raw vs raw reference,
+                        // skipping pixels that are our own text (marked inactive).
+                        // Use the MAX diff across all boxes so a single changed box triggers.
+                        val overlayDiff = maxOverlayDiffPercent(
+                            overlaySamples, refOverlayPixels, currentOverlay, overlayPixelActive)
                         if (overlayDiff >= OVERLAY_CHANGE_THRESHOLD) {
+                            DetectionLog.log("B: Text under overlay changed (${"%.2f".format(overlayDiff*100)}% max box diff)")
                             Log.d(TAG, "DETECT: Text under overlay changed (diff=${(overlayDiff*100).toInt()}%)")
                             bitmap.recycle()
                             liveCaptureJob?.cancel()
@@ -561,10 +551,18 @@ class CaptureService : Service() {
                         // GATE: Any pixels changed at all? Skip OCR if truly static.
                         val anyChange = nonOverlayDiff > 0.005f || overlayDiff > 0.005f
                         if (anyChange) {
+                            DetectionLog.log("C: Change detected (non=${"%.2f".format(nonOverlayDiff*100)}% ovr=${"%.2f".format(overlayDiff*100)}%), running OCR")
                             // CHECK C+D: Fill-and-OCR to detect new text elsewhere
                             val triggered = performOcrRecheck(bitmap, overlayBoxes)
-                            if (triggered) return@launch
+                            if (triggered) {
+                                DetectionLog.log("D: OCR found new text → recapture/merge")
+                                return@launch
+                            } else {
+                                DetectionLog.log("C: OCR found no new text")
+                            }
                         } else {
+                            // Log periodic status so user knows the loop is alive
+                            DetectionLog.log("Static (non=${"%.2f".format(nonOverlayDiff*100)}% ovr=${"%.2f".format(overlayDiff*100)}%)")
                             bitmap.recycle()
                         }
                     }
@@ -573,6 +571,7 @@ class CaptureService : Service() {
                     if (hasPrev) {
                         val pct = pixelDiffPercent(prevNonOverlay, currentNonOverlay)
                         if (pct < 0.05f) {
+                            DetectionLog.log("Stabilized (${(pct*100).toInt()}% diff) → recapturing")
                             Log.d(TAG, "DETECT: Scene stabilized (diff=${(pct*100).toInt()}%)")
                             liveCaptureJob?.cancel()
                             liveCaptureJob = serviceScope.launch {
@@ -588,6 +587,45 @@ class CaptureService : Service() {
                 val tmp = prevNonOverlay; prevNonOverlay = currentNonOverlay; currentNonOverlay = tmp
             }
         }
+    }
+
+    /**
+     * Per-overlay-box pixel diff. Returns the MAX diff percentage across all boxes.
+     * A single changed box triggers, regardless of how many other boxes are static.
+     */
+    private fun maxOverlayDiffPercent(
+        samples: List<OverlaySampleData>,
+        refPixels: IntArray,
+        curPixels: IntArray,
+        active: BooleanArray
+    ): Float {
+        if (refPixels.isEmpty()) return 0f
+        val boxChanged = mutableMapOf<Int, Int>()
+        val boxCounted = mutableMapOf<Int, Int>()
+        for (i in refPixels.indices) {
+            if (!active[i]) continue
+            val boxIdx = samples[i].boxIdx
+            boxCounted[boxIdx] = (boxCounted[boxIdx] ?: 0) + 1
+            val dr = kotlin.math.abs(android.graphics.Color.red(refPixels[i]) - android.graphics.Color.red(curPixels[i]))
+            val dg = kotlin.math.abs(android.graphics.Color.green(refPixels[i]) - android.graphics.Color.green(curPixels[i]))
+            val db = kotlin.math.abs(android.graphics.Color.blue(refPixels[i]) - android.graphics.Color.blue(curPixels[i]))
+            if (dr > OVERLAY_PIXEL_DIFF_THRESHOLD || dg > OVERLAY_PIXEL_DIFF_THRESHOLD || db > OVERLAY_PIXEL_DIFF_THRESHOLD) {
+                boxChanged[boxIdx] = (boxChanged[boxIdx] ?: 0) + 1
+            }
+        }
+        return boxCounted.maxOfOrNull { (idx, count) ->
+            if (count > 0) (boxChanged[idx] ?: 0).toFloat() / count else 0f
+        } ?: 0f
+    }
+
+    private data class OverlaySampleData(val x: Int, val y: Int, val textColor: Int, val boxIdx: Int)
+
+    /** Check if two colors match within PIXEL_DIFF_THRESHOLD. */
+    private fun isColorMatch(pixel: Int, color: Int): Boolean {
+        val dr = kotlin.math.abs(android.graphics.Color.red(pixel) - android.graphics.Color.red(color))
+        val dg = kotlin.math.abs(android.graphics.Color.green(pixel) - android.graphics.Color.green(color))
+        val db = kotlin.math.abs(android.graphics.Color.blue(pixel) - android.graphics.Color.blue(color))
+        return dr <= PIXEL_DIFF_THRESHOLD && dg <= PIXEL_DIFF_THRESHOLD && db <= PIXEL_DIFF_THRESHOLD
     }
 
     /**
@@ -831,6 +869,7 @@ class CaptureService : Service() {
      *   screenshot. Used by scene detection which already has a clean frame.
      */
     private suspend fun runLiveCaptureCycle(preCaptured: Bitmap? = null) {
+        DetectionLog.log("Capture cycle starting${if (preCaptured != null) " (pre-captured)" else ""}")
         if (!isConfigured) { preCaptured?.recycle(); return }
         val mgr = PlayTranslateAccessibilityService.instance?.screenshotManager
 
