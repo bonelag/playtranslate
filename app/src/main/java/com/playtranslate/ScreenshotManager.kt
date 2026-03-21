@@ -6,7 +6,11 @@ import android.os.Build
 import android.util.Log
 import android.view.Choreographer
 import kotlinx.coroutines.CancellableContinuation
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
@@ -115,7 +119,67 @@ class ScreenshotManager(private val a11y: PlayTranslateAccessibilityService) {
         }
     }
 
+    // ── Continuous poll loop (live mode) ─────────────────────────────────
+
+    private var loopJob: Job? = null
+    @Volatile private var cleanRequested = false
+
+    /**
+     * Start a continuous screenshot loop. Each frame is delivered to
+     * [onCleanFrame] or [onRawFrame] depending on whether a clean capture
+     * was requested. Only one `takeScreenshot` call is in flight at a time.
+     *
+     * Call [requestCleanCapture] to flag the next frame as clean (overlays
+     * hidden before capture, restored after).
+     */
+    fun startLoop(
+        displayId: Int,
+        scope: CoroutineScope,
+        onCleanFrame: (Bitmap) -> Unit,
+        onRawFrame: (Bitmap) -> Unit
+    ) {
+        stopLoop()
+        loopJob = scope.launch {
+            while (isActive) {
+                awaitScreenshotInterval()
+                val isClean = cleanRequested
+                if (isClean) {
+                    cleanRequested = false
+                    DetectionLog.log("Loop: taking clean screenshot...")
+                    val state = a11y.prepareForCleanCapture()
+                    waitVsync(if (state.hadAnyOverlay) 2 else 1)
+                    val bitmap = doTakeScreenshot(displayId)
+                    a11y.restoreAfterCapture(state)
+                    if (bitmap != null) {
+                        DetectionLog.log("Loop: clean frame captured (${bitmap.width}x${bitmap.height})")
+                        onCleanFrame(bitmap)
+                    } else {
+                        DetectionLog.log("Loop: clean capture failed")
+                    }
+                } else {
+                    val bitmap = doTakeScreenshot(displayId)
+                    if (bitmap != null) onRawFrame(bitmap)
+                    // null = timeout or failure, skip this cycle
+                }
+            }
+        }
+    }
+
+    /** Flag the next loop iteration to take a clean capture (overlays hidden). */
+    fun requestCleanCapture() {
+        cleanRequested = true
+    }
+
+    fun stopLoop() {
+        loopJob?.cancel()
+        loopJob = null
+        // Don't reset cleanRequested — it may have been set for the next startLoop
+    }
+
+    val isLoopRunning: Boolean get() = loopJob?.isActive == true
+
     fun destroy() {
+        stopLoop()
         bitmapExecutor.shutdown()
     }
 
