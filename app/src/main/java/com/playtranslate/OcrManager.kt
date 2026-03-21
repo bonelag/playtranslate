@@ -358,17 +358,17 @@ class OcrManager private constructor() {
                     val hi = maxOf(lineH, prevH)
                     (hi - lo).toDouble() / lo <= 0.20
                 }
-                val closeEnough = refH > 0 && gap <= (refH * 1.5f).toInt()
+                val closeEnough = refH > 0 && gap <= (refH * 1.4f).toInt()
 
-                // Horizontal alignment: left edges or right edges within 1.5× line height
+                // Horizontal alignment: left edges within 1.5× line height
                 val alignTolerance = (refH * 1.5f).toInt()
                 val groupLeft  = lastGroup.mapNotNull { it.boundingBox?.left }.minOrNull() ?: 0
-                val groupRight = lastGroup.mapNotNull { it.boundingBox?.right }.maxOrNull() ?: 0
                 val leftAligned  = kotlin.math.abs(lineBox.left - groupLeft) <= alignTolerance
-                val rightAligned = kotlin.math.abs(lineBox.right - groupRight) <= alignTolerance
-                val aligned = leftAligned || rightAligned
+                val aligned = leftAligned
 
                 if (sizeMatch && closeEnough && aligned) {
+                    val prevText = lastGroup.joinToString("") { it.text }.take(20)
+                    android.util.Log.d("OCR-GROUP", "GROUPED: '${line.text.take(20)}' with '$prevText' — gap=$gap leftDiff=${kotlin.math.abs(lineBox.left - groupLeft)}")
                     lastGroup += line
                     continue
                 }
@@ -376,8 +376,8 @@ class OcrManager private constructor() {
                 val prevText = lastGroup.joinToString("") { it.text }.take(20)
                 val reasons = mutableListOf<String>()
                 if (!sizeMatch) reasons += "size(${lineH}vs${prevLine.boundingBox?.height()})"
-                if (!closeEnough) reasons += "gap(${gap}>${(refH*1.5f).toInt()})"
-                if (!aligned) reasons += "align(L${kotlin.math.abs(lineBox.left - groupLeft)},R${kotlin.math.abs(lineBox.right - groupRight)}>$alignTolerance)"
+                if (!closeEnough) reasons += "gap(${gap}>${(refH*1.4f).toInt()})"
+                if (!aligned) reasons += "align(L${kotlin.math.abs(lineBox.left - groupLeft)}>$alignTolerance)"
                 android.util.Log.d("OCR-GROUP", "NOT grouped: '${line.text.take(20)}' after '$prevText' — ${reasons.joinToString(", ")}")
             }
 
