@@ -67,8 +67,10 @@ class ScreenshotManager(private val a11y: PlayTranslateAccessibilityService) {
 
         // Retry once on failure (e.g. transient OS error)
         if (bitmap == null) {
+            DetectionLog.log("Clean capture failed, retrying...")
             awaitScreenshotInterval()
             bitmap = doTakeScreenshot(displayId)
+            if (bitmap == null) DetectionLog.log("Clean capture retry also failed")
         }
 
         a11y.restoreAfterCapture(state)
@@ -86,9 +88,11 @@ class ScreenshotManager(private val a11y: PlayTranslateAccessibilityService) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return null
         awaitScreenshotInterval()
         return doTakeScreenshot(displayId) ?: run {
-            // Retry once on failure
+            DetectionLog.log("Raw capture failed, retrying...")
             awaitScreenshotInterval()
-            doTakeScreenshot(displayId)
+            val retry = doTakeScreenshot(displayId)
+            if (retry == null) DetectionLog.log("Raw capture retry also failed")
+            retry
         }
     }
 
