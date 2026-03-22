@@ -15,6 +15,7 @@
 
     <!-- Accessibility service -->
     <string name="accessibility_service_description">PlayTranslate uses the Accessibility Service to take screenshots of the game screen and show a floating overlay icon. No UI content, input events, or personal data are read or monitored.</string>
+    <string name="accessibility_service_summary">For translating game text on screen</string>
     <string name="accessibility_dialog_title">Accessibility permission needed</string>
     <string name="accessibility_dialog_message">PlayTranslate needs the Accessibility permission to capture screenshots of the game screen on the top display while staying open on the bottom display.\n\nPlayTranslate does not read any UI content, monitor input, or access any personal data — it only takes screenshots when you tap Translate or start live mode.\n\nGo to Settings → Accessibility → Installed apps → PlayTranslate → Enable.</string>
     <string name="accessibility_dialog_open">Open Accessibility Settings</string>
