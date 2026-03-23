@@ -337,10 +337,8 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
             setShowsDialog(false)
             this.gameDisplay = gameDisplay
             onSaved = { _ ->
-                hideRegionPicker()
                 configureService()
                 updateRegionButton()
-                withAccessibility { captureService?.captureOnce() }
             }
             onTranslateOnce = { top, bottom, left, right, label ->
                 hideRegionPicker()
