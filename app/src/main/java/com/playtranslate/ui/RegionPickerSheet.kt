@@ -221,7 +221,7 @@ class RegionPickerSheet : DialogFragment() {
             }
             // Underline hint that it's tappable
             paintFlags = paintFlags or android.graphics.Paint.UNDERLINE_TEXT_FLAG
-            setOnClickListener { showRenameDialog(index) }
+            setOnClickListener { openEditSheet(index) }
         }
         row.addView(tv)
 
@@ -314,6 +314,32 @@ class RegionPickerSheet : DialogFragment() {
             }
             .setNegativeButton(android.R.string.cancel, null)
             .show()
+    }
+
+    private fun openEditSheet(index: Int) {
+        val entry = workingList.getOrNull(index) ?: return
+        PlayTranslateAccessibilityService.instance?.hideRegionOverlay()
+        AddCustomRegionSheet().also { sheet ->
+            sheet.gameDisplay = gameDisplay
+            sheet.editIndex = index
+            sheet.editName = entry.label
+            sheet.editTop = entry.top
+            sheet.editBottom = entry.bottom
+            sheet.editLeft = entry.left
+            sheet.editRight = entry.right
+            sheet.onRegionEdited = { editedIndex ->
+                workingList = prefs.getRegionList().toMutableList()
+                selectedIndex = editedIndex
+                rebuildList()
+                showOverlayForIndex(selectedIndex)
+            }
+            sheet.onDismissed = {
+                if (isAdded && !isDetached) {
+                    rebuildList()
+                    showOverlayForIndex(selectedIndex)
+                }
+            }
+        }.show(childFragmentManager, AddCustomRegionSheet.TAG)
     }
 
     private fun openAddCustomSheet() {

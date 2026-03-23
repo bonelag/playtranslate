@@ -307,11 +307,16 @@ class PlayTranslateAccessibilityService : AccessibilityService() {
         regionIndicatorWm = null
     }
 
-    fun showRegionDragOverlay(display: Display, onRegionChanged: (Float, Float, Float, Float) -> Unit) {
+    fun showRegionDragOverlay(
+        display: Display,
+        initTop: Float = 0.25f, initBottom: Float = 0.75f,
+        initLeft: Float = 0.25f, initRight: Float = 0.75f,
+        onRegionChanged: (Float, Float, Float, Float) -> Unit
+    ) {
         hideRegionDragOverlay()
         val wm = createDisplayContext(display).getSystemService(WindowManager::class.java) ?: return
         val view = RegionDragView(this).apply {
-            setRegion(0.25f, 0.75f, 0.25f, 0.75f)
+            setRegion(initTop, initBottom, initLeft, initRight)
             this.onRegionChanged = onRegionChanged
         }
         val params = WindowManager.LayoutParams(
