@@ -194,11 +194,10 @@ class FloatingIconMenu(context: Context) : FrameLayout(context) {
             }
             setOnClickListener { onCaptureRegion?.invoke() }
         }
-        val regionIcon = TextView(context).apply {
-            text = "\u25A3" // ▣ square with inner square
-            setTextColor(Color.WHITE)
-            textSize = 33f
-            gravity = Gravity.CENTER
+        val regionIcon = ImageView(context).apply {
+            setImageResource(R.drawable.ic_crop)
+            imageTintList = android.content.res.ColorStateList.valueOf(Color.WHITE)
+            scaleType = ImageView.ScaleType.CENTER
         }
         regionBtn.addView(regionIcon, LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT,
