@@ -22,8 +22,8 @@ class RegionDragView(context: Context) : View(context) {
     var leftFraction   = 0.25f
     var rightFraction  = 0.75f
 
-    /** Called on every drag move with (top, bottom, left, right). */
-    var onRegionChanged: ((Float, Float, Float, Float) -> Unit)? = null
+    /** Called on every drag move with the updated region. */
+    var onRegionChanged: ((com.playtranslate.RegionEntry) -> Unit)? = null
     /** Called when the user starts dragging an edge/corner/center. */
     var onDragStart: (() -> Unit)? = null
     /** Called when the user lifts their finger after dragging. */
@@ -195,7 +195,7 @@ class RegionDragView(context: Context) : View(context) {
                     DragTarget.NONE -> {}
                 }
                 invalidate()
-                onRegionChanged?.invoke(topFraction, bottomFraction, leftFraction, rightFraction)
+                onRegionChanged?.invoke(com.playtranslate.RegionEntry("", topFraction, bottomFraction, leftFraction, rightFraction))
                 return true
             }
 

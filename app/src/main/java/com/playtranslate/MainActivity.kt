@@ -125,9 +125,7 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
 
     private var isLiveMode = false
     /** Non-null while a temporary "use once" custom region is active. Cleared when saved config is restored. */
-    private var overrideRegionLabel: String? = null
-    /** Fractions for the current override region (set alongside overrideRegionLabel). */
-    private var overrideRegion: FloatArray? = null  // [top, bottom, left, right]
+    private var overrideRegion: RegionEntry? = null
     /** True while programmatic scrollTo(0,0) is in progress to prevent auto-pause. */
     private var suppressScrollPause = false
 
@@ -340,10 +338,9 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
                 configureService()
                 updateRegionButton()
             }
-            onTranslateOnce = { top, bottom, left, right, label ->
+            onTranslateOnce = { region ->
                 hideRegionPicker()
-                overrideRegionLabel = label
-                overrideRegion = floatArrayOf(top, bottom, left, right)
+                overrideRegion = region
                 applyOverrideIfActive()
                 updateRegionButton()
                 withAccessibility { captureService?.captureOnce() }
@@ -367,8 +364,8 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
     private fun updateRegionButton() {
         val list = prefs.getRegionList()
         val entry = list.getOrElse(prefs.captureRegionIndex) { Prefs.DEFAULT_REGION_LIST[0] }
-        val serviceLabel = captureService?.captureRegionLabel?.takeIf { it.isNotEmpty() }
-        val label = overrideRegionLabel ?: serviceLabel ?: entry.label
+        val serviceLabel = captureService?.activeRegion?.label?.takeIf { it.isNotEmpty() }
+        val label = overrideRegion?.label ?: serviceLabel ?: entry.label
         if (isLiveMode) {
             val prefix = "Capturing "
             btnCapturing.text = SpannableStringBuilder(prefix + label).apply {
@@ -658,22 +655,16 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
     /** Re-applies the override region config if one is active. */
     private fun applyOverrideIfActive() {
         val region = overrideRegion ?: return
-        val label = overrideRegionLabel ?: return
         captureService?.configure(
-            displayId             = prefs.captureDisplayId,
-            sourceLang            = selectedSourceLang(),
-            targetLang            = selectedTargetLang(),
-            captureTopFraction    = region[0],
-            captureBottomFraction = region[1],
-            captureLeftFraction   = region[2],
-            captureRightFraction  = region[3],
-            regionLabel           = label
+            displayId  = prefs.captureDisplayId,
+            sourceLang = selectedSourceLang(),
+            targetLang = selectedTargetLang(),
+            region     = region
         )
     }
 
     /** Clears any dragged-region override. */
     private fun clearOverride() {
-        overrideRegionLabel = null
         overrideRegion = null
     }
 
@@ -683,14 +674,10 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
         clearOverride()
         val entry = prefs.getRegionList().getOrElse(prefs.captureRegionIndex) { Prefs.DEFAULT_REGION_LIST[0] }
         svc.configure(
-            displayId             = prefs.captureDisplayId,
-            sourceLang            = selectedSourceLang(),
-            targetLang            = selectedTargetLang(),
-            captureTopFraction    = entry.top,
-            captureBottomFraction = entry.bottom,
-            captureLeftFraction   = entry.left,
-            captureRightFraction  = entry.right,
-            regionLabel           = entry.label
+            displayId  = prefs.captureDisplayId,
+            sourceLang = selectedSourceLang(),
+            targetLang = selectedTargetLang(),
+            region     = entry
         )
     }
 
@@ -835,7 +822,7 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
         val lang = langDisplayName(selectedSourceLang())
         val regions = prefs.getRegionList()
         val entry = regions.getOrElse(prefs.captureRegionIndex) { Prefs.DEFAULT_REGION_LIST[0] }
-        val label = overrideRegionLabel ?: entry.label
+        val label = overrideRegion?.label ?: entry.label
         return "Searching for $lang in the \"$label\" area"
     }
 
@@ -967,9 +954,7 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
 
         if (gameDisplay != null) {
             val entry = regions[currentIndex]
-            PlayTranslateAccessibilityService.instance?.showRegionOverlay(
-                gameDisplay, entry.top, entry.bottom, entry.left, entry.right
-            )
+            PlayTranslateAccessibilityService.instance?.showRegionOverlay(gameDisplay, entry)
         }
     }
 
@@ -986,9 +971,7 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
         val regionIdx = dropdownRegionOrder[rowIdx]
         if (regionIdx >= 0) {
             val entry = dropdownRegions[regionIdx]
-            PlayTranslateAccessibilityService.instance?.updateRegionOverlay(
-                entry.top, entry.bottom, entry.left, entry.right
-            )
+            PlayTranslateAccessibilityService.instance?.updateRegionOverlay(entry)
         }
     }
 
@@ -1037,9 +1020,8 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
                 withAccessibility { captureService?.captureOnce() }
             }
             sheet.onDismissed = {}
-            sheet.onTranslateOnce = { top, bottom, left, right, label ->
-                overrideRegionLabel = label
-                overrideRegion = floatArrayOf(top, bottom, left, right)
+            sheet.onTranslateOnce = { region ->
+                overrideRegion = region
                 applyOverrideIfActive()
                 updateRegionButton()
                 withAccessibility { captureService?.captureOnce() }

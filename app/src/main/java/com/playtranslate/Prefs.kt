@@ -15,7 +15,9 @@ data class RegionEntry(
     val bottom: Float,
     val left: Float = 0f,
     val right: Float = 1f
-)
+) {
+    val isFullScreen: Boolean get() = top <= 0f && bottom >= 1f && left <= 0f && right >= 1f
+}
 
 /**
  * Simple wrapper around [SharedPreferences] for persisting user settings.

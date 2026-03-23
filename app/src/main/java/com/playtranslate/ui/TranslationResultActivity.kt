@@ -16,6 +16,7 @@ import androidx.lifecycle.lifecycleScope
 import com.playtranslate.AnkiManager
 import com.playtranslate.CaptureService
 import com.playtranslate.Prefs
+import com.playtranslate.RegionEntry
 import com.playtranslate.R
 import com.playtranslate.model.TextSegment
 import com.playtranslate.model.TranslationResult
@@ -138,14 +139,10 @@ class TranslationResultActivity : AppCompatActivity(), TranslationResultFragment
         val rightFrac  = intent.getFloatExtra(EXTRA_RIGHT_FRAC, 1f)
 
         svc.configure(
-            displayId             = prefs.captureDisplayId,
-            sourceLang            = TranslateLanguage.JAPANESE,
-            targetLang            = TranslateLanguage.ENGLISH,
-            captureTopFraction    = topFrac,
-            captureBottomFraction = bottomFrac,
-            captureLeftFraction   = leftFrac,
-            captureRightFraction  = rightFrac,
-            regionLabel           = "Drawn Region"
+            displayId  = prefs.captureDisplayId,
+            sourceLang = TranslateLanguage.JAPANESE,
+            targetLang = TranslateLanguage.ENGLISH,
+            region     = RegionEntry("Drawn Region", topFrac, bottomFrac, leftFrac, rightFrac)
         )
 
         svc.onResult = { result ->

@@ -127,15 +127,11 @@ class PlayTranslateAccessibilityService : AccessibilityService() {
         return super.onUnbind(intent)
     }
 
-    fun showRegionOverlay(
-        display: Display,
-        topFraction: Float, bottomFraction: Float,
-        leftFraction: Float = 0f, rightFraction: Float = 1f
-    ) {
+    fun showRegionOverlay(display: Display, region: RegionEntry) {
         hideRegionOverlay()
         val wm = createDisplayContext(display).getSystemService(WindowManager::class.java) ?: return
         val view = RegionOverlayView(this).apply {
-            updateRegion(topFraction, bottomFraction, leftFraction, rightFraction)
+            updateRegion(region.top, region.bottom, region.left, region.right)
         }
         val params = WindowManager.LayoutParams(
             WindowManager.LayoutParams.MATCH_PARENT,
@@ -151,11 +147,8 @@ class PlayTranslateAccessibilityService : AccessibilityService() {
         overlayView = view
     }
 
-    fun updateRegionOverlay(
-        topFraction: Float, bottomFraction: Float,
-        leftFraction: Float = 0f, rightFraction: Float = 1f
-    ) {
-        overlayView?.updateRegion(topFraction, bottomFraction, leftFraction, rightFraction)
+    fun updateRegionOverlay(region: RegionEntry) {
+        overlayView?.updateRegion(region.top, region.bottom, region.left, region.right)
     }
 
     fun hideRegionOverlay() {
@@ -207,20 +200,18 @@ class PlayTranslateAccessibilityService : AccessibilityService() {
      */
     fun showRegionIndicator(
         display: Display,
-        topFrac: Float, bottomFrac: Float,
-        leftFrac: Float, rightFrac: Float,
-        label: String,
+        region: RegionEntry,
         durationMs: Long = 1500L
     ) {
         hideRegionIndicator()
 
         // Skip for full-screen regions
-        if (topFrac <= 0f && bottomFrac >= 1f && leftFrac <= 0f && rightFrac >= 1f) return
+        if (region.isFullScreen) return
 
         val ctx = createDisplayContext(display)
         val wm = ctx.getSystemService(WindowManager::class.java) ?: return
         val dp = ctx.resources.displayMetrics.density
-        val displayLabel = "Capturing $label"
+        val displayLabel = "Capturing ${region.label}"
 
         val view = object : View(ctx) {
             private val dimPaint = android.graphics.Paint().apply {
@@ -244,10 +235,10 @@ class PlayTranslateAccessibilityService : AccessibilityService() {
             override fun onDraw(canvas: android.graphics.Canvas) {
                 val w = width.toFloat()
                 val h = height.toFloat()
-                val l = w * leftFrac
-                val t = h * topFrac
-                val r = w * rightFrac
-                val b = h * bottomFrac
+                val l = w * region.left
+                val t = h * region.top
+                val r = w * region.right
+                val b = h * region.bottom
 
                 // Darkened area outside the capture region
                 if (t > 0f) canvas.drawRect(0f, 0f, w, t, dimPaint)
@@ -309,14 +300,13 @@ class PlayTranslateAccessibilityService : AccessibilityService() {
 
     fun showRegionDragOverlay(
         display: Display,
-        initTop: Float = 0.25f, initBottom: Float = 0.75f,
-        initLeft: Float = 0.25f, initRight: Float = 0.75f,
-        onRegionChanged: (Float, Float, Float, Float) -> Unit
+        initRegion: RegionEntry = RegionEntry("", 0.25f, 0.75f, 0.25f, 0.75f),
+        onRegionChanged: (RegionEntry) -> Unit
     ) {
         hideRegionDragOverlay()
         val wm = createDisplayContext(display).getSystemService(WindowManager::class.java) ?: return
         val view = RegionDragView(this).apply {
-            setRegion(initTop, initBottom, initLeft, initRight)
+            setRegion(initRegion.top, initRegion.bottom, initRegion.left, initRegion.right)
             this.onRegionChanged = onRegionChanged
         }
         val params = WindowManager.LayoutParams(
@@ -338,7 +328,10 @@ class PlayTranslateAccessibilityService : AccessibilityService() {
         dragWm = null
     }
 
-    fun getDragRegion(): Array<Float> = dragView?.getFullRegion() ?: arrayOf(0.25f, 0.75f, 0.25f, 0.75f)
+    fun getDragRegion(): RegionEntry {
+        val v = dragView ?: return RegionEntry("", 0.25f, 0.75f, 0.25f, 0.75f)
+        return RegionEntry("", v.topFraction, v.bottomFraction, v.leftFraction, v.rightFraction)
+    }
 
     // ── Self-contained OCR debug overlay ─────────────────────────────────
 
@@ -823,21 +816,15 @@ class PlayTranslateAccessibilityService : AccessibilityService() {
             }
         }
         menu.activeRegion = CaptureService.instance?.activeRegion
-        menu.onRegionSelected = { top, bottom, left, right ->
+        menu.onRegionSelected = { region ->
             dismissFloatingMenu()
-            // Configure the service with the dragged region — persists for
-            // all future captures until the user changes it.
             CaptureService.instance?.let { svc ->
                 val prefs = Prefs(this)
                 svc.configure(
-                    displayId             = prefs.captureDisplayId,
-                    sourceLang            = prefs.sourceLang,
-                    targetLang            = prefs.targetLang,
-                    captureTopFraction    = top,
-                    captureBottomFraction = bottom,
-                    captureLeftFraction   = left,
-                    captureRightFraction  = right,
-                    regionLabel           = "Drawn Region"
+                    displayId  = prefs.captureDisplayId,
+                    sourceLang = prefs.sourceLang,
+                    targetLang = prefs.targetLang,
+                    region     = region
                 )
             }
             if (MainActivity.isLiveModeActive) {
@@ -846,10 +833,8 @@ class PlayTranslateAccessibilityService : AccessibilityService() {
             } else {
                 val effectivelySingleScreen = Prefs.isSingleScreen(this) || !MainActivity.isInForeground
                 if (effectivelySingleScreen) {
-                    // Single-screen: capture screenshot before launching activity
-                    handleRegionSelection(display.displayId, top, bottom, left, right)
+                    handleRegionSelection(display.displayId, region)
                 } else {
-                    // Dual-screen: service is already configured, just capture
                     sendMainActivityIntent(MainActivity.ACTION_REGION_CAPTURE)
                 }
             }
@@ -857,19 +842,15 @@ class PlayTranslateAccessibilityService : AccessibilityService() {
         menu.onClearRegion = {
             // Reset to full screen
             val prefs = Prefs(this)
-            prefs.captureRegionIndex = 0  // full screen preset
+            prefs.captureRegionIndex = 0
             val svc = CaptureService.instance
             if (svc != null && svc.isConfigured) {
                 val entry = Prefs.DEFAULT_REGION_LIST[0]
                 svc.configure(
-                    displayId             = prefs.captureDisplayId,
-                    sourceLang            = prefs.sourceLang,
-                    targetLang            = prefs.targetLang,
-                    captureTopFraction    = entry.top,
-                    captureBottomFraction = entry.bottom,
-                    captureLeftFraction   = entry.left,
-                    captureRightFraction  = entry.right,
-                    regionLabel           = entry.label
+                    displayId  = prefs.captureDisplayId,
+                    sourceLang = prefs.sourceLang,
+                    targetLang = prefs.targetLang,
+                    region     = entry
                 )
             }
             if (MainActivity.isInForeground) {
@@ -930,16 +911,11 @@ class PlayTranslateAccessibilityService : AccessibilityService() {
         hideTranslationOverlay()
 
         // Pre-populate with current active region (or default if full-screen)
-        val region = CaptureService.instance?.activeRegion
-        val isFullScreen = region == null ||
-            (region[0] <= 0f && region[1] >= 1f && region[2] <= 0f && region[3] >= 1f)
-        val initTop    = if (isFullScreen) 0.25f else region!![0]
-        val initBottom = if (isFullScreen) 0.75f else region!![1]
-        val initLeft   = if (isFullScreen) 0.25f else region!![2]
-        val initRight  = if (isFullScreen) 0.75f else region!![3]
+        val currentRegion = CaptureService.instance?.activeRegion
+        val initRegion = if (currentRegion == null || currentRegion.isFullScreen)
+            RegionEntry("", 0.25f, 0.75f, 0.25f, 0.75f) else currentRegion
 
-        showRegionDragOverlay(display) { _, _, _, _ -> /* live updates not needed */ }
-        dragView?.setRegion(initTop, initBottom, initLeft, initRight)
+        showRegionDragOverlay(display, initRegion) { _ -> }
         dragView?.onDragStart = {
             regionEditorBar?.visibility = View.INVISIBLE
             regionEditorLabel?.visibility = View.INVISIBLE
@@ -1000,29 +976,22 @@ class PlayTranslateAccessibilityService : AccessibilityService() {
             }
             layoutParams = android.widget.LinearLayout.LayoutParams(btnSize, btnSize)
             setOnClickListener {
-                val fracs = dragView?.getFullRegion() ?: return@setOnClickListener
-                val top = fracs[0]; val bottom = fracs[1]
-                val left = fracs[2]; val right = fracs[3]
+                val dv = dragView ?: return@setOnClickListener
+                val drawnRegion = RegionEntry("Drawn Region", dv.topFraction, dv.bottomFraction, dv.leftFraction, dv.rightFraction)
                 hideRegionEditor()
-                // Configure the service with the edited region — persists
                 CaptureService.instance?.let { svc ->
                     val prefs = Prefs(this@PlayTranslateAccessibilityService)
                     svc.configure(
-                        displayId             = prefs.captureDisplayId,
-                        sourceLang            = prefs.sourceLang,
-                        targetLang            = prefs.targetLang,
-                        captureTopFraction    = top,
-                        captureBottomFraction = bottom,
-                        captureLeftFraction   = left,
-                        captureRightFraction  = right,
-                        regionLabel           = "Drawn Region"
+                        displayId  = prefs.captureDisplayId,
+                        sourceLang = prefs.sourceLang,
+                        targetLang = prefs.targetLang,
+                        region     = drawnRegion
                     )
                 }
                 if (MainActivity.isLiveModeActive) {
                     CaptureService.instance?.refreshLiveOverlay()
                 } else {
-                    // Single-screen: capture screenshot before launching activity
-                    handleRegionSelection(display.displayId, top, bottom, left, right)
+                    handleRegionSelection(display.displayId, drawnRegion)
                 }
             }
         }
@@ -1115,14 +1084,10 @@ class PlayTranslateAccessibilityService : AccessibilityService() {
                     Prefs.DEFAULT_REGION_LIST[0]
                 }
                 svc.configure(
-                    displayId             = prefs.captureDisplayId,
-                    sourceLang            = prefs.sourceLang,
-                    targetLang            = prefs.targetLang,
-                    captureTopFraction    = entry.top,
-                    captureBottomFraction = entry.bottom,
-                    captureLeftFraction   = entry.left,
-                    captureRightFraction  = entry.right,
-                    regionLabel           = entry.label
+                    displayId  = prefs.captureDisplayId,
+                    sourceLang = prefs.sourceLang,
+                    targetLang = prefs.targetLang,
+                    region     = entry
                 )
             }
             // Delay start if a popup was just dismissed so the compositor
@@ -1154,19 +1119,17 @@ class PlayTranslateAccessibilityService : AccessibilityService() {
      * - Otherwise, sends ACTION_REGION_CAPTURE to MainActivity (which is on a
      *   different display and doesn't cover the game).
      */
-    private fun handleRegionSelection(displayId: Int, top: Float, bottom: Float, left: Float, right: Float) {
+    private fun handleRegionSelection(displayId: Int, region: RegionEntry) {
         val effectivelySingleScreen = Prefs.isSingleScreen(this) || !MainActivity.isInForeground
         if (effectivelySingleScreen) {
-            // Capture BEFORE launching the activity — once the activity appears
-            // on a single-screen device it would cover the game content.
             serviceScope.launch {
                 val bitmap = screenshotManager?.requestClean(displayId)
                 val intent = Intent(this@PlayTranslateAccessibilityService, com.playtranslate.ui.TranslationResultActivity::class.java).apply {
                     addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                    putExtra(com.playtranslate.ui.TranslationResultActivity.EXTRA_TOP_FRAC, top)
-                    putExtra(com.playtranslate.ui.TranslationResultActivity.EXTRA_BOTTOM_FRAC, bottom)
-                    putExtra(com.playtranslate.ui.TranslationResultActivity.EXTRA_LEFT_FRAC, left)
-                    putExtra(com.playtranslate.ui.TranslationResultActivity.EXTRA_RIGHT_FRAC, right)
+                    putExtra(com.playtranslate.ui.TranslationResultActivity.EXTRA_TOP_FRAC, region.top)
+                    putExtra(com.playtranslate.ui.TranslationResultActivity.EXTRA_BOTTOM_FRAC, region.bottom)
+                    putExtra(com.playtranslate.ui.TranslationResultActivity.EXTRA_LEFT_FRAC, region.left)
+                    putExtra(com.playtranslate.ui.TranslationResultActivity.EXTRA_RIGHT_FRAC, region.right)
                 }
                 if (bitmap != null) {
                     val path = savePreCapturedScreenshot(bitmap)
@@ -1179,10 +1142,10 @@ class PlayTranslateAccessibilityService : AccessibilityService() {
             val intent = Intent(this, MainActivity::class.java).apply {
                 action = MainActivity.ACTION_REGION_CAPTURE
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
-                putExtra(MainActivity.EXTRA_TOP_FRAC, top)
-                putExtra(MainActivity.EXTRA_BOTTOM_FRAC, bottom)
-                putExtra(MainActivity.EXTRA_LEFT_FRAC, left)
-                putExtra(MainActivity.EXTRA_RIGHT_FRAC, right)
+                putExtra(MainActivity.EXTRA_TOP_FRAC, region.top)
+                putExtra(MainActivity.EXTRA_BOTTOM_FRAC, region.bottom)
+                putExtra(MainActivity.EXTRA_LEFT_FRAC, region.left)
+                putExtra(MainActivity.EXTRA_RIGHT_FRAC, region.right)
             }
             startActivity(intent)
         }

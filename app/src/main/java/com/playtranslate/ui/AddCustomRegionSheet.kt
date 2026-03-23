@@ -22,7 +22,7 @@ class AddCustomRegionSheet : DialogFragment() {
     var onRegionEdited: ((editIndex: Int) -> Unit)? = null
     var onDismissed: (() -> Unit)? = null
     /** Invoked instead of [onDismissed] when "Translate Once" is tapped. */
-    var onTranslateOnce: ((top: Float, bottom: Float, left: Float, right: Float, label: String) -> Unit)? = null
+    var onTranslateOnce: ((RegionEntry) -> Unit)? = null
 
     /** Set to enable edit mode: index into the region list to update. */
     var editIndex: Int = -1
@@ -76,12 +76,12 @@ class AddCustomRegionSheet : DialogFragment() {
 
         gameDisplay?.let { display ->
             PlayTranslateAccessibilityService.instance?.showRegionDragOverlay(
-                display, topFraction, bottomFraction, leftFraction, rightFraction
-            ) { top, bottom, left, right ->
-                topFraction    = top
-                bottomFraction = bottom
-                leftFraction   = left
-                rightFraction  = right
+                display, RegionEntry("", topFraction, bottomFraction, leftFraction, rightFraction)
+            ) { region ->
+                topFraction    = region.top
+                bottomFraction = region.bottom
+                leftFraction   = region.left
+                rightFraction  = region.right
             }
         }
 
@@ -125,7 +125,7 @@ class AddCustomRegionSheet : DialogFragment() {
     override fun onDismiss(dialog: DialogInterface) {
         PlayTranslateAccessibilityService.instance?.hideRegionDragOverlay()
         if (translateOnceRequested) {
-            onTranslateOnce?.invoke(topFraction, bottomFraction, leftFraction, rightFraction, translateOnceLabel)
+            onTranslateOnce?.invoke(RegionEntry(translateOnceLabel, topFraction, bottomFraction, leftFraction, rightFraction))
         } else {
             onDismissed?.invoke()
         }

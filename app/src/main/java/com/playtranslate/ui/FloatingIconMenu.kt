@@ -21,6 +21,7 @@ import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
 import com.playtranslate.R
+import com.playtranslate.RegionEntry
 
 /**
  * Full-screen overlay that dims the screen and shows a small popup menu
@@ -38,7 +39,7 @@ class FloatingIconMenu(context: Context) : FrameLayout(context) {
     var onHideIcon: (() -> Unit)? = null
     var onHideTemporary: (() -> Unit)? = null
     var onDismiss: (() -> Unit)? = null
-    var onRegionSelected: ((top: Float, bottom: Float, left: Float, right: Float) -> Unit)? = null
+    var onRegionSelected: ((RegionEntry) -> Unit)? = null
     var onClearRegion: (() -> Unit)? = null
     var onToggleLive: (() -> Unit)? = null
     var onCaptureRegion: (() -> Unit)? = null
@@ -46,7 +47,7 @@ class FloatingIconMenu(context: Context) : FrameLayout(context) {
 
     /** Current active capture region as fractional coordinates (top, bottom, left, right).
      *  null or (0,1,0,1) means full screen — no region highlight shown. */
-    var activeRegion: FloatArray? = null
+    var activeRegion: RegionEntry? = null
     var isLiveMode: Boolean = false
         set(value) {
             field = value
@@ -349,15 +350,13 @@ class FloatingIconMenu(context: Context) : FrameLayout(context) {
             canvas.drawRect(sel, selectionStrokePaint)
         } else {
             val region = activeRegion
-            val isFullScreen = region == null ||
-                (region[0] <= 0f && region[1] >= 1f && region[2] <= 0f && region[3] >= 1f)
-            if (!isFullScreen && region != null) {
+            if (region != null && !region.isFullScreen) {
                 // Show the active capture region as a clear window
                 val w = width.toFloat()
                 val h = height.toFloat()
                 val regionRect = RectF(
-                    region[2] * w, region[0] * h,
-                    region[3] * w, region[1] * h
+                    region.left * w, region.top * h,
+                    region.right * w, region.bottom * h
                 )
                 canvas.drawRect(0f, 0f, w, h, dimPaint)
                 canvas.drawRect(regionRect, regionFillPaint)
@@ -438,10 +437,7 @@ class FloatingIconMenu(context: Context) : FrameLayout(context) {
                         val h = height.toFloat()
                         if (w > 0 && h > 0) {
                             onRegionSelected?.invoke(
-                                sel.top / h,
-                                sel.bottom / h,
-                                sel.left / w,
-                                sel.right / w
+                                RegionEntry("Drawn Region", sel.top / h, sel.bottom / h, sel.left / w, sel.right / w)
                             )
                         }
                     }
@@ -724,15 +720,14 @@ class FloatingIconMenu(context: Context) : FrameLayout(context) {
         clearRegionButton = null
 
         val region = activeRegion ?: return
-        val isFullScreen = region[0] <= 0f && region[1] >= 1f && region[2] <= 0f && region[3] >= 1f
-        if (isFullScreen) return
+        if (region.isFullScreen) return
 
         val btnSize = (36 * dp).toInt()
         val touchSize = (56 * dp).toInt()
         val touchPad = (touchSize - btnSize) / 2
         val regionRect = RectF(
-            region[2] * screenW, region[0] * screenH,
-            region[3] * screenW, region[1] * screenH
+            region.left * screenW, region.top * screenH,
+            region.right * screenW, region.bottom * screenH
         )
 
         // Position on the opposite side from the menu

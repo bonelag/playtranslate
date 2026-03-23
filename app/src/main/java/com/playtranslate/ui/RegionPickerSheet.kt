@@ -26,7 +26,7 @@ import com.playtranslate.themeColor
 class RegionPickerSheet : DialogFragment() {
 
     var onSaved: ((Int) -> Unit)? = null
-    var onTranslateOnce: ((top: Float, bottom: Float, left: Float, right: Float, label: String) -> Unit)? = null
+    var onTranslateOnce: ((RegionEntry) -> Unit)? = null
     var onClose: (() -> Unit)? = null
     var gameDisplay: Display? = null
 
@@ -168,7 +168,7 @@ class RegionPickerSheet : DialogFragment() {
             selectedIndex = index
             prefs.captureRegionIndex = selectedIndex
             val e = workingList.getOrElse(index) { Prefs.DEFAULT_REGION_LIST[0] }
-            PlayTranslateAccessibilityService.instance?.updateRegionOverlay(e.top, e.bottom, e.left, e.right)
+            PlayTranslateAccessibilityService.instance?.updateRegionOverlay(e)
             onSaved?.invoke(selectedIndex)
             rebuildList()
         }
@@ -358,10 +358,10 @@ class RegionPickerSheet : DialogFragment() {
                     showOverlayForIndex(selectedIndex)
                 }
             }
-            sheet.onTranslateOnce = { top, bottom, left, right, label ->
+            sheet.onTranslateOnce = { region ->
                 PlayTranslateAccessibilityService.instance?.hideRegionOverlay()
                 if (showsDialog) dismissAllowingStateLoss()
-                onTranslateOnce?.invoke(top, bottom, left, right, label)
+                onTranslateOnce?.invoke(region)
             }
         }.show(childFragmentManager, AddCustomRegionSheet.TAG)
     }
@@ -371,7 +371,7 @@ class RegionPickerSheet : DialogFragment() {
     private fun showOverlayForIndex(index: Int) {
         val display = gameDisplay ?: return
         val e = workingList.getOrElse(index) { Prefs.DEFAULT_REGION_LIST[0] }
-        PlayTranslateAccessibilityService.instance?.showRegionOverlay(display, e.top, e.bottom, e.left, e.right)
+        PlayTranslateAccessibilityService.instance?.showRegionOverlay(display, e)
     }
 
     companion object {
