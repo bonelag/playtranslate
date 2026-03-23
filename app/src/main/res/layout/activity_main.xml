@@ -103,49 +103,17 @@
 
             </FrameLayout>
 
-            <!-- Live toggle: progress ring wrapping play/pause buttons -->
-            <FrameLayout
-                android:id="@+id/liveButtonContainer"
+            <!-- Hamburger menu button -->
+            <ImageButton
+                android:id="@+id/btnMenu"
                 android:layout_width="58dp"
                 android:layout_height="match_parent"
-                android:layout_marginStart="6dp">
-
-                <com.google.android.material.progressindicator.CircularProgressIndicator
-                    android:id="@+id/liveProgressRing"
-                    android:layout_width="58dp"
-                    android:layout_height="58dp"
-                    android:layout_gravity="center"
-                    android:indeterminate="true"
-                    android:visibility="gone"
-                    app:indicatorSize="56dp"
-                    app:trackThickness="2dp"
-                    app:indicatorColor="?attr/colorAccentPrimary" />
-
-                <!-- Non-live: filled teal play button -->
-                <ImageButton
-                    android:id="@+id/btnLivePlay"
-                    android:layout_width="match_parent"
-                    android:layout_height="match_parent"
-                    android:layout_gravity="center"
-                    android:background="@drawable/bg_live_play"
-                    android:src="@drawable/ic_play"
-                    android:tint="?attr/colorTextOnAccent"
-                    android:scaleType="center"
-                    android:contentDescription="Start live mode" />
-
-                <!-- Live: outlined pause button -->
-                <ImageButton
-                    android:id="@+id/btnLivePause"
-                    android:layout_width="match_parent"
-                    android:layout_height="match_parent"
-                    android:layout_gravity="center"
-                    android:background="@drawable/bg_live_pause"
-                    android:src="@drawable/ic_pause"
-                    android:scaleType="center"
-                    android:visibility="gone"
-                    android:contentDescription="Pause live mode" />
-
-            </FrameLayout>
+                android:layout_marginStart="6dp"
+                android:background="@drawable/bg_live_play"
+                android:src="@drawable/ic_menu"
+                android:tint="?attr/colorTextOnAccent"
+                android:scaleType="center"
+                android:contentDescription="Open menu" />
 
         </LinearLayout>
 
@@ -424,6 +392,191 @@
         </LinearLayout>
 
     </LinearLayout>
+
+    <!-- ── Slide-in menu overlay ──────────────────────────────────────── -->
+    <FrameLayout
+        android:id="@+id/menuOverlay"
+        android:layout_width="0dp"
+        android:layout_height="0dp"
+        android:visibility="gone"
+        android:clickable="true"
+        android:focusable="true"
+        android:elevation="6dp"
+        app:layout_constraintTop_toTopOf="parent"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent">
+
+        <!-- Scrim (darkened background, dismisses menu on tap) -->
+        <View
+            android:id="@+id/menuScrim"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:background="#80000000" />
+
+        <!-- Menu panel (slides in from right) -->
+        <LinearLayout
+            android:id="@+id/menuPanel"
+            android:layout_width="220dp"
+            android:layout_height="match_parent"
+            android:layout_gravity="end"
+            android:orientation="vertical"
+            android:background="#DD000000"
+            android:paddingTop="16dp"
+            android:paddingBottom="16dp"
+            android:elevation="8dp">
+
+            <!-- Settings -->
+            <LinearLayout
+                android:id="@+id/menuItemSettings"
+                android:layout_width="match_parent"
+                android:layout_height="56dp"
+                android:orientation="horizontal"
+                android:gravity="center_vertical"
+                android:paddingHorizontal="24dp"
+                android:background="?attr/selectableItemBackground"
+                android:clickable="true"
+                android:focusable="true">
+
+                <ImageView
+                    android:layout_width="24dp"
+                    android:layout_height="24dp"
+                    android:src="@drawable/ic_settings"
+                    android:tint="?attr/colorTextPrimary" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="20dp"
+                    android:text="Settings"
+                    android:textColor="?attr/colorTextPrimary"
+                    android:textSize="16sp" />
+
+            </LinearLayout>
+
+            <!-- Spacer -->
+            <View
+                android:layout_width="match_parent"
+                android:layout_height="0dp"
+                android:layout_weight="1" />
+
+            <!-- Start/Stop Live -->
+            <LinearLayout
+                android:id="@+id/menuItemLive"
+                android:layout_width="match_parent"
+                android:layout_height="56dp"
+                android:orientation="horizontal"
+                android:gravity="center_vertical"
+                android:paddingHorizontal="24dp"
+                android:background="?attr/selectableItemBackground"
+                android:clickable="true"
+                android:focusable="true">
+
+                <ImageView
+                    android:id="@+id/menuItemLiveIcon"
+                    android:layout_width="24dp"
+                    android:layout_height="24dp"
+                    android:src="@drawable/ic_play"
+                    android:tint="?attr/colorTextPrimary" />
+
+                <TextView
+                    android:id="@+id/menuItemLiveLabel"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="20dp"
+                    android:text="Start Live"
+                    android:textColor="?attr/colorTextPrimary"
+                    android:textSize="16sp" />
+
+            </LinearLayout>
+
+            <!-- Capture Region -->
+            <LinearLayout
+                android:id="@+id/menuItemRegion"
+                android:layout_width="match_parent"
+                android:layout_height="56dp"
+                android:orientation="horizontal"
+                android:gravity="center_vertical"
+                android:paddingHorizontal="24dp"
+                android:background="?attr/selectableItemBackground"
+                android:clickable="true"
+                android:focusable="true">
+
+                <ImageView
+                    android:layout_width="24dp"
+                    android:layout_height="24dp"
+                    android:src="@drawable/ic_crop"
+                    android:tint="?attr/colorTextPrimary" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="20dp"
+                    android:text="Capture Region"
+                    android:textColor="?attr/colorTextPrimary"
+                    android:textSize="16sp" />
+
+            </LinearLayout>
+
+            <!-- Translations -->
+            <LinearLayout
+                android:id="@+id/menuItemTranslations"
+                android:layout_width="match_parent"
+                android:layout_height="56dp"
+                android:orientation="horizontal"
+                android:gravity="center_vertical"
+                android:paddingHorizontal="24dp"
+                android:background="?attr/selectableItemBackground"
+                android:clickable="true"
+                android:focusable="true">
+
+                <ImageView
+                    android:layout_width="24dp"
+                    android:layout_height="24dp"
+                    android:src="@drawable/ic_history"
+                    android:tint="?attr/colorTextPrimary" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="20dp"
+                    android:text="Translations"
+                    android:textColor="?attr/colorTextPrimary"
+                    android:textSize="16sp" />
+
+            </LinearLayout>
+
+            <!-- Close -->
+            <LinearLayout
+                android:id="@+id/menuItemClose"
+                android:layout_width="match_parent"
+                android:layout_height="56dp"
+                android:orientation="horizontal"
+                android:gravity="center_vertical"
+                android:paddingHorizontal="24dp"
+                android:background="?attr/selectableItemBackground"
+                android:clickable="true"
+                android:focusable="true">
+
+                <ImageView
+                    android:layout_width="24dp"
+                    android:layout_height="24dp"
+                    android:src="@drawable/ic_close"
+                    android:tint="?attr/colorTextPrimary" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="20dp"
+                    android:text="Close"
+                    android:textColor="?attr/colorTextPrimary"
+                    android:textSize="16sp" />
+
+            </LinearLayout>
+
+        </LinearLayout>
+
+    </FrameLayout>
 
     <!-- Debug: detection state log (debug builds only) -->
     <TextView

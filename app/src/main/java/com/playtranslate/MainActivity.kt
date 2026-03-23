@@ -20,11 +20,16 @@ import android.graphics.Typeface
 import android.text.Spannable
 import android.text.SpannableStringBuilder
 import android.text.style.StyleSpan
+import android.animation.AnimatorSet
+import android.animation.ObjectAnimator
+import android.view.animation.AccelerateInterpolator
+import android.view.animation.DecelerateInterpolator
 import android.widget.Button
-import android.widget.Toast
+import android.widget.FrameLayout
 import android.widget.ImageButton
+import android.widget.ImageView
+import android.widget.Toast
 import com.google.android.material.button.MaterialButton
-import com.google.android.material.progressindicator.CircularProgressIndicator
 import android.widget.LinearLayout
 import android.widget.PopupWindow
 import android.widget.RadioButton
@@ -65,10 +70,12 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
     private lateinit var btnSettings: ImageButton
     private lateinit var btnClear: ImageButton
     private lateinit var btnMainAddToAnki: ImageButton
-    private lateinit var btnLivePlay: ImageButton
-    private lateinit var btnLivePause: ImageButton
-    private lateinit var liveProgressRing: CircularProgressIndicator
-    private lateinit var liveButtonContainer: android.view.View
+    private lateinit var btnMenu: ImageButton
+    private lateinit var menuOverlay: FrameLayout
+    private lateinit var menuPanel: View
+    private lateinit var menuScrim: View
+    private lateinit var menuItemLiveIcon: ImageView
+    private lateinit var menuItemLiveLabel: TextView
     private lateinit var onboardingContainer: View
     private lateinit var pageNotif: View
     private lateinit var pageA11y: View
@@ -296,10 +303,12 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
         btnSettings          = findViewById(R.id.btnSettings)
         btnClear             = findViewById(R.id.btnClear)
         btnMainAddToAnki     = findViewById(R.id.btnMainAddToAnki)
-        btnLivePlay          = findViewById(R.id.btnLivePlay)
-        btnLivePause         = findViewById(R.id.btnLivePause)
-        liveProgressRing     = findViewById(R.id.liveProgressRing)
-        liveButtonContainer  = findViewById(R.id.liveButtonContainer)
+        btnMenu              = findViewById(R.id.btnMenu)
+        menuOverlay          = findViewById(R.id.menuOverlay)
+        menuPanel            = findViewById(R.id.menuPanel)
+        menuScrim            = findViewById(R.id.menuScrim)
+        menuItemLiveIcon     = findViewById(R.id.menuItemLiveIcon)
+        menuItemLiveLabel    = findViewById(R.id.menuItemLiveLabel)
         onboardingContainer  = findViewById(R.id.onboardingContainer)
         pageNotif            = findViewById(R.id.pageNotif)
         pageA11y             = findViewById(R.id.pageA11y)
@@ -315,8 +324,7 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
         applyRegionDropdownGestures(btnTranslate)
         applyRegionDropdownGestures(btnCapturing)
         applyRegionDropdownGestures(btnChangeRegion)
-        applyRegionDropdownGestures(btnLivePlay)
-        applyRegionDropdownGestures(btnLivePause)
+        applyRegionDropdownGestures(btnMenu)
     }
 
     /** Attaches long-press + drag-to-select region picker gestures to [btn]. */
@@ -391,8 +399,7 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
         // Dismiss any definition popup when entering live mode
         val hadPopup = PlayTranslateAccessibilityService.instance?.dragLookupController?.isPopupShowing == true
         PlayTranslateAccessibilityService.instance?.dragLookupController?.dismiss()
-        btnLivePlay.visibility = View.GONE
-        btnLivePause.visibility = View.VISIBLE
+        updateMenuLiveItem()
         btnClear.visibility = View.GONE
         updateRegionButton()
         resultFragment?.showStatus(searchingStatusText())
@@ -409,9 +416,7 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
     private fun stopLiveMode() {
         isLiveMode = false
         isLiveModeActive = false
-        btnLivePause.visibility = View.GONE
-        btnLivePlay.visibility = View.VISIBLE
-        liveProgressRing.visibility = View.GONE
+        updateMenuLiveItem()
         captureService?.stopLive()
         updateRegionButton()
         val frag = resultFragment
@@ -439,8 +444,13 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
 
         btnSettings.setOnClickListener { openSettings() }
 
-        btnLivePlay.setOnClickListener { toggleLiveMode() }
-        btnLivePause.setOnClickListener { toggleLiveMode() }
+        btnMenu.setOnClickListener { showMenu() }
+        menuScrim.setOnClickListener { dismissMenu() }
+        findViewById<View>(R.id.menuItemSettings).setOnClickListener { dismissMenu(); openSettings() }
+        findViewById<View>(R.id.menuItemLive).setOnClickListener { dismissMenu(); toggleLiveMode() }
+        findViewById<View>(R.id.menuItemRegion).setOnClickListener { dismissMenu() }
+        findViewById<View>(R.id.menuItemTranslations).setOnClickListener { dismissMenu() }
+        findViewById<View>(R.id.menuItemClose).setOnClickListener { dismissMenu() }
 
         btnClear.setOnClickListener {
             resultFragment?.showStatus(getString(R.string.status_idle))
@@ -451,6 +461,52 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
         btnMainAddToAnki.setOnClickListener { resultFragment?.onAnkiClicked() }
         resultFragment?.onAnkiEnabledChanged = { enabled ->
             btnMainAddToAnki.isEnabled = enabled
+        }
+    }
+
+    // ── Slide-in menu ──────────────────────────────────────────────────
+
+    private fun showMenu() {
+        updateMenuLiveItem()
+        menuOverlay.visibility = View.VISIBLE
+        menuScrim.alpha = 0f
+        menuPanel.translationX = menuPanel.width.toFloat().takeIf { it > 0f } ?: 400f
+        val slideIn = ObjectAnimator.ofFloat(menuPanel, View.TRANSLATION_X, 0f).apply {
+            duration = 200
+            interpolator = DecelerateInterpolator()
+        }
+        val fadeIn = ObjectAnimator.ofFloat(menuScrim, View.ALPHA, 1f).apply {
+            duration = 200
+        }
+        AnimatorSet().apply { playTogether(slideIn, fadeIn); start() }
+    }
+
+    private fun dismissMenu() {
+        val slideOut = ObjectAnimator.ofFloat(menuPanel, View.TRANSLATION_X, menuPanel.width.toFloat()).apply {
+            duration = 200
+            interpolator = AccelerateInterpolator()
+        }
+        val fadeOut = ObjectAnimator.ofFloat(menuScrim, View.ALPHA, 0f).apply {
+            duration = 200
+        }
+        AnimatorSet().apply {
+            playTogether(slideOut, fadeOut)
+            addListener(object : android.animation.AnimatorListenerAdapter() {
+                override fun onAnimationEnd(animation: android.animation.Animator) {
+                    menuOverlay.visibility = View.GONE
+                }
+            })
+            start()
+        }
+    }
+
+    private fun updateMenuLiveItem() {
+        if (isLiveMode) {
+            menuItemLiveIcon.setImageResource(R.drawable.ic_stop)
+            menuItemLiveLabel.text = "Stop Live"
+        } else {
+            menuItemLiveIcon.setImageResource(R.drawable.ic_play)
+            menuItemLiveLabel.text = "Start Live"
         }
     }
 
@@ -523,7 +579,6 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
             runOnUiThread {
                 editTranslationJob?.cancel()
                 editTranslationJob = null
-                liveProgressRing.visibility = View.GONE
                 resultFragment?.displayResult(result)
                 btnMainAddToAnki.visibility = View.VISIBLE
                 if (!isLiveModeActive) {
@@ -538,7 +593,7 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
             runOnUiThread { resultFragment?.showStatus(msg) }
         }
         svc.onTranslationStarted = {
-            runOnUiThread { liveProgressRing.visibility = View.VISIBLE }
+            // progress indication removed — menu-based UI
         }
         svc.onLiveNoText = {
             runOnUiThread { if (isLiveModeActive) resultFragment?.showStatus(searchingStatusText()) }
