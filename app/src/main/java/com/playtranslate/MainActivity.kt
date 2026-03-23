@@ -251,7 +251,7 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
             ACTION_START_LIVE -> if (!isLiveMode) withAccessibility { startLiveMode() }
             ACTION_STOP_LIVE -> if (isLiveMode) stopLiveMode()
             ACTION_ADD_CUSTOM_REGION -> openAddCustomRegionFromDropdown()
-            ACTION_REFRESH_REGION_LABEL -> updateRegionButton()
+            ACTION_REFRESH_REGION_LABEL -> { clearOverride(); updateRegionButton() }
         }
     }
 
