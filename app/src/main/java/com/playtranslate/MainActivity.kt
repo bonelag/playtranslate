@@ -482,13 +482,13 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
 
     private fun updateMenuLiveItem() {
         if (isLiveMode) {
-            menuItemLiveIcon.setImageResource(R.drawable.ic_stop)
-            menuItemLiveLabel.text = "Stop Live"
+            menuItemLiveIcon.setImageResource(R.drawable.ic_pause)
+            menuItemLiveLabel.text = "Pause Auto"
             btnMenu.setBackgroundResource(R.drawable.bg_live_recording)
             btnMenu.imageTintList = android.content.res.ColorStateList.valueOf(android.graphics.Color.WHITE)
         } else {
             menuItemLiveIcon.setImageResource(R.drawable.ic_play)
-            menuItemLiveLabel.text = "Start Live"
+            menuItemLiveLabel.text = "Auto Translate"
             btnMenu.setBackgroundResource(R.drawable.bg_live_play)
             btnMenu.imageTintList = android.content.res.ColorStateList.valueOf(themeColor(R.attr.colorTextOnAccent))
         }

@@ -329,7 +329,7 @@ class FloatingIconMenu(context: Context) : FrameLayout(context) {
         if (isLiveMode) {
             liveIcon.text = "\u275A\u275A" // ❚❚ pause
             liveIcon.textSize = 20f
-            liveLabel.text = "Pause"
+            liveLabel.text = "Pause Auto"
             (liveBtn.background as? GradientDrawable)?.setColor(Color.parseColor("#D4A020"))
         } else {
             liveIcon.text = "\u25B6" // ▶ play
