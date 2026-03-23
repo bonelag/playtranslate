@@ -67,7 +67,6 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
     private lateinit var btnTranslate: MaterialButton
     private lateinit var btnCapturing: MaterialButton
     private lateinit var btnChangeRegion: Button
-    private lateinit var btnSettings: ImageButton
     private lateinit var btnClear: ImageButton
     private lateinit var btnMainAddToAnki: ImageButton
     private lateinit var btnMenu: ImageButton
@@ -300,7 +299,6 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
         btnTranslate         = findViewById(R.id.btnTranslate)
         btnCapturing         = findViewById(R.id.btnCapturing)
         btnChangeRegion      = findViewById(R.id.btnChangeRegion)
-        btnSettings          = findViewById(R.id.btnSettings)
         btnClear             = findViewById(R.id.btnClear)
         btnMainAddToAnki     = findViewById(R.id.btnMainAddToAnki)
         btnMenu              = findViewById(R.id.btnMenu)
@@ -441,8 +439,6 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
             }
         }
         btnCapturing.setOnClickListener { showRegionPickerSheet() }
-
-        btnSettings.setOnClickListener { openSettings() }
 
         btnMenu.setOnClickListener { showMenu() }
         menuScrim.setOnClickListener { dismissMenu() }
@@ -751,8 +747,7 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
                 return
             }
             onboardingContainer.visibility = View.GONE
-            btnSettings.visibility = View.GONE
-            val isAlreadySingleScreenSheet = existingSheet != null &&
+                val isAlreadySingleScreenSheet = existingSheet != null &&
                 existingSheet.arguments?.getBoolean("hide_dismiss", false) == true
             if (!isAlreadySingleScreenSheet) {
                 existingSheet?.dismissAllowingStateLoss()
@@ -767,7 +762,6 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
 
         if (a11yEnabled) {
             onboardingContainer.visibility = View.GONE
-            btnSettings.visibility = View.VISIBLE
             return
         }
         showOnboardingPage(pageA11y)
@@ -775,7 +769,6 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
 
     private fun showOnboardingPage(page: View) {
         onboardingContainer.visibility = View.VISIBLE
-        btnSettings.visibility = View.GONE
         pageNotif.visibility      = if (page == pageNotif)      View.VISIBLE else View.GONE
         pageA11y.visibility       = if (page == pageA11y)       View.VISIBLE else View.GONE
         pageA11ySingle.visibility = if (page == pageA11ySingle) View.VISIBLE else View.GONE
