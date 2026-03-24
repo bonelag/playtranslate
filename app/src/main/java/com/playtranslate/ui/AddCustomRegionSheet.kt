@@ -24,12 +24,17 @@ class AddCustomRegionSheet : DialogFragment() {
     /** Invoked instead of [onDismissed] when "Translate Once" is tapped. */
     var onTranslateOnce: ((RegionEntry) -> Unit)? = null
 
-    /** Non-null to enable edit mode: the region to edit. */
-    var editRegion: RegionEntry? = null
-    /** Index into the saved region list (for updating in place). */
-    var editIndex: Int = -1
+    private var initRegionEntry: RegionEntry? = null
+    private var editIndex: Int = -1
 
-    private val isEditMode get() = editRegion != null
+    private val isEditMode get() = initRegionEntry != null && editIndex >= 0
+
+    /** Prepopulate the drag overlay with [region]'s bounds.
+     *  Pass [editIndex] to enable edit mode (save in place instead of adding). */
+    fun initRegion(region: RegionEntry, editIndex: Int = -1) {
+        this.initRegionEntry = region
+        this.editIndex = editIndex
+    }
 
     private var topFraction    = 0.25f
     private var bottomFraction = 0.75f
@@ -61,15 +66,17 @@ class AddCustomRegionSheet : DialogFragment() {
         val btnClose         = view.findViewById<View>(R.id.btnCloseCustomRegion)
         val btnTranslateOnce = view.findViewById<View>(R.id.btnTranslateOnce)
 
-        val edit = editRegion
-        if (edit != null) {
-            topFraction = edit.top
-            bottomFraction = edit.bottom
-            leftFraction = edit.left
-            rightFraction = edit.right
-            tvTitle.text = "Edit ${edit.label}"
-            etName.setText(edit.label)
-            btnTranslateOnce.visibility = View.GONE
+        val init = initRegionEntry
+        if (init != null) {
+            topFraction = init.top
+            bottomFraction = init.bottom
+            leftFraction = init.left
+            rightFraction = init.right
+            if (isEditMode) {
+                tvTitle.text = "Edit ${init.label}"
+                etName.setText(init.label)
+                btnTranslateOnce.visibility = View.GONE
+            }
         }
 
         gameDisplay?.let { display ->

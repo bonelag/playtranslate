@@ -863,17 +863,7 @@ class PlayTranslateAccessibilityService : AccessibilityService() {
             if (effectivelySingleScreen) {
                 showRegionEditor(display)
             } else {
-                val current = CaptureService.instance?.activeRegion
-                if (current != null && !current.isFullScreen) {
-                    val intent = Intent(this, MainActivity::class.java).apply {
-                        action = MainActivity.ACTION_ADD_CUSTOM_REGION
-                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
-                        putExtra("edit_region", current)
-                    }
-                    startActivity(intent)
-                } else {
-                    sendMainActivityIntent(MainActivity.ACTION_ADD_CUSTOM_REGION)
-                }
+                sendMainActivityIntent(MainActivity.ACTION_ADD_CUSTOM_REGION)
             }
         }
 
