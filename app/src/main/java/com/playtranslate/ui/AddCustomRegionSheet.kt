@@ -18,8 +18,8 @@ import com.playtranslate.fullScreenDialogTheme
 class AddCustomRegionSheet : DialogFragment() {
 
     var gameDisplay: Display? = null
-    var onRegionAdded: ((newIndex: Int) -> Unit)? = null
-    var onRegionEdited: ((editIndex: Int) -> Unit)? = null
+    var onRegionAdded: ((RegionEntry) -> Unit)? = null
+    var onRegionEdited: ((RegionEntry) -> Unit)? = null
     var onDismissed: (() -> Unit)? = null
     /** Invoked instead of [onDismissed] when "Translate Once" is tapped. */
     var onTranslateOnce: ((RegionEntry) -> Unit)? = null
@@ -93,14 +93,17 @@ class AddCustomRegionSheet : DialogFragment() {
             val label = etName.text.toString().trim().ifEmpty { "Custom Region" }
             val prefs = Prefs(requireContext())
             val list  = prefs.getRegionList().toMutableList()
-            if (isEditMode && editIndex in list.indices) {
-                list[editIndex] = RegionEntry(label, topFraction, bottomFraction, leftFraction, rightFraction)
+            val existingId = initRegionEntry?.id
+            if (isEditMode && editIndex in list.indices && existingId != null) {
+                val updated = RegionEntry(label, topFraction, bottomFraction, leftFraction, rightFraction, id = existingId)
+                list[editIndex] = updated
                 prefs.setRegionList(list)
-                onRegionEdited?.invoke(editIndex)
+                onRegionEdited?.invoke(updated)
             } else {
-                list.add(RegionEntry(label, topFraction, bottomFraction, leftFraction, rightFraction))
+                val newEntry = RegionEntry(label, topFraction, bottomFraction, leftFraction, rightFraction)
+                list.add(newEntry)
                 prefs.setRegionList(list)
-                onRegionAdded?.invoke(list.lastIndex)
+                onRegionAdded?.invoke(newEntry)
             }
             PlayTranslateAccessibilityService.instance?.hideRegionDragOverlay()
             dismiss()

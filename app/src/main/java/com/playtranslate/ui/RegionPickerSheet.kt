@@ -26,14 +26,14 @@ import com.playtranslate.themeColor
 
 class RegionPickerSheet : DialogFragment() {
 
-    var onSaved: ((Int) -> Unit)? = null
+    var onSaved: (() -> Unit)? = null
     var onTranslateOnce: ((RegionEntry) -> Unit)? = null
     var onClose: (() -> Unit)? = null
     var gameDisplay: Display? = null
 
     private lateinit var prefs: Prefs
     private var workingList: MutableList<RegionEntry> = mutableListOf()
-    private var selectedIndex = 0
+    private var selectedId: String = ""
     private var isEditMode = false
 
     private lateinit var recyclerView: RecyclerView
@@ -60,7 +60,7 @@ class RegionPickerSheet : DialogFragment() {
 
         prefs = Prefs(requireContext())
         workingList = prefs.getRegionList().toMutableList()
-        selectedIndex = prefs.captureRegionIndex.coerceIn(0, (workingList.size - 1).coerceAtLeast(0))
+        selectedId = prefs.selectedRegionId.ifEmpty { workingList.firstOrNull()?.id ?: "" }
 
         recyclerView = view.findViewById(R.id.regionRecyclerView)
         btnEdit      = view.findViewById(R.id.btnEditRegion)
@@ -93,7 +93,7 @@ class RegionPickerSheet : DialogFragment() {
         setupDragHelper()
         adapter.submitList()
 
-        showOverlayForIndex(selectedIndex)
+        showSelectedOverlay()
     }
 
     /** App went to background — kill the overlay immediately so it doesn't get stuck. */
@@ -119,12 +119,11 @@ class RegionPickerSheet : DialogFragment() {
 
     private fun exitEditMode() {
         prefs.setRegionList(workingList)
-        selectedIndex = selectedIndex.coerceIn(0, (workingList.size - 1).coerceAtLeast(0))
         isEditMode = false
         btnEdit.text = getString(R.string.label_edit)
         itemTouchHelper?.attachToRecyclerView(null)
         adapter.submitList()
-        showOverlayForIndex(selectedIndex)
+        showSelectedOverlay()
     }
 
     // ── Drag-to-reorder ──────────────────────────────────────────────────
@@ -143,14 +142,6 @@ class RegionPickerSheet : DialogFragment() {
                 if (from == RecyclerView.NO_POSITION || to == RecyclerView.NO_POSITION) return false
                 val item = workingList.removeAt(from)
                 workingList.add(to, item)
-                // Track selected index through the move
-                selectedIndex = when (selectedIndex) {
-                    from -> to
-                    in minOf(from, to)..maxOf(from, to) -> {
-                        if (from < to) selectedIndex - 1 else selectedIndex + 1
-                    }
-                    else -> selectedIndex
-                }
                 adapter.notifyItemMoved(from, to)
                 return true
             }
@@ -169,7 +160,6 @@ class RegionPickerSheet : DialogFragment() {
         if (workingList.isEmpty()) {
             workingList.addAll(Prefs.DEFAULT_REGION_LIST)
         }
-        selectedIndex = selectedIndex.coerceIn(0, workingList.lastIndex)
         adapter.submitList()
     }
 
@@ -192,11 +182,11 @@ class RegionPickerSheet : DialogFragment() {
         AddCustomRegionSheet().also { sheet ->
             sheet.gameDisplay = gameDisplay
             sheet.initRegion(entry, index)
-            sheet.onRegionEdited = { editedIndex ->
+            sheet.onRegionEdited = { edited ->
                 workingList = prefs.getRegionList().toMutableList()
-                selectedIndex = editedIndex
+                selectedId = edited.id
                 adapter.submitList()
-                showOverlayForIndex(selectedIndex)
+                showSelectedOverlay()
             }
             sheet.onTranslateOnce = { region ->
                 PlayTranslateAccessibilityService.instance?.hideRegionOverlay()
@@ -206,7 +196,7 @@ class RegionPickerSheet : DialogFragment() {
             sheet.onDismissed = {
                 if (isAdded && !isDetached) {
                     adapter.submitList()
-                    showOverlayForIndex(selectedIndex)
+                    showSelectedOverlay()
                 }
             }
         }.show(childFragmentManager, AddCustomRegionSheet.TAG)
@@ -216,16 +206,16 @@ class RegionPickerSheet : DialogFragment() {
         PlayTranslateAccessibilityService.instance?.hideRegionOverlay()
         AddCustomRegionSheet().also { sheet ->
             sheet.gameDisplay = gameDisplay
-            sheet.onRegionAdded = { newIndex ->
-                prefs.captureRegionIndex = newIndex
+            sheet.onRegionAdded = { newEntry ->
+                prefs.selectedRegionId = newEntry.id
                 PlayTranslateAccessibilityService.instance?.hideRegionOverlay()
-                onSaved?.invoke(newIndex)
+                onSaved?.invoke()
                 if (showsDialog) dismissAllowingStateLoss()
             }
             sheet.onDismissed = {
                 if (isAdded && !isDetached) {
                     adapter.submitList()
-                    showOverlayForIndex(selectedIndex)
+                    showSelectedOverlay()
                 }
             }
             sheet.onTranslateOnce = { region ->
@@ -238,9 +228,9 @@ class RegionPickerSheet : DialogFragment() {
 
     // ── Overlay helpers ────────────────────────────────────────────────────
 
-    private fun showOverlayForIndex(index: Int) {
+    private fun showSelectedOverlay() {
         val display = gameDisplay ?: return
-        val e = workingList.getOrElse(index) { Prefs.DEFAULT_REGION_LIST[0] }
+        val e = workingList.find { it.id == selectedId } ?: workingList.firstOrNull() ?: return
         PlayTranslateAccessibilityService.instance?.showRegionOverlay(display, e)
     }
 
@@ -273,7 +263,7 @@ class RegionPickerSheet : DialogFragment() {
             val entry = workingList[position]
 
             holder.label.text = entry.label
-            holder.radio.isChecked = position == selectedIndex
+            holder.radio.isChecked = workingList.getOrNull(position)?.id == selectedId
 
             if (isEditMode) {
                 holder.radio.visibility = View.GONE
@@ -305,11 +295,11 @@ class RegionPickerSheet : DialogFragment() {
                 holder.itemView.setOnClickListener {
                     val pos = holder.bindingAdapterPosition
                     if (pos == RecyclerView.NO_POSITION) return@setOnClickListener
-                    selectedIndex = pos
-                    prefs.captureRegionIndex = selectedIndex
-                    val e = workingList.getOrElse(pos) { Prefs.DEFAULT_REGION_LIST[0] }
+                    val e = workingList.getOrElse(pos) { return@setOnClickListener }
+                    selectedId = e.id
+                    prefs.selectedRegionId = e.id
                     PlayTranslateAccessibilityService.instance?.updateRegionOverlay(e)
-                    onSaved?.invoke(selectedIndex)
+                    onSaved?.invoke()
                     submitList()
                 }
             }

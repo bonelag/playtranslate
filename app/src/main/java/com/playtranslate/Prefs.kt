@@ -14,7 +14,8 @@ data class RegionEntry(
     val top: Float,
     val bottom: Float,
     val left: Float = 0f,
-    val right: Float = 1f
+    val right: Float = 1f,
+    val id: String = java.util.UUID.randomUUID().toString()
 ) {
     val isFullScreen: Boolean get() = top <= 0f && bottom >= 1f && left <= 0f && right >= 1f
 }
@@ -39,9 +40,16 @@ class Prefs(context: Context) {
         get() = sp.getInt(KEY_DISPLAY_ID, 0)
         set(v) = sp.edit().putInt(KEY_DISPLAY_ID, v).apply()
 
-    var captureRegionIndex: Int
-        get() = sp.getInt(KEY_REGION, 0)
-        set(v) = sp.edit().putInt(KEY_REGION, v).apply()
+    var selectedRegionId: String
+        get() = sp.getString(KEY_SELECTED_REGION_ID, "") ?: ""
+        set(v) = sp.edit().putString(KEY_SELECTED_REGION_ID, v).apply()
+
+    /** Returns the saved selected region, or the first entry (full screen) as fallback. */
+    fun getSelectedRegion(): RegionEntry {
+        val list = getRegionList()
+        val id = selectedRegionId
+        return if (id.isNotEmpty()) list.find { it.id == id } ?: list.first() else list.first()
+    }
 
     /**
      * DeepL API key.  Defaults to the value baked into the build via
@@ -150,7 +158,8 @@ class Prefs(context: Context) {
                     top    = o.getDouble("top").toFloat(),
                     bottom = o.getDouble("bottom").toFloat(),
                     left   = o.optDouble("left",  0.0).toFloat(),
-                    right  = o.optDouble("right", 1.0).toFloat()
+                    right  = o.optDouble("right", 1.0).toFloat(),
+                    id     = o.optString("id", "").ifEmpty { java.util.UUID.randomUUID().toString() }
                 )
             }
         } catch (_: Exception) {
@@ -167,6 +176,7 @@ class Prefs(context: Context) {
                 put("bottom", e.bottom.toDouble())
                 put("left",   e.left.toDouble())
                 put("right",  e.right.toDouble())
+                put("id",     e.id)
             })
         }
         sp.edit().putString(KEY_REGION_LIST, arr.toString()).apply()
@@ -176,7 +186,7 @@ class Prefs(context: Context) {
         private const val KEY_SOURCE_LANG    = "source_lang"
         private const val KEY_TARGET_LANG    = "target_lang"
         private const val KEY_DISPLAY_ID     = "capture_display_id"
-        private const val KEY_REGION         = "capture_region"
+        private const val KEY_SELECTED_REGION_ID = "selected_region_id"
         private const val KEY_ANKI_DECK_ID   = "anki_deck_id"
         private const val KEY_ANKI_DECK_NAME = "anki_deck_name"
         private const val KEY_REGION_LIST    = "region_list"
@@ -208,12 +218,12 @@ class Prefs(context: Context) {
         }
 
         val DEFAULT_REGION_LIST: List<RegionEntry> = listOf(
-            RegionEntry("Full screen",  0.00f, 1.00f),
-            RegionEntry("Bottom 50%",   0.50f, 1.00f),
-            RegionEntry("Bottom 33%",   0.67f, 1.00f),
-            RegionEntry("Bottom 25%",   0.75f, 1.00f),
-            RegionEntry("Top 50%",      0.00f, 0.50f),
-            RegionEntry("Top 33%",      0.00f, 0.33f),
+            RegionEntry("Full screen",  0.00f, 1.00f, id = "default_full"),
+            RegionEntry("Bottom 50%",   0.50f, 1.00f, id = "default_bottom_50"),
+            RegionEntry("Bottom 33%",   0.67f, 1.00f, id = "default_bottom_33"),
+            RegionEntry("Bottom 25%",   0.75f, 1.00f, id = "default_bottom_25"),
+            RegionEntry("Top 50%",      0.00f, 0.50f, id = "default_top_50"),
+            RegionEntry("Top 33%",      0.00f, 0.33f, id = "default_top_33"),
         )
     }
 }

@@ -332,7 +332,7 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
         val sheet = RegionPickerSheet().apply {
             setShowsDialog(false)
             this.gameDisplay = gameDisplay
-            onSaved = { _ ->
+            onSaved = {
                 configureService()
                 updateRegionButton()
             }
@@ -359,8 +359,7 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
     }
 
     private fun updateRegionButton() {
-        val list = prefs.getRegionList()
-        val entry = list.getOrElse(prefs.captureRegionIndex) { Prefs.DEFAULT_REGION_LIST[0] }
+        val entry = prefs.getSelectedRegion()
         val serviceLabel = captureService?.activeRegion?.label?.takeIf { it.isNotEmpty() }
         val label = serviceLabel ?: entry.label
         if (isLiveMode) {
@@ -649,7 +648,7 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
     /** Applies all current prefs to the capture service. Clears any override. */
     private fun configureService() {
         val svc = captureService ?: return
-        val entry = prefs.getRegionList().getOrElse(prefs.captureRegionIndex) { Prefs.DEFAULT_REGION_LIST[0] }
+        val entry = prefs.getSelectedRegion()
         svc.configureSaved(
             displayId  = prefs.captureDisplayId,
             sourceLang = selectedSourceLang(),
@@ -797,8 +796,7 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
     /** Returns the "Searching for X in the Y area" message for live mode. */
     private fun searchingStatusText(): String {
         val lang = langDisplayName(selectedSourceLang())
-        val regions = prefs.getRegionList()
-        val entry = regions.getOrElse(prefs.captureRegionIndex) { Prefs.DEFAULT_REGION_LIST[0] }
+        val entry = prefs.getSelectedRegion()
         val serviceLabel = captureService?.activeRegion?.label?.takeIf { it.isNotEmpty() }
         val label = serviceLabel ?: entry.label
         return "Searching for $lang in the \"$label\" area"
@@ -887,7 +885,8 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
         val displayManager = getSystemService(Context.DISPLAY_SERVICE) as DisplayManager
         val gameDisplay = displayManager.getDisplay(prefs.captureDisplayId)
 
-        val currentIndex = prefs.captureRegionIndex.coerceIn(0, regions.lastIndex)
+        val currentId = prefs.selectedRegionId
+        val currentIndex = regions.indexOfFirst { it.id == currentId }.coerceAtLeast(0)
         val order = mutableListOf<Int>()
         order.add(-1)
         for (i in regions.indices) { if (i != currentIndex) order.add(i) }
@@ -975,7 +974,7 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
         val changedSavedRegion = dropdownHighlightedRow != dropdownRegionOrder.lastIndex
         val hadOverride = captureService?.isOverride == true
         if (changedSavedRegion) {
-            prefs.captureRegionIndex = selectedRegionIdx
+            prefs.selectedRegionId = dropdownRegions[selectedRegionIdx].id
             configureService()          // clears override
             updateRegionButton()        // now reads the saved region label
             withAccessibility { captureService?.captureOnce() }
@@ -996,16 +995,18 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
                 if (captureService?.isOverride == true) {
                     sheet.initRegion(current)
                 } else {
-                    sheet.initRegion(current, prefs.captureRegionIndex)
-                    sheet.onRegionEdited = { editedIndex ->
-                        prefs.captureRegionIndex = editedIndex
+                    val regions = prefs.getRegionList()
+                    val editIdx = regions.indexOfFirst { it.id == current.id }.coerceAtLeast(0)
+                    sheet.initRegion(current, editIdx)
+                    sheet.onRegionEdited = { edited ->
+                        prefs.selectedRegionId = edited.id
                         configureService()
                         updateRegionButton()
                     }
                 }
             }
-            sheet.onRegionAdded = { newIndex ->
-                prefs.captureRegionIndex = newIndex
+            sheet.onRegionAdded = { newEntry ->
+                prefs.selectedRegionId = newEntry.id
                 configureService()
                 updateRegionButton()
                 withAccessibility { captureService?.captureOnce() }

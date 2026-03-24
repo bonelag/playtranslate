@@ -834,7 +834,7 @@ class PlayTranslateAccessibilityService : AccessibilityService() {
         menu.onClearRegion = {
             // Reset to full screen
             val prefs = Prefs(this)
-            prefs.captureRegionIndex = 0
+            prefs.selectedRegionId = Prefs.DEFAULT_REGION_LIST[0].id
             val svc = CaptureService.instance
             if (svc != null && svc.isConfigured) {
                 val entry = Prefs.DEFAULT_REGION_LIST[0]
@@ -1059,9 +1059,7 @@ class PlayTranslateAccessibilityService : AccessibilityService() {
             dragLookupController?.dismiss()
             if (!svc.isConfigured) {
                 val prefs = Prefs(this)
-                val entry = prefs.getRegionList().getOrElse(prefs.captureRegionIndex) {
-                    Prefs.DEFAULT_REGION_LIST[0]
-                }
+                val entry = prefs.getSelectedRegion()
                 svc.configureSaved(
                     displayId  = prefs.captureDisplayId,
                     sourceLang = prefs.sourceLang,
