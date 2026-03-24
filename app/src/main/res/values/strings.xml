@@ -4,7 +4,7 @@
 
     <!-- Actions -->
     <string name="btn_translate">Translate</string>
-    <string name="btn_translate_once">Use Region Once</string>
+    <string name="btn_translate_once">Use Without Saving</string>
     <string name="btn_change_region">Change\nCapture\nRegion</string>
     <string name="btn_translate_region">Translate %1$s</string>
     <string name="btn_settings">Settings</string>

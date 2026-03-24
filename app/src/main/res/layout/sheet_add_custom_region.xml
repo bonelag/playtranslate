@@ -101,7 +101,7 @@
         android:layout_height="1dp"
         android:background="?attr/colorBgDivider" />
 
-    <!-- Use Region Once — plain bold text, no button chrome -->
+    <!-- Use Without Saving — plain bold text, no button chrome -->
     <TextView
         android:id="@+id/btnTranslateOnce"
         android:layout_width="match_parent"
@@ -123,7 +123,7 @@
         android:layout_marginHorizontal="12dp"
         android:layout_marginTop="4dp"
         android:layout_marginBottom="12dp"
-        android:text="Save"
+        android:text="Save to List"
         android:backgroundTint="?attr/colorAccentPrimary"
         android:textColor="?attr/colorTextOnAccent" />
 
