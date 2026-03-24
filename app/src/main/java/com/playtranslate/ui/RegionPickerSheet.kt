@@ -96,6 +96,11 @@ class RegionPickerSheet : DialogFragment() {
         showSelectedOverlay()
     }
 
+    override fun onResume() {
+        super.onResume()
+        showSelectedOverlay()
+    }
+
     /** App went to background — kill the overlay immediately so it doesn't get stuck. */
     override fun onStop() {
         PlayTranslateAccessibilityService.instance?.hideRegionOverlay()
@@ -298,7 +303,7 @@ class RegionPickerSheet : DialogFragment() {
                     val e = workingList.getOrElse(pos) { return@setOnClickListener }
                     selectedId = e.id
                     prefs.selectedRegionId = e.id
-                    PlayTranslateAccessibilityService.instance?.updateRegionOverlay(e)
+                    gameDisplay?.let { d -> PlayTranslateAccessibilityService.instance?.showRegionOverlay(d, e) }
                     onSaved?.invoke()
                     submitList()
                 }
