@@ -85,21 +85,14 @@
 
     </LinearLayout>
 
-    <!-- Region list (programmatically populated) -->
-    <ScrollView
+    <!-- Region list -->
+    <androidx.recyclerview.widget.RecyclerView
+        android:id="@+id/regionRecyclerView"
         android:layout_width="match_parent"
         android:layout_height="0dp"
         android:layout_weight="1"
-        android:fillViewport="true">
-
-        <LinearLayout
-            android:id="@+id/regionListContainer"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:orientation="vertical"
-            android:paddingVertical="8dp" />
-
-    </ScrollView>
+        android:paddingVertical="8dp"
+        android:clipToPadding="false" />
 
 
 </LinearLayout>

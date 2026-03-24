@@ -1,21 +1,22 @@
 package com.playtranslate.ui
 
+import android.annotation.SuppressLint
 import android.content.DialogInterface
-import android.graphics.Typeface
 import android.os.Bundle
 import android.view.Display
-import android.view.Gravity
 import android.view.LayoutInflater
+import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.widget.Button
-import android.widget.EditText
-import android.widget.ImageButton
-import android.widget.LinearLayout
+import android.widget.ImageView
 import android.widget.RadioButton
 import android.widget.TextView
 import androidx.appcompat.app.AlertDialog
 import androidx.fragment.app.DialogFragment
+import androidx.recyclerview.widget.ItemTouchHelper
+import androidx.recyclerview.widget.LinearLayoutManager
+import androidx.recyclerview.widget.RecyclerView
 import com.playtranslate.PlayTranslateAccessibilityService
 import com.playtranslate.Prefs
 import com.playtranslate.RegionEntry
@@ -35,8 +36,10 @@ class RegionPickerSheet : DialogFragment() {
     private var selectedIndex = 0
     private var isEditMode = false
 
-    private lateinit var listContainer: LinearLayout
+    private lateinit var recyclerView: RecyclerView
     private lateinit var btnEdit: Button
+    private lateinit var adapter: RegionAdapter
+    private var itemTouchHelper: ItemTouchHelper? = null
 
     override fun getTheme(): Int = fullScreenDialogTheme(requireContext())
 
@@ -59,8 +62,8 @@ class RegionPickerSheet : DialogFragment() {
         workingList = prefs.getRegionList().toMutableList()
         selectedIndex = prefs.captureRegionIndex.coerceIn(0, (workingList.size - 1).coerceAtLeast(0))
 
-        listContainer = view.findViewById(R.id.regionListContainer)
-        btnEdit       = view.findViewById(R.id.btnEditRegion)
+        recyclerView = view.findViewById(R.id.regionRecyclerView)
+        btnEdit      = view.findViewById(R.id.btnEditRegion)
 
         val noPreviewNotice = view.findViewById<View>(R.id.noPreviewNotice)
         if (PlayTranslateAccessibilityService.isEnabled) {
@@ -84,7 +87,12 @@ class RegionPickerSheet : DialogFragment() {
             if (isEditMode) exitEditMode() else enterEditMode()
         }
 
-        rebuildList()
+        adapter = RegionAdapter()
+        recyclerView.layoutManager = LinearLayoutManager(requireContext())
+        recyclerView.adapter = adapter
+        setupDragHelper()
+        adapter.submitList()
+
         showOverlayForIndex(selectedIndex)
     }
 
@@ -105,183 +113,56 @@ class RegionPickerSheet : DialogFragment() {
     private fun enterEditMode() {
         isEditMode = true
         btnEdit.text = getString(R.string.label_done)
-        rebuildList()
+        adapter.submitList()
+        itemTouchHelper?.attachToRecyclerView(recyclerView)
     }
 
     private fun exitEditMode() {
-        // Commit the reordered/deleted list and clamp the selected index
         prefs.setRegionList(workingList)
         selectedIndex = selectedIndex.coerceIn(0, (workingList.size - 1).coerceAtLeast(0))
         isEditMode = false
         btnEdit.text = getString(R.string.label_edit)
-        rebuildList()
+        itemTouchHelper?.attachToRecyclerView(null)
+        adapter.submitList()
         showOverlayForIndex(selectedIndex)
     }
 
-    // ── List building ──────────────────────────────────────────────────────
+    // ── Drag-to-reorder ──────────────────────────────────────────────────
 
-    private fun rebuildList() {
-        listContainer.removeAllViews()
-        if (isEditMode) {
-            workingList.forEachIndexed { i, entry -> listContainer.addView(makeEditRow(i, entry)) }
-        } else {
-            workingList.forEachIndexed { i, entry -> listContainer.addView(makeNormalRow(i, entry)) }
-        }
-    }
-
-    private fun makeNormalRow(index: Int, entry: RegionEntry): View {
-        val ctx = requireContext()
-        val dp = ctx.resources.displayMetrics.density
-        val isSelected = (index == selectedIndex)
-
-        val row = LinearLayout(ctx).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding((16 * dp).toInt(), (14 * dp).toInt(), (16 * dp).toInt(), (14 * dp).toInt())
-            val attrs = intArrayOf(android.R.attr.selectableItemBackground)
-            val ta = ctx.obtainStyledAttributes(attrs)
-            background = ta.getDrawable(0)
-            ta.recycle()
-        }
-
-        val rb = RadioButton(ctx).apply {
-            isChecked = isSelected
-            isClickable = false
-            isFocusable = false
-            layoutParams = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.WRAP_CONTENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
-            ).also { it.marginEnd = (10 * dp).toInt() }
-        }
-
-        val tv = TextView(ctx).apply {
-            text = entry.label
-            textSize = 15f
-            setTextColor(ctx.themeColor(R.attr.colorTextPrimary))
-            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-        }
-
-        row.addView(rb)
-        row.addView(tv)
-
-        row.setOnClickListener {
-            selectedIndex = index
-            prefs.captureRegionIndex = selectedIndex
-            val e = workingList.getOrElse(index) { Prefs.DEFAULT_REGION_LIST[0] }
-            PlayTranslateAccessibilityService.instance?.updateRegionOverlay(e)
-            onSaved?.invoke(selectedIndex)
-            rebuildList()
-        }
-
-        return row
-    }
-
-    private fun makeEditRow(index: Int, entry: RegionEntry): View {
-        val ctx = requireContext()
-        val dp = ctx.resources.displayMetrics.density
-        val padV = (8 * dp).toInt()
-        val padH = (16 * dp).toInt()
-        val btnSize = (36 * dp).toInt()
-
-        val row = LinearLayout(ctx).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(padH, padV, padH, padV)
-        }
-
-        // Up / Down buttons stacked vertically
-        val reorderCol = LinearLayout(ctx).apply {
-            orientation = LinearLayout.VERTICAL
-            gravity = Gravity.CENTER
-            layoutParams = LinearLayout.LayoutParams(btnSize, LinearLayout.LayoutParams.WRAP_CONTENT)
-        }
-
-        val btnUp = makeTextBtn(ctx, "▲", (11 * dp).toInt()).apply {
-            isEnabled = index > 0
-            alpha = if (index > 0) 1f else 0.3f
-            setOnClickListener { moveUp(index) }
-        }
-        val btnDown = makeTextBtn(ctx, "▼", (11 * dp).toInt()).apply {
-            isEnabled = index < workingList.lastIndex
-            alpha = if (index < workingList.lastIndex) 1f else 0.3f
-            setOnClickListener { moveDown(index) }
-        }
-        reorderCol.addView(btnUp)
-        reorderCol.addView(btnDown)
-        row.addView(reorderCol)
-
-        // Label — tap to rename
-        val tv = TextView(ctx).apply {
-            text = entry.label
-            textSize = 15f
-            setTextColor(ctx.themeColor(R.attr.colorTextPrimary))
-            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).also {
-                it.marginStart = (8 * dp).toInt()
-                it.marginEnd = (8 * dp).toInt()
+    private fun setupDragHelper() {
+        val callback = object : ItemTouchHelper.SimpleCallback(
+            ItemTouchHelper.UP or ItemTouchHelper.DOWN, 0
+        ) {
+            override fun onMove(
+                recyclerView: RecyclerView,
+                viewHolder: RecyclerView.ViewHolder,
+                target: RecyclerView.ViewHolder
+            ): Boolean {
+                val from = viewHolder.bindingAdapterPosition
+                val to = target.bindingAdapterPosition
+                if (from == RecyclerView.NO_POSITION || to == RecyclerView.NO_POSITION) return false
+                val item = workingList.removeAt(from)
+                workingList.add(to, item)
+                // Track selected index through the move
+                selectedIndex = when (selectedIndex) {
+                    from -> to
+                    in minOf(from, to)..maxOf(from, to) -> {
+                        if (from < to) selectedIndex - 1 else selectedIndex + 1
+                    }
+                    else -> selectedIndex
+                }
+                adapter.notifyItemMoved(from, to)
+                return true
             }
-            // Underline hint that it's tappable
-            paintFlags = paintFlags or android.graphics.Paint.UNDERLINE_TEXT_FLAG
-            setOnClickListener { openEditSheet(index) }
+
+            override fun onSwiped(viewHolder: RecyclerView.ViewHolder, direction: Int) {}
+
+            override fun isLongPressDragEnabled() = false
         }
-        row.addView(tv)
-
-        // Delete button
-        val btnDel = makeTextBtn(ctx, "✕", (14 * dp).toInt()).apply {
-            setTextColor(resources.getColor(R.color.status_error, null))
-            setOnClickListener { deleteItem(index) }
-            layoutParams = LinearLayout.LayoutParams(btnSize, btnSize)
-        }
-        row.addView(btnDel)
-
-        return row
-    }
-
-    private fun makeTextBtn(ctx: android.content.Context, label: String, textSizePx: Int): TextView {
-        val dp = ctx.resources.displayMetrics.density
-        return TextView(ctx).apply {
-            text = label
-            textSize = (textSizePx / dp)
-            setTextColor(ctx.themeColor(R.attr.colorTextSecondary))
-            gravity = Gravity.CENTER
-            val pad = (8 * dp).toInt()
-            setPadding(pad, pad, pad, pad)
-            val attrs = intArrayOf(android.R.attr.selectableItemBackgroundBorderless)
-            val ta = ctx.obtainStyledAttributes(attrs)
-            background = ta.getDrawable(0)
-            ta.recycle()
-        }
-    }
-
-    // ── Dialogs ───────────────────────────────────────────────────────────
-
-    private fun showCustomRegionA11yDialog() {
-        AlertDialog.Builder(requireContext())
-            .setTitle(R.string.custom_region_a11y_required_title)
-            .setMessage(R.string.custom_region_a11y_required_message)
-            .setPositiveButton(R.string.btn_open_a11y_settings) { _, _ ->
-                startActivity(android.content.Intent(android.provider.Settings.ACTION_ACCESSIBILITY_SETTINGS))
-            }
-            .setNegativeButton(android.R.string.cancel, null)
-            .show()
+        itemTouchHelper = ItemTouchHelper(callback)
     }
 
     // ── Actions ────────────────────────────────────────────────────────────
-
-    private fun moveUp(index: Int) {
-        if (index <= 0) return
-        val tmp = workingList[index]; workingList[index] = workingList[index - 1]; workingList[index - 1] = tmp
-        if (selectedIndex == index) selectedIndex = index - 1
-        else if (selectedIndex == index - 1) selectedIndex = index
-        rebuildList()
-    }
-
-    private fun moveDown(index: Int) {
-        if (index >= workingList.lastIndex) return
-        val tmp = workingList[index]; workingList[index] = workingList[index + 1]; workingList[index + 1] = tmp
-        if (selectedIndex == index) selectedIndex = index + 1
-        else if (selectedIndex == index + 1) selectedIndex = index
-        rebuildList()
-    }
 
     private fun deleteItem(index: Int) {
         workingList.removeAt(index)
@@ -289,28 +170,17 @@ class RegionPickerSheet : DialogFragment() {
             workingList.addAll(Prefs.DEFAULT_REGION_LIST)
         }
         selectedIndex = selectedIndex.coerceIn(0, workingList.lastIndex)
-        rebuildList()
+        adapter.submitList()
     }
 
-    private fun showRenameDialog(index: Int) {
-        val ctx = requireContext()
-        val et = EditText(ctx).apply {
-            setText(workingList[index].label)
-            selectAll()
-            setPadding(
-                (20 * resources.displayMetrics.density).toInt(),
-                (12 * resources.displayMetrics.density).toInt(),
-                (20 * resources.displayMetrics.density).toInt(),
-                (12 * resources.displayMetrics.density).toInt()
-            )
-        }
-        AlertDialog.Builder(ctx)
-            .setTitle(R.string.label_rename_region)
-            .setView(et)
-            .setPositiveButton(android.R.string.ok) { _, _ ->
-                val newLabel = et.text.toString().trim().ifEmpty { workingList[index].label }
-                workingList[index] = workingList[index].copy(label = newLabel)
-                rebuildList()
+    // ── Sheets ──────────────────────────────────────────────────────────
+
+    private fun showCustomRegionA11yDialog() {
+        AlertDialog.Builder(requireContext())
+            .setTitle(R.string.custom_region_a11y_required_title)
+            .setMessage(R.string.custom_region_a11y_required_message)
+            .setPositiveButton(R.string.btn_open_a11y_settings) { _, _ ->
+                startActivity(android.content.Intent(android.provider.Settings.ACTION_ACCESSIBILITY_SETTINGS))
             }
             .setNegativeButton(android.R.string.cancel, null)
             .show()
@@ -325,7 +195,7 @@ class RegionPickerSheet : DialogFragment() {
             sheet.onRegionEdited = { editedIndex ->
                 workingList = prefs.getRegionList().toMutableList()
                 selectedIndex = editedIndex
-                rebuildList()
+                adapter.submitList()
                 showOverlayForIndex(selectedIndex)
             }
             sheet.onTranslateOnce = { region ->
@@ -335,7 +205,7 @@ class RegionPickerSheet : DialogFragment() {
             }
             sheet.onDismissed = {
                 if (isAdded && !isDetached) {
-                    rebuildList()
+                    adapter.submitList()
                     showOverlayForIndex(selectedIndex)
                 }
             }
@@ -354,7 +224,7 @@ class RegionPickerSheet : DialogFragment() {
             }
             sheet.onDismissed = {
                 if (isAdded && !isDetached) {
-                    rebuildList()
+                    adapter.submitList()
                     showOverlayForIndex(selectedIndex)
                 }
             }
@@ -372,6 +242,78 @@ class RegionPickerSheet : DialogFragment() {
         val display = gameDisplay ?: return
         val e = workingList.getOrElse(index) { Prefs.DEFAULT_REGION_LIST[0] }
         PlayTranslateAccessibilityService.instance?.showRegionOverlay(display, e)
+    }
+
+    // ── RecyclerView Adapter ──────────────────────────────────────────────
+
+    private inner class RegionAdapter : RecyclerView.Adapter<RegionAdapter.VH>() {
+
+        inner class VH(itemView: View) : RecyclerView.ViewHolder(itemView) {
+            val radio: RadioButton = itemView.findViewById(R.id.radioRegion)
+            val label: TextView = itemView.findViewById(R.id.tvRegionLabel)
+            val dragHandle: ImageView = itemView.findViewById(R.id.dragHandle)
+            val btnDelete: ImageView = itemView.findViewById(R.id.btnDeleteRegion)
+        }
+
+        @SuppressLint("NotifyDataSetChanged")
+        fun submitList() {
+            notifyDataSetChanged()
+        }
+
+        override fun getItemCount() = workingList.size
+
+        override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): VH {
+            val view = LayoutInflater.from(parent.context)
+                .inflate(R.layout.item_region_row, parent, false)
+            return VH(view)
+        }
+
+        @SuppressLint("ClickableViewAccessibility")
+        override fun onBindViewHolder(holder: VH, position: Int) {
+            val entry = workingList[position]
+
+            holder.label.text = entry.label
+            holder.radio.isChecked = position == selectedIndex
+
+            if (isEditMode) {
+                holder.radio.visibility = View.GONE
+                holder.dragHandle.visibility = View.VISIBLE
+                holder.btnDelete.visibility = View.VISIBLE
+
+                holder.label.paintFlags = holder.label.paintFlags or android.graphics.Paint.UNDERLINE_TEXT_FLAG
+                holder.label.setOnClickListener { openEditSheet(holder.bindingAdapterPosition) }
+
+                holder.dragHandle.setOnTouchListener { _, event ->
+                    if (event.actionMasked == MotionEvent.ACTION_DOWN) {
+                        itemTouchHelper?.startDrag(holder)
+                    }
+                    false
+                }
+
+                holder.btnDelete.setOnClickListener {
+                    val pos = holder.bindingAdapterPosition
+                    if (pos != RecyclerView.NO_POSITION) deleteItem(pos)
+                }
+            } else {
+                holder.radio.visibility = View.VISIBLE
+                holder.dragHandle.visibility = View.GONE
+                holder.btnDelete.visibility = View.GONE
+
+                holder.label.paintFlags = holder.label.paintFlags and android.graphics.Paint.UNDERLINE_TEXT_FLAG.inv()
+                holder.label.setOnClickListener(null)
+
+                holder.itemView.setOnClickListener {
+                    val pos = holder.bindingAdapterPosition
+                    if (pos == RecyclerView.NO_POSITION) return@setOnClickListener
+                    selectedIndex = pos
+                    prefs.captureRegionIndex = selectedIndex
+                    val e = workingList.getOrElse(pos) { Prefs.DEFAULT_REGION_LIST[0] }
+                    PlayTranslateAccessibilityService.instance?.updateRegionOverlay(e)
+                    onSaved?.invoke(selectedIndex)
+                    submitList()
+                }
+            }
+        }
     }
 
     companion object {
