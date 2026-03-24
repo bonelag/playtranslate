@@ -363,7 +363,7 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
         val serviceLabel = captureService?.activeRegion?.label?.takeIf { it.isNotEmpty() }
         val label = serviceLabel ?: entry.label
         if (isLiveMode) {
-            val prefix = "Capturing "
+            val prefix = "Reload "
             btnCapturing.text = SpannableStringBuilder(prefix + label).apply {
                 setSpan(StyleSpan(Typeface.BOLD), prefix.length, length, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
             }
@@ -423,7 +423,7 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
             hideRegionPicker()
             withAccessibility { captureService?.captureOnce() }
         }
-        btnCapturing.setOnClickListener { showRegionPicker() }
+        btnCapturing.setOnClickListener { captureService?.refreshLiveOverlay() }
 
         btnMenu.setOnClickListener { showMenu() }
         menuScrim.setOnClickListener { dismissMenu() }
