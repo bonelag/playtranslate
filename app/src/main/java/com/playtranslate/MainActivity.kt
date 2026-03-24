@@ -420,6 +420,7 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
 
     private fun setupButtons() {
         btnTranslate.setOnClickListener {
+            hideRegionPicker()
             withAccessibility { captureService?.captureOnce() }
         }
         btnCapturing.setOnClickListener { showRegionPicker() }
