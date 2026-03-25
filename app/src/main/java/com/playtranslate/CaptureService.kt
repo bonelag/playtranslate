@@ -152,6 +152,7 @@ class CaptureService : Service() {
         activeRegionLiveData.value = newRegion
         session = RegionSession(newRegion)
 
+        PlayTranslateAccessibilityService.instance?.hideRegionIndicator()
         PlayTranslateAccessibilityService.instance?.hideTranslationOverlay()
         if (liveActive) {
             PlayTranslateAccessibilityService.instance?.screenshotManager?.requestCleanCapture()

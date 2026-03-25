@@ -332,12 +332,13 @@ class RegionPickerSheet : DialogFragment() {
                     val e = workingList.getOrElse(pos) { return@setOnClickListener }
                     selectedId = e.id
                     prefs.selectedRegionId = e.id
-                    if (isLive) {
-                        flashSelectedIndicator()
-                    } else {
+                    if (!isLive) {
                         gameDisplay?.let { d -> PlayTranslateAccessibilityService.instance?.showRegionOverlay(d, e) }
                     }
                     onSaved?.invoke()
+                    if (isLive) {
+                        flashSelectedIndicator()
+                    }
                     submitList()
                 }
             }

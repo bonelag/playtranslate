@@ -162,23 +162,24 @@ class PlayTranslateAccessibilityService : AccessibilityService() {
     /** State returned by [prepareForCleanCapture], passed to [restoreAfterCapture]. */
     data class OverlayState(
         val hadTranslation: Boolean,
-        val hadDebug: Boolean,
-        val hadIndicator: Boolean
+        val hadDebug: Boolean
     ) {
-        val hadAnyOverlay get() = hadTranslation || hadDebug || hadIndicator
+        val hadAnyOverlay get() = hadTranslation || hadDebug
     }
 
     /**
      * Hides overlays so they don't appear in a clean screenshot.
      * Returns the previous state so [restoreAfterCapture] can restore it.
+     *
+     * The region indicator is intentionally left visible — it draws outside
+     * the capture region and doesn't affect OCR. It is only force-removed
+     * when the region itself changes (see [CaptureService.updateActiveRegion]).
      */
     fun prepareForCleanCapture(): OverlayState {
         val state = OverlayState(
             hadTranslation = translationOverlayView != null,
-            hadDebug = debugOverlayView != null,
-            hadIndicator = regionIndicatorView != null
+            hadDebug = debugOverlayView != null
         )
-        if (state.hadIndicator) hideRegionIndicator()
         if (state.hadDebug) debugOverlayView?.visibility = View.INVISIBLE
         if (state.hadTranslation) translationOverlayView?.visibility = View.INVISIBLE
         return state
