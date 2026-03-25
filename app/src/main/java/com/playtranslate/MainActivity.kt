@@ -611,7 +611,10 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
             PlayTranslateAccessibilityService.instance?.floatingIcon?.showLoading = loading
         }
         svc.liveModeState.observe(this) { isLive -> onLiveModeChanged(isLive) }
-        svc.activeRegionLiveData.observe(this) { _ -> updateRegionButton() }
+        svc.activeRegionLiveData.observe(this) { _ ->
+            updateRegionButton()
+            if (svc.isOverride) hideRegionPicker()
+        }
 
         ensureConfigured()
     }
