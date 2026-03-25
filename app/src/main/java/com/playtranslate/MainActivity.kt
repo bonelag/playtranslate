@@ -126,7 +126,7 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
 
     private val prefs by lazy { Prefs(this) }
 
-    private var isLiveMode = false
+    private val isLiveMode get() = captureService?.liveModeState?.value == true
     /** True while programmatic scrollTo(0,0) is in progress to prevent auto-pause. */
     private var suppressScrollPause = false
 
@@ -393,14 +393,9 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
     }
 
     private fun startLiveMode() {
-        isLiveMode = true
-        isLiveModeActive = true
         // Dismiss any definition popup when entering live mode
         val hadPopup = PlayTranslateAccessibilityService.instance?.dragLookupController?.isPopupShowing == true
         PlayTranslateAccessibilityService.instance?.dragLookupController?.dismiss()
-        updateMenuLiveItem()
-        updateRegionButton()
-        resultFragment?.showStatus(searchingStatusText())
         ensureConfigured()
         // Delay start if a popup was just dismissed so the compositor
         // has time to remove it before the first screenshot.
@@ -412,14 +407,20 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
     }
 
     private fun stopLiveMode() {
-        isLiveMode = false
-        isLiveModeActive = false
-        updateMenuLiveItem()
         captureService?.stopLive()
+    }
+
+    /** Called by the LiveData observer when live mode state changes. */
+    private fun onLiveModeChanged(isLive: Boolean) {
+        updateMenuLiveItem()
         updateRegionButton()
-        val frag = resultFragment
-        if (frag == null || !frag.isShowingResults) {
-            frag?.showStatus(getString(R.string.status_idle))
+        if (isLive) {
+            resultFragment?.showStatus(searchingStatusText())
+        } else {
+            val frag = resultFragment
+            if (frag == null || !frag.isShowingResults) {
+                frag?.showStatus(getString(R.string.status_idle))
+            }
         }
     }
 
@@ -603,17 +604,16 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
             // progress indication removed — menu-based UI
         }
         svc.onLiveNoText = {
-            runOnUiThread { if (isLiveModeActive) resultFragment?.showStatus(searchingStatusText()) }
+            runOnUiThread { if (isLiveMode) resultFragment?.showStatus(searchingStatusText()) }
         }
-        svc.onLiveStopped = {
-            runOnUiThread { if (isLiveMode) stopLiveMode() }
-        }
+        // onLiveStopped removed — LiveData observer handles live mode changes
         svc.onDegradedStateChanged = { degraded ->
             PlayTranslateAccessibilityService.instance?.floatingIcon?.degraded = degraded
         }
         svc.onHoldLoadingChanged = { loading ->
             PlayTranslateAccessibilityService.instance?.floatingIcon?.showLoading = loading
         }
+        svc.liveModeState.observe(this) { isLive -> onLiveModeChanged(isLive) }
 
         ensureConfigured()
     }
@@ -1130,7 +1130,5 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
         @Volatile
         var isInForeground = false
 
-        @Volatile
-        var isLiveModeActive = false
     }
 }

@@ -676,7 +676,7 @@ class PlayTranslateAccessibilityService : AccessibilityService() {
         controller.onTransitioningToAnki = { liveWasPausedForPopup = false }
         icon.onDragStart = {
             // Pause live mode while dragging for definitions
-            if (MainActivity.isLiveModeActive) {
+            if (CaptureService.instance?.isLive == true) {
                 liveWasPausedForPopup = true
                 val effectivelySingleScreen = Prefs.isSingleScreen(this) || !MainActivity.isInForeground
                 if (effectivelySingleScreen) {
@@ -742,7 +742,7 @@ class PlayTranslateAccessibilityService : AccessibilityService() {
         CaptureService.instance?.holdActive = true
         hideTranslationOverlay()
 
-        menu.isLiveMode = MainActivity.isLiveModeActive
+        menu.isLiveMode = CaptureService.instance?.isLive == true
         menu.showDegradedWarning = CaptureService.instance?.translationDegraded == true
         menu.onHideIcon = {
             dismissFloatingMenu()
@@ -757,7 +757,7 @@ class PlayTranslateAccessibilityService : AccessibilityService() {
             // Only refresh if the menu is still showing — other handlers
             // (onRegionSelected, onToggleLive, etc.) call dismissFloatingMenu
             // first, so floatingMenu would already be null.
-            val needsRefresh = floatingMenu != null && MainActivity.isLiveModeActive
+            val needsRefresh = floatingMenu != null && CaptureService.instance?.isLive == true
             dismissFloatingMenu()
             if (needsRefresh) {
                 CaptureService.instance?.refreshLiveOverlay()
@@ -766,7 +766,7 @@ class PlayTranslateAccessibilityService : AccessibilityService() {
         menu.onToggleLive = {
             dismissFloatingMenu()
             val effectivelySingleScreen = Prefs.isSingleScreen(this) || !MainActivity.isInForeground
-            if (MainActivity.isLiveModeActive) {
+            if (CaptureService.instance?.isLive == true) {
                 if (effectivelySingleScreen) {
                     toggleLiveDirect(false)
                 } else {
@@ -784,7 +784,7 @@ class PlayTranslateAccessibilityService : AccessibilityService() {
         menu.onRegionSelected = { region ->
             dismissFloatingMenu()
             CaptureService.instance?.configureOverride(region)
-            if (MainActivity.isLiveModeActive) {
+            if (CaptureService.instance?.isLive == true) {
                 hideTranslationOverlay()
                 CaptureService.instance?.refreshLiveOverlay()
             } else {
@@ -910,7 +910,7 @@ class PlayTranslateAccessibilityService : AccessibilityService() {
             }
             setOnClickListener {
                 hideRegionEditor()
-                if (MainActivity.isLiveModeActive) {
+                if (CaptureService.instance?.isLive == true) {
                     CaptureService.instance?.refreshLiveOverlay()
                 }
             }
@@ -932,7 +932,7 @@ class PlayTranslateAccessibilityService : AccessibilityService() {
                 val drawnRegion = RegionEntry("Drawn Region", dv.topFraction, dv.bottomFraction, dv.leftFraction, dv.rightFraction)
                 hideRegionEditor()
                 CaptureService.instance?.configureOverride(drawnRegion)
-                if (MainActivity.isLiveModeActive) {
+                if (CaptureService.instance?.isLive == true) {
                     CaptureService.instance?.refreshLiveOverlay()
                 } else {
                     handleRegionSelection(display.displayId, drawnRegion)
@@ -1018,7 +1018,7 @@ class PlayTranslateAccessibilityService : AccessibilityService() {
     private fun toggleLiveDirect(start: Boolean) {
         val svc = CaptureService.instance ?: return
         if (start) {
-            MainActivity.isLiveModeActive = true
+            // Live state is set by CaptureService.startLive() via LiveData
             // Dismiss any definition popup when entering live mode.
             val hadPopup = dragLookupController?.isPopupShowing == true
             dragLookupController?.dismiss()
@@ -1040,7 +1040,6 @@ class PlayTranslateAccessibilityService : AccessibilityService() {
                 svc.startLive()
             }
         } else {
-            MainActivity.isLiveModeActive = false
             svc.stopLive()
         }
     }

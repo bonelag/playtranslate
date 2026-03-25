@@ -97,6 +97,15 @@ class RegionPickerSheet : DialogFragment() {
         adapter.submitList()
 
         showSelectedOverlay()
+
+        // React to live mode changes while the sheet is visible
+        com.playtranslate.CaptureService.instance?.liveModeState?.observe(viewLifecycleOwner) { live ->
+            if (live) {
+                PlayTranslateAccessibilityService.instance?.hideRegionOverlay()
+            } else {
+                showSelectedOverlay()
+            }
+        }
     }
 
     override fun onResume() {
@@ -240,10 +249,19 @@ class RegionPickerSheet : DialogFragment() {
 
     // ── Overlay helpers ────────────────────────────────────────────────────
 
+    private val isLive get() = com.playtranslate.CaptureService.instance?.liveModeState?.value == true
+
     private fun showSelectedOverlay() {
+        if (isLive) return
         val display = gameDisplay ?: return
         val e = workingList.find { it.id == selectedId } ?: workingList.firstOrNull() ?: return
         PlayTranslateAccessibilityService.instance?.showRegionOverlay(display, e)
+    }
+
+    private fun flashSelectedIndicator() {
+        val display = gameDisplay ?: return
+        val e = workingList.find { it.id == selectedId } ?: workingList.firstOrNull() ?: return
+        PlayTranslateAccessibilityService.instance?.showRegionIndicator(display, e)
     }
 
     // ── RecyclerView Adapter ──────────────────────────────────────────────
@@ -314,7 +332,11 @@ class RegionPickerSheet : DialogFragment() {
                     val e = workingList.getOrElse(pos) { return@setOnClickListener }
                     selectedId = e.id
                     prefs.selectedRegionId = e.id
-                    gameDisplay?.let { d -> PlayTranslateAccessibilityService.instance?.showRegionOverlay(d, e) }
+                    if (isLive) {
+                        flashSelectedIndicator()
+                    } else {
+                        gameDisplay?.let { d -> PlayTranslateAccessibilityService.instance?.showRegionOverlay(d, e) }
+                    }
                     onSaved?.invoke()
                     submitList()
                 }
