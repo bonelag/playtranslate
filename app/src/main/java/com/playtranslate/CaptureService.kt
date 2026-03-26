@@ -850,6 +850,7 @@ class CaptureService : Service() {
         } else {
             onHoldLoadingChanged?.invoke(true)
             showOneShotOverlay()
+            flashRegionIndicator()
         }
     }
 
