@@ -12,6 +12,9 @@ app/build/
 # Claude Code
 .claude/
 
+# Local scratch / test data (not committed)
+local/
+
 # Release APK (distributed via GitHub Releases, not committed)
 *.apk
 
