@@ -29,6 +29,7 @@ class WordDetailBottomSheet : DialogFragment() {
     companion object {
         const val TAG = "WordDetailBottomSheet"
         private const val ARG_WORD            = "word"
+        private const val ARG_READING         = "reading"
         private const val ARG_SCREENSHOT_PATH = "screenshot_path"
         private const val ARG_SENTENCE_ORIGINAL     = "sentence_original"
         private const val ARG_SENTENCE_TRANSLATION  = "sentence_translation"
@@ -39,6 +40,7 @@ class WordDetailBottomSheet : DialogFragment() {
 
         fun newInstance(
             word: String,
+            reading: String? = null,
             screenshotPath: String? = null,
             sentenceOriginal: String? = null,
             sentenceTranslation: String? = null,
@@ -46,6 +48,7 @@ class WordDetailBottomSheet : DialogFragment() {
         ) = WordDetailBottomSheet().apply {
                 arguments = Bundle().apply {
                     putString(ARG_WORD, word)
+                    if (reading != null) putString(ARG_READING, reading)
                     if (screenshotPath != null) putString(ARG_SCREENSHOT_PATH, screenshotPath)
                     if (sentenceOriginal != null) {
                         putString(ARG_SENTENCE_ORIGINAL, sentenceOriginal)
@@ -80,6 +83,7 @@ class WordDetailBottomSheet : DialogFragment() {
         view.findViewById<View>(R.id.btnBackDetail).setOnClickListener { dismiss() }
 
         val word           = arguments?.getString(ARG_WORD) ?: run { dismiss(); return }
+        val readingHint    = arguments?.getString(ARG_READING)
         val screenshotPath = arguments?.getString(ARG_SCREENSHOT_PATH)
         view.findViewById<TextView>(R.id.tvDetailHeadword).text = word
 
@@ -89,7 +93,7 @@ class WordDetailBottomSheet : DialogFragment() {
 
         lifecycleScope.launch {
             val dict = DictionaryManager.get(requireContext())
-            val response = withContext(Dispatchers.IO) { dict.lookup(word) }
+            val response = withContext(Dispatchers.IO) { dict.lookup(word, readingHint) }
             val entry = response?.data?.firstOrNull()
             if (!isAdded) return@launch
             if (entry == null) {

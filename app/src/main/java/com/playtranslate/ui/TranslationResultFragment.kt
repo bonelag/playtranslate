@@ -47,6 +47,7 @@ class TranslationResultFragment : Fragment() {
         fun getCaptureService(): CaptureService?
         fun onWordTapped(
             word: String,
+            reading: String?,
             screenshotPath: String?,
             sentenceOriginal: String?,
             sentenceTranslation: String?,
@@ -455,7 +456,7 @@ class TranslationResultFragment : Fragment() {
             val romajiDeferred = async { buildRomaji(text) }
 
             val ctx = context ?: return@launch
-            val allPairs = withContext(Dispatchers.IO) {
+            val allTokens = withContext(Dispatchers.IO) {
                 DictionaryManager.get(ctx.applicationContext).tokenizeWithSurfaces(text)
             }
 
@@ -464,17 +465,17 @@ class TranslationResultFragment : Fragment() {
             val displayedText = tvOriginal.text?.toString() ?: text
             val pendingSpans = mutableListOf<Triple<IntRange, String, String>>() // range, surface, lookupForm
             var searchFrom = 0
-            for ((surface, lookupForm) in allPairs) {
-                val idx = displayedText.indexOf(surface, searchFrom)
+            for (tok in allTokens) {
+                val idx = displayedText.indexOf(tok.surface, searchFrom)
                 if (idx >= 0) {
-                    pendingSpans.add(Triple(idx until idx + surface.length, surface, lookupForm))
-                    searchFrom = idx + surface.length
+                    pendingSpans.add(Triple(idx until idx + tok.surface.length, tok.surface, tok.lookupForm))
+                    searchFrom = idx + tok.surface.length
                 }
             }
 
             val seen = mutableSetOf<String>()
-            val tokensWithSurface = allPairs.filter { seen.add(it.second) }
-            val tokens = tokensWithSurface.map { it.second }
+            val uniqueTokens = allTokens.filter { seen.add(it.lookupForm) }
+            val tokens = uniqueTokens.map { it.lookupForm }
 
             if (tokens.isEmpty()) {
                 tvMainWordsLoading.visibility = View.GONE
@@ -489,7 +490,8 @@ class TranslationResultFragment : Fragment() {
             }
 
             val inflater = LayoutInflater.from(context)
-            val surfaceByToken = tokensWithSurface.associate { it.second to it.first }
+            val surfaceByToken = uniqueTokens.associate { it.lookupForm to it.surface }
+            val readingByToken = uniqueTokens.associate { it.lookupForm to it.reading }
             val rows = tokens.map { word ->
                 val row = inflater.inflate(R.layout.item_word_lookup, mainWordsContainer, false)
                 row.findViewById<TextView>(R.id.tvItemWord).text = word
@@ -515,7 +517,7 @@ class TranslationResultFragment : Fragment() {
                         try {
                             val appCtx = context?.applicationContext ?: return@launch
                             val response = withContext(Dispatchers.IO) {
-                                DictionaryManager.get(appCtx).lookup(word)
+                                DictionaryManager.get(appCtx).lookup(word, readingByToken[word])
                             }
                             if (response != null && response.data.isNotEmpty()) {
                                 val entry   = response.data.first()
@@ -538,10 +540,12 @@ class TranslationResultFragment : Fragment() {
                                 tvFreq.visibility = View.VISIBLE
                             }
                             val lookupWord = displayWord
+                            val lookupReading = readingByToken[word]
                             row.setOnClickListener {
                                 host?.onInteraction()
                                 host?.onWordTapped(
                                     lookupWord,
+                                    lookupReading,
                                     lastResult?.screenshotPath,
                                     lastResult?.originalText,
                                     lastResult?.translatedText,

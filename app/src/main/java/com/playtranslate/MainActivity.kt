@@ -177,6 +177,7 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
 
     override fun onWordTapped(
         word: String,
+        reading: String?,
         screenshotPath: String?,
         sentenceOriginal: String?,
         sentenceTranslation: String?,
@@ -185,7 +186,8 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
         pauseLiveMode()
         WordDetailBottomSheet.newInstance(
             word,
-            screenshotPath,
+            reading = reading,
+            screenshotPath = screenshotPath,
             sentenceOriginal = sentenceOriginal,
             sentenceTranslation = sentenceTranslation,
             sentenceWordResults = wordResults

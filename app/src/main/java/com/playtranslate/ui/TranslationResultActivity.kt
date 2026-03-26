@@ -63,6 +63,7 @@ class TranslationResultActivity : AppCompatActivity(), TranslationResultFragment
 
     override fun onWordTapped(
         word: String,
+        reading: String?,
         screenshotPath: String?,
         sentenceOriginal: String?,
         sentenceTranslation: String?,
@@ -70,7 +71,8 @@ class TranslationResultActivity : AppCompatActivity(), TranslationResultFragment
     ) {
         WordDetailBottomSheet.newInstance(
             word,
-            screenshotPath,
+            reading = reading,
+            screenshotPath = screenshotPath,
             sentenceOriginal = sentenceOriginal,
             sentenceTranslation = sentenceTranslation,
             sentenceWordResults = wordResults

@@ -36,16 +36,16 @@ object LastSentenceCache {
         sentence: String
     ): Map<String, Triple<String, String, Int>> = withContext(Dispatchers.IO) {
         val dict = DictionaryManager.get(context.applicationContext)
-        val pairs = dict.tokenizeWithSurfaces(sentence)
+        val tokenResults = dict.tokenizeWithSurfaces(sentence)
         val results = linkedMapOf<String, Triple<String, String, Int>>()
         val surfaces = linkedMapOf<String, String>()
-        for ((surface, lookupForm) in pairs) {
+        for (tok in tokenResults) {
             try {
-                val response = dict.lookup(lookupForm)
+                val response = dict.lookup(tok.lookupForm, tok.reading)
                 if (response != null && response.data.isNotEmpty()) {
                     val entry = response.data.first()
                     val primary = entry.japanese.firstOrNull()
-                    val displayWord = primary?.word ?: primary?.reading ?: lookupForm
+                    val displayWord = primary?.word ?: primary?.reading ?: tok.lookupForm
                     val reading = primary?.reading?.takeIf { it != primary.word } ?: ""
                     val meaning = entry.senses.mapIndexed { i, sense ->
                         val glosses = sense.englishDefinitions.joinToString("; ")
@@ -53,8 +53,8 @@ object LastSentenceCache {
                     }.joinToString("\n")
                     if (meaning.isNotEmpty()) {
                         results[displayWord] = Triple(reading, meaning, entry.freqScore)
-                        if (surface != displayWord) {
-                            surfaces[displayWord] = surface
+                        if (tok.surface != displayWord) {
+                            surfaces[displayWord] = tok.surface
                         }
                     }
                 }

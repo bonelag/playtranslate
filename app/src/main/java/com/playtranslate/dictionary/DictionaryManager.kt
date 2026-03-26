@@ -18,6 +18,16 @@ import java.io.File
 private const val TAG = "DictionaryManager"
 private const val DB_ASSET = "jmdict.db"
 
+/** Result from [DictionaryManager.tokenizeWithSurfaces]. */
+data class TokenWithReading(
+    /** Text as it appears in the input (e.g. "使わない"). */
+    val surface: String,
+    /** Dictionary form for lookup (e.g. "使う"). */
+    val lookupForm: String,
+    /** Hiragana reading from Kuromoji, or null for multi-token phrases. */
+    val reading: String?
+)
+
 /**
  * Offline Japanese dictionary backed by a JMdict SQLite database bundled
  * as an app asset.  The database is copied from assets to internal storage
@@ -61,7 +71,7 @@ class DictionaryManager private constructor(private val context: Context) {
      * Falls back to [Deinflector.tokenize] if the database is not ready.
      */
     suspend fun tokenize(text: String): List<String> =
-        tokenizeWithSurfaces(text).map { it.second }.distinct()
+        tokenizeWithSurfaces(text).map { it.lookupForm }.distinct()
 
     /**
      * Tokenizes [text] and returns pairs of (surface span, lookup form).
@@ -75,13 +85,13 @@ class DictionaryManager private constructor(private val context: Context) {
      *
      * Falls back to [Deinflector.tokenize] if the database is not ready.
      */
-    suspend fun tokenizeWithSurfaces(text: String): List<Pair<String, String>> = withContext(Dispatchers.IO) {
+    suspend fun tokenizeWithSurfaces(text: String): List<TokenWithReading> = withContext(Dispatchers.IO) {
         val database = ensureOpen()
-            ?: return@withContext Deinflector.tokenize(text).map { it to it }
+            ?: return@withContext Deinflector.tokenize(text).map { TokenWithReading(it, it, null) }
 
         val tokens   = Deinflector.rawTokenInfos(text)
         val surfaces = tokens.map { it.surface }
-        val result   = mutableListOf<Pair<String, String>>()
+        val result   = mutableListOf<TokenWithReading>()
 
         // Batch-query all candidate N-grams upfront (2 queries instead of ~60)
         val candidates = mutableSetOf<String>()
@@ -102,7 +112,7 @@ class DictionaryManager private constructor(private val context: Context) {
             for (n in maxN downTo 2) {
                 val phrase = surfaces.subList(i, i + n).joinToString("")
                 if (phrase in knownPhrases) {
-                    result.add(phrase to phrase)
+                    result.add(TokenWithReading(phrase, phrase, reading = null))
                     i += n
                     advanced = true
                     break
@@ -124,13 +134,15 @@ class DictionaryManager private constructor(private val context: Context) {
                                 j++
                             }
                         }
-                        result.add(surfaceSpan to lookupForm)
+                        val reading = t.reading?.let { Deinflector.katakanaToHiragana(it) }
+                        result.add(TokenWithReading(surfaceSpan, lookupForm, reading))
                     }
                 }
                 i++
             }
         }
 
+        Log.d(TAG, "tokenizeWithSurfaces: ${result.map { "(${it.surface} → ${it.lookupForm} [${it.reading}])" }}")
         result
     }
 
@@ -153,12 +165,24 @@ class DictionaryManager private constructor(private val context: Context) {
      *
      * This is a suspend function; do NOT call on the main thread.
      */
-    suspend fun lookup(word: String): JishoResponse? = withContext(Dispatchers.IO) {
+    suspend fun lookup(word: String, reading: String? = null): JishoResponse? = withContext(Dispatchers.IO) {
         val database = ensureOpen() ?: return@withContext null
 
-        // 1. Exact match
+        // 1. Exact match narrowed by reading (if available)
+        if (reading != null) {
+            val narrowedIds = queryEntryIdsWithReading(database, word, reading)
+            if (narrowedIds.isNotEmpty()) {
+                Log.d(TAG, "lookup($word, reading=$reading): narrowed ids=$narrowedIds")
+                return@withContext buildResponse(database, narrowedIds)
+            }
+        }
+
+        // 2. Exact match (kanji or reading table, no reading filter)
         val directIds = queryEntryIds(database, word)
-        if (directIds.isNotEmpty()) return@withContext buildResponse(database, directIds)
+        if (directIds.isNotEmpty()) {
+            Log.d(TAG, "lookup($word): exact match ids=$directIds")
+            return@withContext buildResponse(database, directIds)
+        }
 
         // 2. Try de-inflected candidates (first dictionary hit wins)
         for (candidate in Deinflector.candidates(word)) {
@@ -292,6 +316,21 @@ class DictionaryManager private constructor(private val context: Context) {
             }
         }
         return found
+    }
+
+    /** Query entries matching both a kanji form and a reading (narrowed search). */
+    private fun queryEntryIdsWithReading(db: SQLiteDatabase, word: String, reading: String): List<Long> {
+        val ids = mutableListOf<Long>()
+        db.rawQuery(
+            """SELECT DISTINCT k.entry_id
+               FROM kanji k
+               JOIN entry e ON e.id = k.entry_id
+               JOIN reading r ON r.entry_id = k.entry_id
+               WHERE k.text = ? AND r.text = ?
+               ORDER BY e.freq_score DESC LIMIT 8""",
+            arrayOf(word, reading)
+        ).use { c -> while (c.moveToNext()) ids.add(c.getLong(0)) }
+        return ids
     }
 
     private fun queryEntryIds(db: SQLiteDatabase, word: String): List<Long> {

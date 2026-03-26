@@ -315,26 +315,27 @@ class DragLookupController(
         // Tokenize the line (surface spans for position mapping, lookup forms for dictionary)
         val service = PlayTranslateAccessibilityService.instance ?: return false
         val dict = DictionaryManager.get(service)
-        val tokenPairs = dict.tokenizeWithSurfaces(lineText)
+        val tokenResults = dict.tokenizeWithSurfaces(lineText)
 
-        if (tokenPairs.isEmpty()) return false
+        if (tokenResults.isEmpty()) return false
 
         // Find the token whose estimated screen position is closest to the finger
         // Uses surface forms for position mapping in the original text
-        val surfaceTokens = tokenPairs.map { it.first }
+        val surfaceTokens = tokenResults.map { it.surface }
         val tokenMatch = findClosestToken(lineText, surfaceTokens, fingerX, hitLine.bounds.left, charWidth)
         if (tokenMatch == null) return false
 
         val matchedSurface = tokenMatch.first
         val matchedIdx = tokenMatch.second
-        // Find the corresponding lookup form
-        val lookupForm = tokenPairs.firstOrNull { it.first == matchedSurface }?.second ?: matchedSurface
+        // Find the corresponding lookup form and reading
+        val matchedToken = tokenResults.firstOrNull { it.surface == matchedSurface }
+        val lookupForm = matchedToken?.lookupForm ?: matchedSurface
 
         // Skip if same word already showing (counts as "found")
         if (lookupForm == lastWord && popup.isShowing) return true
 
-        // Dictionary lookup using the base/dictionary form
-        val response = dict.lookup(lookupForm) ?: return false
+        // Dictionary lookup using the base/dictionary form + reading hint
+        val response = dict.lookup(lookupForm, matchedToken?.reading) ?: return false
         val entry = response.data.firstOrNull() ?: return false
 
         // Estimate the word's center X in screen coordinates (using surface span position)

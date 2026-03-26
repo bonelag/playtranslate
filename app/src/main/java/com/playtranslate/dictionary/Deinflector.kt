@@ -1,6 +1,9 @@
 package com.playtranslate.dictionary
 
+import android.util.Log
 import com.atilika.kuromoji.ipadic.Tokenizer
+
+private const val TAG = "Deinflector"
 
 /**
  * Japanese morphological analyser + de-inflector.
@@ -30,7 +33,8 @@ object Deinflector {
     internal data class TokenInfo(
         val surface: String,
         val pos: String?,
-        val baseForm: String?
+        val baseForm: String?,
+        val reading: String?
     )
 
     /**
@@ -61,12 +65,21 @@ object Deinflector {
 
     internal fun rawTokenInfos(text: String): List<TokenInfo> =
         tokenizer.tokenize(text).map { t ->
+            Log.d(TAG, "token: surface=${t.surface} pos=${t.partOfSpeechLevel1} baseForm=${t.baseForm} reading=${t.reading}")
             TokenInfo(
                 surface  = t.surface,
                 pos      = t.partOfSpeechLevel1,
-                baseForm = t.baseForm.takeIf { !it.isNullOrEmpty() && it != "*" }
+                baseForm = t.baseForm.takeIf { !it.isNullOrEmpty() && it != "*" },
+                reading  = t.reading.takeIf { !it.isNullOrEmpty() && it != "*" }
             )
         }
+
+    /** Convert katakana to hiragana (Kuromoji returns katakana, JMdict stores hiragana). */
+    internal fun katakanaToHiragana(text: String): String = buildString {
+        for (c in text) {
+            if (c in '\u30A1'..'\u30F6') append(c - 0x60) else append(c)
+        }
+    }
 
     /**
      * Tokenises [text] using Kuromoji morphological analysis and returns the
