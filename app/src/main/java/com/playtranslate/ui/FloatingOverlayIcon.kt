@@ -169,14 +169,26 @@ class FloatingOverlayIcon(context: Context) : View(context) {
     var wm: WindowManager? = null
     var params: WindowManager.LayoutParams? = null
 
+    /** Context tied to this overlay's display + window type. Needed on API 30+
+     *  so that WindowMetrics returns the correct display's dimensions. */
+    private val overlayContext: Context by lazy {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            context.createWindowContext(
+                WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY, null
+            )
+        } else {
+            context
+        }
+    }
+
     private fun queryScreenSize(): Point {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            val wm = context.getSystemService(WindowManager::class.java)
-            val bounds = wm?.maximumWindowMetrics?.bounds
+            val wm = overlayContext.getSystemService(WindowManager::class.java)
+            val bounds = wm?.currentWindowMetrics?.bounds
             if (bounds != null) return Point(bounds.width(), bounds.height())
         }
         val size = Point()
-        @Suppress("DEPRECATION")
+        @Suppress("DEPRECATION") // getRealSize: only option on API 26-29
         display?.getRealSize(size)
         return size
     }
