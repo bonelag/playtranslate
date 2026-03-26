@@ -298,6 +298,13 @@ class CaptureService : Service() {
         }
 
         onStatusUpdate?.invoke(getString(R.string.status_idle))
+
+        // If live mode is running, restart it so the screenshot loop
+        // picks up the new gameDisplayId.
+        if (liveActive) {
+            stopLive()
+            startLive()
+        }
     }
 
     fun captureOnce() {
