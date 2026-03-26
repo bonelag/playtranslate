@@ -1123,6 +1123,10 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
 
         @Volatile
         var isInForeground = false
+            set(value) {
+                field = value
+                CaptureService.instance?.updateForegroundState()
+            }
 
     }
 }

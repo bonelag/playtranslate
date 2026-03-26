@@ -1675,8 +1675,8 @@ class CaptureService : Service() {
     // ── Notification ──────────────────────────────────────────────────────
 
     /**
-     * Show the foreground notification only when the app has an active
-     * presence on the game screen (floating icon visible or live mode running).
+     * Evaluate whether the service needs foreground status and whether
+     * live mode should keep running based on current game-screen presence.
      *
      * Triggered automatically by:
      *  - [liveActive] property setter (in this class)
@@ -1684,6 +1684,15 @@ class CaptureService : Service() {
      */
     fun updateForegroundState() {
         val iconShowing = PlayTranslateAccessibilityService.instance?.floatingIcon != null
+
+        // If live mode is running but there's no control surface (no icon,
+        // app not in foreground), stop it — the user can't manage it.
+        if (liveActive && !iconShowing && !MainActivity.isInForeground) {
+            stopLive()
+            // stopLive() sets liveActive = false, which re-enters this method
+            return
+        }
+
         if (iconShowing || liveActive) {
             startForeground(NOTIF_ID, buildNotification())
         } else {
