@@ -151,7 +151,7 @@ class SettingsBottomSheet : DialogFragment() {
         val tvOverlayIconHint = view.findViewById<TextView>(R.id.tvOverlayIconHint)
         // Draw half-circle icon preview matching the on-screen appearance
         ivIconPreview = view.findViewById(R.id.ivFloatingIconPreview)
-        ivIconPreview?.setImageBitmap(createFloatingIconPreview())
+        ivIconPreview?.setImageBitmap(createFloatingIconPreview(prefs.compactOverlayIcon))
 
         val isSingle = Prefs.isSingleScreen(requireContext())
         tvOverlayIconTitle.setText(
@@ -199,6 +199,7 @@ class SettingsBottomSheet : DialogFragment() {
         switchCompactIcon.isChecked = prefs.compactOverlayIcon
         switchCompactIcon.setOnCheckedChangeListener { _, checked ->
             prefs.compactOverlayIcon = checked
+            ivIconPreview?.setImageBitmap(createFloatingIconPreview(checked))
             // Force recreate the icon to apply compact mode
             val a11y = PlayTranslateAccessibilityService.instance
             a11y?.hideFloatingIcon()
@@ -681,32 +682,61 @@ class SettingsBottomSheet : DialogFragment() {
      * Creates a bitmap preview of the floating icon as it appears on screen:
      * a dark half-circle snapped to the left edge with the icon inside.
      */
-    private fun createFloatingIconPreview(): Bitmap {
+    private fun createFloatingIconPreview(compact: Boolean): Bitmap {
         val dp = resources.displayMetrics.density
         val size = (56 * dp).toInt()
         val circleR = size / 2f
         val bmp = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
         val canvas = android.graphics.Canvas(bmp)
 
-        // Dark circle, positioned so only the right half is visible
         val circlePaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
             color = android.graphics.Color.parseColor("#CC000000")
             style = android.graphics.Paint.Style.FILL
         }
-        canvas.drawCircle(0f, circleR, circleR, circlePaint)
+        val borderPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+            color = android.graphics.Color.parseColor("#66888888")
+            style = android.graphics.Paint.Style.STROKE
+            strokeWidth = 1.5f * dp
+        }
 
-        // Icon bitmap in the visible half
-        val iconBmp = android.graphics.BitmapFactory.decodeResource(resources, com.playtranslate.R.drawable.ic_floating_icon)
-        val iconH = size * 0.5f
-        val iconScale = iconH / iconBmp.height
-        val iconW = iconBmp.width * iconScale
-        val iconCx = circleR / 2f
-        val dst = android.graphics.RectF(
-            iconCx - iconW / 2f, circleR - iconH / 2f,
-            iconCx + iconW / 2f, circleR + iconH / 2f
-        )
-        canvas.drawBitmap(iconBmp, null, dst, android.graphics.Paint(android.graphics.Paint.FILTER_BITMAP_FLAG))
-        iconBmp.recycle()
+        if (compact) {
+            // Compact: circle pushed further off-screen, only ~1/4 visible with arrow
+            val compactOffset = circleR * 0.5f
+            val cx = -compactOffset
+            canvas.drawCircle(cx, circleR, circleR, circlePaint)
+            canvas.drawCircle(cx, circleR, circleR, borderPaint)
+            // Arrow pointing right in the visible slice
+            val arrowNudge = circleR * 0.65f
+            val arrowCx = cx + arrowNudge
+            val arrowSize = circleR * 0.22f
+            val hw = arrowSize * 0.5f
+            val hh = arrowSize * 0.7f
+            val path = android.graphics.Path().apply {
+                moveTo(arrowCx + hw, circleR)
+                lineTo(arrowCx - hw * 0.3f, circleR - hh)
+                lineTo(arrowCx - hw * 0.3f, circleR + hh)
+                close()
+            }
+            val arrowPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+                color = android.graphics.Color.WHITE
+                style = android.graphics.Paint.Style.FILL
+            }
+            canvas.drawPath(path, arrowPaint)
+        } else {
+            // Normal: half-circle with icon
+            canvas.drawCircle(0f, circleR, circleR, circlePaint)
+            val iconBmp = android.graphics.BitmapFactory.decodeResource(resources, com.playtranslate.R.drawable.ic_floating_icon)
+            val iconH = size * 0.5f
+            val iconScale = iconH / iconBmp.height
+            val iconW = iconBmp.width * iconScale
+            val iconCx = circleR / 2f
+            val dst = android.graphics.RectF(
+                iconCx - iconW / 2f, circleR - iconH / 2f,
+                iconCx + iconW / 2f, circleR + iconH / 2f
+            )
+            canvas.drawBitmap(iconBmp, null, dst, android.graphics.Paint(android.graphics.Paint.FILTER_BITMAP_FLAG))
+            iconBmp.recycle()
+        }
         return bmp
     }
 }
