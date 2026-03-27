@@ -351,17 +351,14 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
     }
 
     private fun showRegionPicker() {
-        if (regionPickerContainer.visibility == View.VISIBLE) {
-            hideRegionPicker()
+        if (selectedTab == Tab.REGIONS) {
+            selectTab(Tab.TRANSLATE)
             return
         }
         val displayManager = getSystemService(Context.DISPLAY_SERVICE) as DisplayManager
         val gameDisplay = displayManager.getDisplay(prefs.captureDisplayId) ?: return
 
-        hideSettings()
         selectTab(Tab.REGIONS)
-        resultsContainer.visibility = View.GONE
-        regionPickerContainer.visibility = View.VISIBLE
 
         val sheet = RegionPickerSheet().apply {
             setShowsDialog(false)
@@ -370,7 +367,7 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
                 configureService()
             }
             onTranslateOnce = { region ->
-                hideRegionPicker()
+                selectTab(Tab.TRANSLATE)
                 captureService?.configureOverride(region)
                 withAccessibility { captureService?.captureOnce() }
             }
@@ -382,13 +379,7 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
     }
 
     private fun hideRegionPicker() {
-        regionPickerContainer.visibility = View.GONE
-        resultsContainer.visibility = View.VISIBLE
         selectTab(Tab.TRANSLATE)
-        val frag = supportFragmentManager.findFragmentByTag(RegionPickerSheet.TAG)
-        if (frag != null) {
-            supportFragmentManager.beginTransaction().remove(frag).commitAllowingStateLoss()
-        }
     }
 
     private fun updateRegionButton() {
@@ -425,8 +416,6 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
                     return
                 }
                 // Dual screen: switch to translate tab so results are visible
-                hideSettings()
-                hideRegionPicker()
                 selectTab(Tab.TRANSLATE)
                 doStartLive()
             }
@@ -472,8 +461,6 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
     @android.annotation.SuppressLint("ClickableViewAccessibility")
     private fun setupButtons() {
         btnTranslate.setOnClickListener {
-            hideRegionPicker()
-            hideSettings()
             selectTab(Tab.TRANSLATE)
             if (isLiveMode) {
                 captureService?.refreshLiveOverlay()
@@ -578,6 +565,25 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
 
     private fun selectTab(tab: Tab) {
         selectedTab = tab
+
+        // ── Container visibility ──
+        resultsContainer.visibility = if (tab == Tab.TRANSLATE) View.VISIBLE else View.GONE
+        settingsContainer.visibility = if (tab == Tab.SETTINGS) View.VISIBLE else View.GONE
+        regionPickerContainer.visibility = if (tab == Tab.REGIONS) View.VISIBLE else View.GONE
+
+        // Remove inline fragments for tabs we're leaving
+        if (tab != Tab.SETTINGS) {
+            supportFragmentManager.findFragmentByTag(SettingsBottomSheet.TAG)?.let {
+                supportFragmentManager.beginTransaction().remove(it).commitAllowingStateLoss()
+            }
+        }
+        if (tab != Tab.REGIONS) {
+            supportFragmentManager.findFragmentByTag(RegionPickerSheet.TAG)?.let {
+                supportFragmentManager.beginTransaction().remove(it).commitAllowingStateLoss()
+            }
+        }
+
+        // ── Button visuals ──
         val accentBg = themeColor(R.attr.colorAccentPrimary)
         val accentText = themeColor(R.attr.colorTextOnAccent)
         val normalText = themeColor(R.attr.colorTextPrimary)
@@ -600,7 +606,6 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
             )
         }
 
-        // Settings
         val settingsSelected = tab == Tab.SETTINGS
         btnSettings.background = tabBackground(settingsSelected)
         findViewById<ImageView>(R.id.ivSettings).imageTintList =
@@ -609,7 +614,6 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
             if (settingsSelected) accentText else normalText
         )
 
-        // Regions
         val regionsSelected = tab == Tab.REGIONS
         btnRegions.background = tabBackground(regionsSelected)
         findViewById<ImageView>(R.id.ivRegions).imageTintList =
@@ -618,7 +622,6 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
             if (regionsSelected) accentText else normalText
         )
 
-        // Translate
         val translateSelected = tab == Tab.TRANSLATE
         btnTranslate.background = tabBackground(translateSelected)
         tvTranslateTitle.setTextColor(if (translateSelected) accentText else normalText)
@@ -638,14 +641,11 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
     }
 
     private fun openSettings() {
-        if (settingsContainer.visibility == View.VISIBLE) {
-            hideSettings()
+        if (selectedTab == Tab.SETTINGS) {
+            selectTab(Tab.TRANSLATE)
             return
         }
-        hideRegionPicker()
         selectTab(Tab.SETTINGS)
-        resultsContainer.visibility = View.GONE
-        settingsContainer.visibility = View.VISIBLE
         openSettingsInline()
     }
 
@@ -692,13 +692,7 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
     }
 
     private fun hideSettings() {
-        settingsContainer.visibility = View.GONE
-        resultsContainer.visibility = View.VISIBLE
         selectTab(Tab.TRANSLATE)
-        val frag = supportFragmentManager.findFragmentByTag(SettingsBottomSheet.TAG)
-        if (frag != null) {
-            supportFragmentManager.beginTransaction().remove(frag).commitAllowingStateLoss()
-        }
     }
 
     /** Creates and shows a SettingsBottomSheet as a dialog (for onboarding). */
@@ -825,7 +819,7 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
 
     private fun handleRegionCapture() {
         if (isLiveMode) pauseLiveMode()
-
+        selectTab(Tab.TRANSLATE)
         captureService?.captureOnce()
     }
 
@@ -1179,8 +1173,6 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
             prefs.selectedRegionId = dropdownRegions[selectedRegionIdx].id
             configureService()
             if (!isLiveMode) {
-                hideSettings()
-                hideRegionPicker()
                 selectTab(Tab.TRANSLATE)
             }
             withAccessibility { captureService?.captureOnce() }
