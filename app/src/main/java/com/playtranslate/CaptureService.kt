@@ -447,6 +447,10 @@ class CaptureService : Service() {
         session.liveCaptureJob = session.scope.launch {
             while (isActive) {
                 val result = runCaptureOcrTranslate()
+                if (session.liveShowRegionFlash) {
+                    session.liveShowRegionFlash = false
+                    flashRegionIndicator()
+                }
                 if (result != null) {
                     val dedupKey = result.originalText
                         .filter { c -> OcrManager.isSourceLangChar(c, sourceLang) }
@@ -1526,7 +1530,6 @@ class CaptureService : Service() {
         try {
             val screenshotPath = PlayTranslateAccessibilityService.instance
                 ?.screenshotManager?.saveToCache(raw)
-            flashRegionIndicator()
 
             val statusBarHeight = getStatusBarHeightForDisplay(gameDisplayId)
             val top    = maxOf((raw.height * activeRegion.top).toInt(), statusBarHeight)
@@ -1571,6 +1574,7 @@ class CaptureService : Service() {
         }
         onStatusUpdate?.invoke(getString(R.string.status_capturing))
         val result = runCaptureOcrTranslate()
+        flashRegionIndicator()
         if (result != null) {
             onResult?.invoke(result)
         } else {
