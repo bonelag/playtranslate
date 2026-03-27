@@ -188,17 +188,36 @@
 
             </FrameLayout>
 
-            <!-- Hamburger menu button -->
-            <ImageButton
-                android:id="@+id/btnMenu"
+            <!-- Live mode play/pause toggle -->
+            <LinearLayout
+                android:id="@+id/btnLiveToggle"
                 android:layout_width="58dp"
                 android:layout_height="match_parent"
-                android:layout_marginStart="6dp"
-                android:background="@drawable/bg_live_play"
-                android:src="@drawable/ic_menu"
-                android:tint="?attr/colorTextOnAccent"
-                android:scaleType="center"
-                android:contentDescription="Open menu" />
+                android:orientation="vertical"
+                android:gravity="center"
+                android:background="@android:color/transparent"
+                android:clickable="true"
+                android:focusable="true"
+                android:layout_marginStart="6dp">
+
+                <ImageView
+                    android:id="@+id/ivLiveToggle"
+                    android:layout_width="22dp"
+                    android:layout_height="22dp"
+                    android:src="@drawable/ic_play"
+                    android:tint="?attr/colorTextPrimary"
+                    android:scaleType="centerInside" />
+
+                <TextView
+                    android:id="@+id/tvLiveToggle"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Auto"
+                    android:textColor="?attr/colorTextPrimary"
+                    android:textSize="8sp"
+                    android:layout_marginTop="2dp" />
+
+            </LinearLayout>
 
         </LinearLayout>
 

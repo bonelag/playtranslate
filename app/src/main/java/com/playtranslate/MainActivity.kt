@@ -69,7 +69,9 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
     private lateinit var tvTranslateSubtitle: TextView
     private lateinit var tvCapturingTitle: TextView
     private lateinit var tvCapturingSubtitle: TextView
-    private lateinit var btnMenu: ImageButton
+    private lateinit var btnLiveToggle: View
+    private lateinit var ivLiveToggle: ImageView
+    private lateinit var tvLiveToggle: TextView
     private lateinit var menuOverlay: FrameLayout
     private lateinit var menuPanel: View
     private lateinit var menuScrim: View
@@ -286,7 +288,9 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
         tvTranslateSubtitle  = findViewById(R.id.tvTranslateSubtitle)
         tvCapturingTitle     = findViewById(R.id.tvCapturingTitle)
         tvCapturingSubtitle  = findViewById(R.id.tvCapturingSubtitle)
-        btnMenu              = findViewById(R.id.btnMenu)
+        btnLiveToggle        = findViewById(R.id.btnLiveToggle)
+        ivLiveToggle         = findViewById(R.id.ivLiveToggle)
+        tvLiveToggle         = findViewById(R.id.tvLiveToggle)
         menuOverlay          = findViewById(R.id.menuOverlay)
         menuPanel            = findViewById(R.id.menuPanel)
         menuScrim            = findViewById(R.id.menuScrim)
@@ -308,7 +312,7 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
         // Long press on any bottom-bar button → drag-to-select dropdown
         applyRegionDropdownGestures(btnTranslate)
         applyRegionDropdownGestures(btnCapturing)
-        applyRegionDropdownGestures(btnMenu)
+        applyRegionDropdownGestures(btnLiveToggle)
     }
 
     /** Attaches long-press + drag-to-select region picker gestures to [btn]. */
@@ -462,7 +466,7 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
 
         findViewById<View>(R.id.btnSettings).setOnClickListener { openSettings() }
         findViewById<View>(R.id.btnRegions).setOnClickListener { showRegionPicker() }
-        btnMenu.setOnClickListener { showMenu() }
+        btnLiveToggle.setOnClickListener { toggleLiveMode() }
         menuScrim.setOnClickListener { dismissMenu() }
         findViewById<View>(R.id.menuItemSettings).setOnClickListener { dismissMenu(); openSettings() }
         findViewById<View>(R.id.menuItemLive).setOnClickListener { dismissMenu(); toggleLiveMode() }
@@ -512,13 +516,13 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
         if (isLiveMode) {
             menuItemLiveIcon.setImageResource(R.drawable.ic_pause)
             menuItemLiveLabel.text = "Pause Auto"
-            btnMenu.setBackgroundResource(R.drawable.bg_live_recording)
-            btnMenu.imageTintList = android.content.res.ColorStateList.valueOf(android.graphics.Color.WHITE)
+            ivLiveToggle.setImageResource(R.drawable.ic_pause)
+            tvLiveToggle.text = "Pause"
         } else {
             menuItemLiveIcon.setImageResource(R.drawable.ic_play)
             menuItemLiveLabel.text = "Auto Translate"
-            btnMenu.setBackgroundResource(R.drawable.bg_live_play)
-            btnMenu.imageTintList = android.content.res.ColorStateList.valueOf(themeColor(R.attr.colorTextOnAccent))
+            ivLiveToggle.setImageResource(R.drawable.ic_play)
+            tvLiveToggle.text = "Auto"
         }
     }
 
