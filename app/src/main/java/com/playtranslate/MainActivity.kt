@@ -460,6 +460,8 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
             false
         }
 
+        findViewById<View>(R.id.btnSettings).setOnClickListener { openSettings() }
+        findViewById<View>(R.id.btnRegions).setOnClickListener { showRegionPicker() }
         btnMenu.setOnClickListener { showMenu() }
         menuScrim.setOnClickListener { dismissMenu() }
         findViewById<View>(R.id.menuItemSettings).setOnClickListener { dismissMenu(); openSettings() }
