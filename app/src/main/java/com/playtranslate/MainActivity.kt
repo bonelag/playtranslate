@@ -542,17 +542,24 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
         }
     }
 
+    private val liveRedColor = android.graphics.Color.parseColor("#D32F2F")
+
     private fun updateMenuLiveItem() {
         if (isLiveMode) {
             menuItemLiveIcon.setImageResource(R.drawable.ic_pause)
             menuItemLiveLabel.text = "Pause Auto"
             ivLiveToggle.setImageResource(R.drawable.ic_pause)
             tvLiveToggle.text = "Pause"
+            ivLiveToggle.imageTintList = android.content.res.ColorStateList.valueOf(liveRedColor)
+            tvLiveToggle.setTextColor(liveRedColor)
         } else {
             menuItemLiveIcon.setImageResource(R.drawable.ic_play)
             menuItemLiveLabel.text = "Auto Translate"
             ivLiveToggle.setImageResource(R.drawable.ic_play)
             tvLiveToggle.text = "Auto"
+            val normalColor = themeColor(R.attr.colorTextPrimary)
+            ivLiveToggle.imageTintList = android.content.res.ColorStateList.valueOf(normalColor)
+            tvLiveToggle.setTextColor(normalColor)
         }
     }
 
@@ -654,13 +661,17 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
         applyTheme()
 
         // Update root-level themed views
-        val root = findViewById<View>(android.R.id.content)?.rootView
+        val root = findViewById<android.view.ViewGroup>(android.R.id.content)?.getChildAt(0)
         root?.setBackgroundColor(themeColor(R.attr.colorBgDark))
         findViewById<View>(R.id.bottomBar)?.setBackgroundColor(themeColor(R.attr.colorBgSurface))
-        val textColor = themeColor(R.attr.colorTextPrimary)
-        ivLiveToggle.imageTintList = android.content.res.ColorStateList.valueOf(textColor)
-        tvLiveToggle.setTextColor(textColor)
+        updateMenuLiveItem()
         selectTab(selectedTab)
+
+        // Re-create the result fragment so it picks up the new theme
+        supportFragmentManager.beginTransaction()
+            .replace(R.id.resultsContainer, TranslationResultFragment())
+            .commitNow()
+        resultFragment?.setOnEditOriginalListener { showEditOverlay() }
 
         // Save scroll position and re-create the settings fragment with new theme
         prefs.settingsScrollY = settingsScrollY
