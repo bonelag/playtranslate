@@ -278,6 +278,10 @@ class SettingsBottomSheet : DialogFragment() {
         refreshCaptureMethodSection()
 
         // ── Capture interval (auto-save on text change) ───────────────────
+        val minSec = Prefs.MIN_CAPTURE_INTERVAL_SEC
+        val minLabel = if (minSec == minSec.toLong().toFloat()) "${minSec.toLong()}" else "%.1f".format(minSec)
+        view.findViewById<TextView>(R.id.tvCaptureIntervalHint).text =
+            "How often the game screen is captured during auto translation. Minimum $minLabel seconds."
         val etCaptureInterval = view.findViewById<EditText>(R.id.etCaptureInterval)
         etCaptureInterval.setText(prefs.captureIntervalSec.let {
             if (it == it.toLong().toFloat()) it.toLong().toString() else "%.1f".format(it)

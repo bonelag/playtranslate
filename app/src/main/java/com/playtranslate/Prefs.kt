@@ -89,10 +89,10 @@ class Prefs(context: Context) {
         get() = sp.getString(KEY_CAPTURE_METHOD, "") ?: ""
         set(v) = sp.edit().putString(KEY_CAPTURE_METHOD, v).apply()
 
-    /** Capture interval for live mode in seconds. Minimum 0.5, default 1.0. */
+    /** Capture interval for live mode in seconds. */
     var captureIntervalSec: Float
-        get() = sp.getFloat(KEY_CAPTURE_INTERVAL_SEC, 1.0f).coerceAtLeast(0.5f)
-        set(v) = sp.edit().putFloat(KEY_CAPTURE_INTERVAL_SEC, v.coerceAtLeast(0.5f)).apply()
+        get() = sp.getFloat(KEY_CAPTURE_INTERVAL_SEC, DEFAULT_CAPTURE_INTERVAL_SEC).coerceAtLeast(MIN_CAPTURE_INTERVAL_SEC)
+        set(v) = sp.edit().putFloat(KEY_CAPTURE_INTERVAL_SEC, v.coerceAtLeast(MIN_CAPTURE_INTERVAL_SEC)).apply()
 
     /** Capture interval in milliseconds. */
     val captureIntervalMs: Long get() = (captureIntervalSec * 1000).toLong()
@@ -183,6 +183,9 @@ class Prefs(context: Context) {
     }
 
     companion object {
+        const val MIN_CAPTURE_INTERVAL_SEC = 0.5f
+        const val DEFAULT_CAPTURE_INTERVAL_SEC = 1.0f
+
         private const val KEY_SOURCE_LANG    = "source_lang"
         private const val KEY_TARGET_LANG    = "target_lang"
         private const val KEY_DISPLAY_ID     = "capture_display_id"
