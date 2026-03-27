@@ -536,38 +536,51 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
 
     private fun selectTab(tab: Tab) {
         selectedTab = tab
-        val accentColor = themeColor(R.attr.colorTextOnAccent)
-        val normalColor = themeColor(R.attr.colorTextPrimary)
+        val accentBg = themeColor(R.attr.colorAccentPrimary)
+        val accentText = themeColor(R.attr.colorTextOnAccent)
+        val normalText = themeColor(R.attr.colorTextPrimary)
+        val strokeColor = themeColor(R.attr.colorTextSecondary)
+        val radius = 6f * resources.displayMetrics.density
+
+        fun tabBackground(selected: Boolean): android.graphics.drawable.Drawable {
+            val shape = android.graphics.drawable.GradientDrawable().apply {
+                cornerRadius = radius
+                if (selected) {
+                    setColor(accentBg)
+                } else {
+                    setColor(android.graphics.Color.TRANSPARENT)
+                    setStroke((1 * resources.displayMetrics.density).toInt(), strokeColor)
+                }
+            }
+            return android.graphics.drawable.RippleDrawable(
+                android.content.res.ColorStateList.valueOf(0x40000000),
+                shape, null
+            )
+        }
 
         // Settings
         val settingsSelected = tab == Tab.SETTINGS
-        btnSettings.setBackgroundResource(
-            if (settingsSelected) R.drawable.bg_translate_button else R.drawable.bg_capturing_button
-        )
+        btnSettings.background = tabBackground(settingsSelected)
         findViewById<ImageView>(R.id.ivSettings).imageTintList =
-            android.content.res.ColorStateList.valueOf(if (settingsSelected) accentColor else normalColor)
+            android.content.res.ColorStateList.valueOf(if (settingsSelected) accentText else normalText)
         findViewById<TextView>(R.id.tvSettings).setTextColor(
-            if (settingsSelected) accentColor else normalColor
+            if (settingsSelected) accentText else normalText
         )
 
         // Regions
         val regionsSelected = tab == Tab.REGIONS
-        btnRegions.setBackgroundResource(
-            if (regionsSelected) R.drawable.bg_translate_button else R.drawable.bg_capturing_button
-        )
+        btnRegions.background = tabBackground(regionsSelected)
         findViewById<ImageView>(R.id.ivRegions).imageTintList =
-            android.content.res.ColorStateList.valueOf(if (regionsSelected) accentColor else normalColor)
+            android.content.res.ColorStateList.valueOf(if (regionsSelected) accentText else normalText)
         findViewById<TextView>(R.id.tvRegions).setTextColor(
-            if (regionsSelected) accentColor else normalColor
+            if (regionsSelected) accentText else normalText
         )
 
         // Translate
         val translateSelected = tab == Tab.TRANSLATE
-        btnTranslate.setBackgroundResource(
-            if (translateSelected) R.drawable.bg_translate_button else R.drawable.bg_capturing_button
-        )
-        tvTranslateTitle.setTextColor(if (translateSelected) accentColor else normalColor)
-        tvTranslateSubtitle.setTextColor(if (translateSelected) accentColor else normalColor)
+        btnTranslate.background = tabBackground(translateSelected)
+        tvTranslateTitle.setTextColor(if (translateSelected) accentText else normalText)
+        tvTranslateSubtitle.setTextColor(if (translateSelected) accentText else normalText)
         tvTranslateSubtitle.alpha = if (translateSelected) 0.7f else 1f
     }
 
