@@ -551,7 +551,7 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
         }
     }
 
-    private val liveRedColor = android.graphics.Color.parseColor("#D32F2F")
+    private val liveRedColor = android.graphics.Color.parseColor("#C95050")
 
     private fun updateMenuLiveItem() {
         if (isLiveMode) {
