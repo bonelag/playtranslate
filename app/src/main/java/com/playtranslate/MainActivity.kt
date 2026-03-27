@@ -257,7 +257,11 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
         when (intent?.action) {
             ACTION_DRAG_SENTENCE -> handleDragSentence(intent)
             ACTION_REGION_CAPTURE -> handleRegionCapture()
-            ACTION_START_LIVE -> if (!isLiveMode) withAccessibility { startLiveMode() }
+            ACTION_START_LIVE -> if (!isLiveMode) {
+                // Post so onResume sets isInForeground before startLive triggers
+                // updateForegroundState — otherwise In-App Only mode immediately stops.
+                window.decorView.post { withAccessibility { startLiveMode() } }
+            }
             ACTION_STOP_LIVE -> if (isLiveMode) stopLiveMode()
             ACTION_ADD_CUSTOM_REGION -> openAddCustomRegionFromDropdown()
             ACTION_REFRESH_REGION_LABEL -> captureService?.clearOverride()
