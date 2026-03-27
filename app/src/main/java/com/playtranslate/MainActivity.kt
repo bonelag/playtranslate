@@ -322,10 +322,7 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
 
     private fun setupRegionButton() {
         updateRegionButton()
-
-        // Long press on any bottom-bar button → drag-to-select dropdown
-        applyRegionDropdownGestures(btnTranslate)
-        applyRegionDropdownGestures(btnLiveToggle)
+        applyRegionDropdownGestures(btnRegions)
     }
 
     /** Attaches long-press + drag-to-select region picker gestures to [btn]. */
@@ -1132,6 +1129,11 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
         if (changedSavedRegion) {
             prefs.selectedRegionId = dropdownRegions[selectedRegionIdx].id
             configureService()
+            if (!isLiveMode) {
+                hideSettings()
+                hideRegionPicker()
+                selectTab(Tab.TRANSLATE)
+            }
             withAccessibility { captureService?.captureOnce() }
         } else if (hadOverride) {
             configureService()
