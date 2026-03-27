@@ -50,6 +50,8 @@ class SettingsBottomSheet : DialogFragment() {
     private var prefsListener: SharedPreferences.OnSharedPreferenceChangeListener? = null
     /** Called when the debug force-single-screen toggle changes. */
     var onScreenModeChanged: (() -> Unit)? = null
+    /** Called when the user taps the close button (for inline mode). */
+    var onClose: (() -> Unit)? = null
 
     private var deckEntries: List<Map.Entry<Long, String>> = emptyList()
     private var displayList: List<android.view.Display> = emptyList()
@@ -93,21 +95,27 @@ class SettingsBottomSheet : DialogFragment() {
         super.onViewCreated(view, savedInstanceState)
 
         val hideDismiss = arguments?.getBoolean(ARG_HIDE_DISMISS, false) ?: false
-        if (Prefs.isSingleScreen(requireContext())) {
-            view.findViewById<TextView>(R.id.tvSettingsTitle).text = getString(R.string.app_name)
-        }
-        val closeBtn = view.findViewById<View>(R.id.btnCloseSettings)
-        if (hideDismiss) {
-            closeBtn.visibility = View.GONE
-            // In single-screen mode, back should exit the app, not dismiss the sheet
-            dialog?.setOnKeyListener { _, keyCode, event ->
-                if (keyCode == android.view.KeyEvent.KEYCODE_BACK && event.action == android.view.KeyEvent.ACTION_UP) {
-                    activity?.finish()
-                    true
-                } else false
+        val isDialog = showsDialog
+
+        // Show toolbar only in dialog mode
+        if (isDialog) {
+            view.findViewById<View>(R.id.settingsToolbar).visibility = View.VISIBLE
+            view.findViewById<View>(R.id.settingsToolbarDivider).visibility = View.VISIBLE
+            if (Prefs.isSingleScreen(requireContext())) {
+                view.findViewById<TextView>(R.id.tvSettingsTitle).text = getString(R.string.app_name)
             }
-        } else {
-            closeBtn.setOnClickListener { dismiss() }
+            val closeBtn = view.findViewById<View>(R.id.btnCloseSettings)
+            if (hideDismiss) {
+                closeBtn.visibility = View.GONE
+                dialog?.setOnKeyListener { _, keyCode, event ->
+                    if (keyCode == android.view.KeyEvent.KEYCODE_BACK && event.action == android.view.KeyEvent.ACTION_UP) {
+                        activity?.finish()
+                        true
+                    } else false
+                }
+            } else {
+                closeBtn.setOnClickListener { dismiss() }
+            }
         }
 
         val prefs           = Prefs(requireContext())

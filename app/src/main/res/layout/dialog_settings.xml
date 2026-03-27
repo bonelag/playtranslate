@@ -7,14 +7,16 @@
     android:orientation="vertical"
     android:background="?attr/colorBgSurface">
 
-    <!-- Toolbar -->
+    <!-- Toolbar (shown only in dialog mode) -->
     <LinearLayout
+        android:id="@+id/settingsToolbar"
         android:layout_width="match_parent"
         android:layout_height="56dp"
         android:orientation="horizontal"
         android:gravity="center_vertical"
         android:paddingStart="16dp"
-        android:paddingEnd="4dp">
+        android:paddingEnd="4dp"
+        android:visibility="gone">
 
         <TextView
             android:id="@+id/tvSettingsTitle"
@@ -31,7 +33,7 @@
             style="@style/Widget.MaterialComponents.Button.TextButton"
             android:layout_width="48dp"
             android:layout_height="48dp"
-            android:text="✕"
+            android:text="&#x2715;"
             android:textColor="?attr/colorTextPrimary"
             android:textSize="18sp"
             android:minWidth="0dp"
@@ -41,9 +43,11 @@
     </LinearLayout>
 
     <View
+        android:id="@+id/settingsToolbarDivider"
         android:layout_width="match_parent"
         android:layout_height="1dp"
-        android:background="?attr/colorBgDivider" />
+        android:background="?attr/colorBgDivider"
+        android:visibility="gone" />
 
     <!-- Scrollable content -->
     <ScrollView
