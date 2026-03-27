@@ -449,12 +449,6 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
         updateMenuLiveItem()
         updateRegionButton()
         if (isLive) {
-            // In-App Only: ensure we're on the translate tab so results are visible
-            if (prefs.autoTranslationMode == AutoTranslationMode.IN_APP_ONLY) {
-                hideSettings()
-                hideRegionPicker()
-                selectTab(Tab.TRANSLATE)
-            }
             resultFragment?.showStatus(searchingStatusText())
         } else {
             val frag = resultFragment
