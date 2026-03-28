@@ -61,7 +61,7 @@
             android:orientation="vertical"
             android:paddingHorizontal="14dp"
             android:paddingTop="8dp"
-            android:paddingBottom="16dp">
+            android:paddingBottom="64dp">
 
             <!-- Translation section header: label + action buttons -->
             <LinearLayout
@@ -314,24 +314,47 @@
                     app:strokeColor="?attr/colorTextSecondary"
                     app:cornerRadius="6dp" />
 
-                <com.google.android.material.button.MaterialButton
-                    android:id="@+id/btnResultAnki"
-                    android:layout_width="0dp"
-                    android:layout_height="48dp"
-                    android:layout_weight="1"
-                    android:text="Add to Anki"
-                    android:textAllCaps="false"
-                    android:textSize="14sp"
-                    android:backgroundTint="?attr/colorAccentPrimary"
-                    android:textColor="?attr/colorTextOnAccent"
-                    android:insetTop="0dp"
-                    android:insetBottom="0dp"
-                    app:cornerRadius="6dp" />
-
             </LinearLayout>
 
         </LinearLayout>
 
     </ScrollView>
+
+    <!-- Floating Anki pill button -->
+    <LinearLayout
+        android:id="@+id/btnResultAnki"
+        android:layout_width="wrap_content"
+        android:layout_height="40dp"
+        android:layout_gravity="bottom|end"
+        android:layout_marginEnd="16dp"
+        android:layout_marginBottom="16dp"
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:background="@drawable/bg_anki_pill"
+        android:paddingStart="12dp"
+        android:paddingEnd="16dp"
+        android:elevation="6dp"
+        android:alpha="0.85"
+        android:clickable="true"
+        android:focusable="true"
+        android:visibility="gone">
+
+        <ImageView
+            android:layout_width="20dp"
+            android:layout_height="20dp"
+            android:src="@android:drawable/ic_input_add"
+            android:tint="?attr/colorTextOnAccent"
+            android:scaleType="centerInside" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Anki"
+            android:textColor="?attr/colorTextOnAccent"
+            android:textSize="14sp"
+            android:textStyle="bold"
+            android:layout_marginStart="2dp" />
+
+    </LinearLayout>
 
 </FrameLayout>

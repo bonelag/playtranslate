@@ -227,6 +227,7 @@ class TranslationResultFragment : Fragment() {
         statusContainer.visibility = View.GONE
         resultsContent.visibility  = View.VISIBLE
         resultActionButtons.visibility = View.VISIBLE
+        btnResultAnki.visibility = View.VISIBLE
         resultsContent.scrollTo(0, 0)
         onAnkiEnabledChanged?.invoke(false)
         startWordLookups(result.originalText)
@@ -369,6 +370,7 @@ class TranslationResultFragment : Fragment() {
         tvLiveHint.visibility   = View.GONE
         statusContainer.visibility = View.VISIBLE
         resultsContent.visibility  = View.GONE
+        btnResultAnki.visibility = View.GONE
     }
 
     fun showError(msg: String) {
@@ -480,7 +482,7 @@ class TranslationResultFragment : Fragment() {
             if (tokens.isEmpty()) {
                 tvMainWordsLoading.visibility = View.GONE
                 tvNoWords.visibility = View.VISIBLE
-                onAnkiEnabledChanged?.invoke(true)
+                        onAnkiEnabledChanged?.invoke(true)
                 val romaji = romajiDeferred.await()
                 if (romaji.isNotBlank() && romaji != text && false /* transliteration disabled */) {
                     tvTransliteration.text = romaji
@@ -593,6 +595,7 @@ class TranslationResultFragment : Fragment() {
 
             tvMainWordsLoading.visibility = View.GONE
             tvNoWords.visibility = if (mainWordResults.isEmpty()) View.VISIBLE else View.GONE
+            btnResultAnki.visibility = View.VISIBLE
             onAnkiEnabledChanged?.invoke(true)
 
             LastSentenceCache.original = lastResult?.originalText
