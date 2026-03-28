@@ -764,7 +764,7 @@ class SettingsBottomSheet : DialogFragment() {
             val iconH = size * 0.5f
             val iconScale = iconH / iconBmp.height
             val iconW = iconBmp.width * iconScale
-            val iconCx = circleR / 2f
+            val iconCx = circleR / 2f - dp
             val dst = android.graphics.RectF(
                 iconCx - iconW / 2f, circleR - iconH / 2f,
                 iconCx + iconW / 2f, circleR + iconH / 2f
