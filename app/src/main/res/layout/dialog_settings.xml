@@ -121,7 +121,7 @@
                 android:layout_height="wrap_content"
                 android:text="@string/settings_language_hint"
                 android:textColor="?attr/colorTextHint"
-                android:textSize="10sp"
+                android:textSize="14sp"
                 android:layout_marginTop="4dp" />
 
             <!-- ═══════════════════════════════════════════════════════════ -->
@@ -181,7 +181,8 @@
                             android:layout_height="wrap_content"
                             android:text="@string/settings_show_overlay_icon"
                             android:textColor="?attr/colorTextPrimary"
-                            android:textSize="14sp" />
+                            android:textSize="16sp"
+                            android:textStyle="bold" />
 
                         <TextView
                             android:id="@+id/tvOverlayIconHint"
@@ -189,7 +190,7 @@
                             android:layout_height="wrap_content"
                             android:text="@string/settings_overlay_icon_hint_dual"
                             android:textColor="?attr/colorTextHint"
-                            android:textSize="10sp"
+                            android:textSize="12sp"
                             android:layout_marginTop="2dp" />
 
                     </LinearLayout>
@@ -219,7 +220,8 @@
                     android:layout_weight="1"
                     android:text="Small icon"
                     android:textColor="?attr/colorTextPrimary"
-                    android:textSize="14sp" />
+                    android:textSize="16sp"
+                    android:textStyle="bold" />
 
                 <com.google.android.material.materialswitch.MaterialSwitch
                     android:id="@+id/switchCompactIcon"
@@ -280,7 +282,7 @@
                 android:layout_height="wrap_content"
                 android:gravity="center"
                 android:textColor="?attr/colorTextHint"
-                android:textSize="10sp"
+                android:textSize="14sp"
                 android:layout_marginTop="4dp"
                 android:layout_marginBottom="12dp" />
 
@@ -297,7 +299,8 @@
                     android:layout_weight="1"
                     android:text="Capture interval"
                     android:textColor="?attr/colorTextPrimary"
-                    android:textSize="14sp" />
+                    android:textSize="16sp"
+                    android:textStyle="bold" />
 
                 <EditText
                     android:id="@+id/etCaptureInterval"
@@ -328,7 +331,7 @@
                 android:layout_height="wrap_content"
                 android:text=""
                 android:textColor="?attr/colorTextHint"
-                android:textSize="10sp"
+                android:textSize="14sp"
                 android:layout_marginTop="4dp" />
 
             <!-- ═══════════════════════════════════════════════════════════ -->
@@ -362,7 +365,7 @@
                 android:layout_height="wrap_content"
                 android:text="@string/settings_display_hint"
                 android:textColor="?attr/colorTextHint"
-                android:textSize="10sp"
+                android:textSize="14sp"
                 android:layout_marginTop="4dp" />
 
             <!-- ═══════════════════════════════════════════════════════════ -->
@@ -391,7 +394,7 @@
                 android:layout_height="wrap_content"
                 android:inputType="textNoSuggestions"
                 android:hint="@string/hint_deepl_key"
-                android:textSize="12sp"
+                android:textSize="14sp"
                 android:textColor="?attr/colorTextPrimary"
                 android:background="?attr/colorBgCard"
                 android:paddingHorizontal="10dp"
@@ -405,7 +408,7 @@
                 android:layout_height="wrap_content"
                 android:text="@string/settings_deepl_hint"
                 android:textColor="?attr/colorTextHint"
-                android:textSize="10sp"
+                android:textSize="14sp"
                 android:layout_marginTop="4dp" />
 
             <!-- ═══════════════════════════════════════════════════════════ -->
@@ -434,7 +437,7 @@
                 android:layout_height="wrap_content"
                 android:text="@string/anki_section_description"
                 android:textColor="?attr/colorTextHint"
-                android:textSize="10sp"
+                android:textSize="14sp"
                 android:lineSpacingMultiplier="1.3" />
 
             <TextView
@@ -443,7 +446,7 @@
                 android:layout_height="wrap_content"
                 android:text="@string/anki_play_store_link"
                 android:textColor="?attr/colorAccentPrimary"
-                android:textSize="10sp"
+                android:textSize="14sp"
                 android:layout_marginTop="2dp"
                 android:layout_marginBottom="6dp" />
 
@@ -452,7 +455,7 @@
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:textColor="?attr/colorTextHint"
-                android:textSize="12sp"
+                android:textSize="14sp"
                 android:layout_marginTop="4dp"
                 android:visibility="gone" />
 

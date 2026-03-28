@@ -532,7 +532,7 @@ class SettingsBottomSheet : DialogFragment() {
 
         val tv = TextView(ctx).apply {
             text = "Display ${display.displayId}  —  ${display.name}"
-            textSize = 13f
+            textSize = 15f
             setTextColor(ctx.themeColor(R.attr.colorTextPrimary))
             layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
         }
