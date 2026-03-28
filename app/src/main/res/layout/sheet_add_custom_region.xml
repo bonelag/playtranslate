@@ -28,7 +28,7 @@
 
         <Button
             android:id="@+id/btnCloseCustomRegion"
-            style="@style/Widget.MaterialComponents.Button.TextButton"
+            style="@style/Widget.Material3.Button.TextButton"
             android:layout_width="72dp"
             android:layout_height="wrap_content"
             android:text="✕"

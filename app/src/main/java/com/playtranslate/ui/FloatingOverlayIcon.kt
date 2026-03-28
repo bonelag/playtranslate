@@ -246,6 +246,7 @@ class FloatingOverlayIcon(context: Context) : View(context) {
     }
 
     override fun onDraw(canvas: Canvas) {
+        if (iconBitmap.isRecycled) return
         val center = viewSizePx / 2f
         val r = circleSizePx / 2f
         circlePaint.color = when {

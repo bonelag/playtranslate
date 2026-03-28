@@ -5,7 +5,7 @@
         Base theme — defines the custom colour attrs and maps them into the
         Material component colour system.  Acts as the DEFAULT (Black) theme.
     -->
-    <style name="Theme.PlayTranslate" parent="Theme.MaterialComponents.NoActionBar">
+    <style name="Theme.PlayTranslate" parent="Theme.Material3.DayNight.NoActionBar">
 
         <!-- ── Black palette (default) ───────────────────────────────────── -->
         <item name="colorBgDark">#0D0D0D</item>
@@ -34,7 +34,7 @@
     </style>
 
     <!-- ── White theme ────────────────────────────────────────────────────── -->
-    <style name="Theme.PlayTranslate.White" parent="Theme.MaterialComponents.Light.NoActionBar">
+    <style name="Theme.PlayTranslate.White" parent="Theme.Material3.Light.NoActionBar">
         <item name="colorBgDark">#F0F0F0</item>
         <item name="colorBgSurface">#E8E8E8</item>
         <item name="colorBgCard">#DCDCDC</item>
@@ -49,8 +49,15 @@
         <item name="colorTextLink">#1565C0</item>
         <item name="colorTextOnAccent">#FFFFFF</item>
         <item name="colorPrimary">?attr/colorAccentPrimary</item>
+        <item name="colorOnPrimary">?attr/colorTextOnAccent</item>
+        <item name="colorPrimaryContainer">?attr/colorAccentPrimary</item>
+        <item name="colorOnPrimaryContainer">?attr/colorTextOnAccent</item>
         <item name="colorPrimaryDark">?attr/colorAccentPrimaryDark</item>
         <item name="colorAccent">?attr/colorAccentPrimary</item>
+        <item name="colorSurface">?attr/colorBgSurface</item>
+        <item name="colorOnSurface">?attr/colorTextPrimary</item>
+        <item name="colorOnSurfaceVariant">?attr/colorTextSecondary</item>
+        <item name="colorOutline">?attr/colorBgDivider</item>
         <item name="android:windowBackground">?attr/colorBgDark</item>
         <item name="android:statusBarColor">?attr/colorBgDark</item>
         <item name="android:navigationBarColor">?attr/colorBgDark</item>
@@ -59,7 +66,7 @@
     </style>
 
     <!-- ── Rainbow / Granite theme ────────────────────────────────────────── -->
-    <style name="Theme.PlayTranslate.Rainbow" parent="Theme.MaterialComponents.Light.NoActionBar">
+    <style name="Theme.PlayTranslate.Rainbow" parent="Theme.Material3.Light.NoActionBar">
         <item name="colorBgDark">#C8C4C1</item>
         <item name="colorBgSurface">#D8D4D1</item>
         <item name="colorBgCard">#E2DEDD</item>
@@ -74,8 +81,15 @@
         <item name="colorTextLink">#546E7A</item>
         <item name="colorTextOnAccent">#FFFFFF</item>
         <item name="colorPrimary">?attr/colorAccentPrimary</item>
+        <item name="colorOnPrimary">?attr/colorTextOnAccent</item>
+        <item name="colorPrimaryContainer">?attr/colorAccentPrimary</item>
+        <item name="colorOnPrimaryContainer">?attr/colorTextOnAccent</item>
         <item name="colorPrimaryDark">?attr/colorAccentPrimaryDark</item>
         <item name="colorAccent">?attr/colorAccentPrimary</item>
+        <item name="colorSurface">?attr/colorBgSurface</item>
+        <item name="colorOnSurface">?attr/colorTextPrimary</item>
+        <item name="colorOnSurfaceVariant">?attr/colorTextSecondary</item>
+        <item name="colorOutline">?attr/colorBgDivider</item>
         <item name="android:windowBackground">?attr/colorBgDark</item>
         <item name="android:statusBarColor">?attr/colorBgDark</item>
         <item name="android:navigationBarColor">?attr/colorBgDark</item>
@@ -84,7 +98,7 @@
     </style>
 
     <!-- ── Purple theme ───────────────────────────────────────────────────── -->
-    <style name="Theme.PlayTranslate.Purple" parent="Theme.MaterialComponents.NoActionBar">
+    <style name="Theme.PlayTranslate.Purple" parent="Theme.Material3.DayNight.NoActionBar">
         <item name="colorBgDark">#221929</item>
         <item name="colorBgSurface">#2E2238</item>
         <item name="colorBgCard">#3A2C47</item>
@@ -99,8 +113,15 @@
         <item name="colorTextLink">#CE93D8</item>
         <item name="colorTextOnAccent">#000000</item>
         <item name="colorPrimary">?attr/colorAccentPrimary</item>
+        <item name="colorOnPrimary">?attr/colorTextOnAccent</item>
+        <item name="colorPrimaryContainer">?attr/colorAccentPrimary</item>
+        <item name="colorOnPrimaryContainer">?attr/colorTextOnAccent</item>
         <item name="colorPrimaryDark">?attr/colorAccentPrimaryDark</item>
         <item name="colorAccent">?attr/colorAccentPrimary</item>
+        <item name="colorSurface">?attr/colorBgSurface</item>
+        <item name="colorOnSurface">?attr/colorTextPrimary</item>
+        <item name="colorOnSurfaceVariant">?attr/colorTextSecondary</item>
+        <item name="colorOutline">?attr/colorBgDivider</item>
         <item name="android:windowBackground">?attr/colorBgDark</item>
         <item name="android:statusBarColor">?attr/colorBgDark</item>
         <item name="android:navigationBarColor">?attr/colorBgDark</item>
@@ -139,7 +160,15 @@
 
     <!-- ── Widget styles (reference attrs, resolve at inflation time) ───── -->
 
-    <style name="Widget.PlayTranslate.ModeButton" parent="Widget.MaterialComponents.Button.OutlinedButton">
+    <style name="Widget.PlayTranslate.SegmentedButton" parent="Widget.Material3.Button.OutlinedButton">
+        <item name="backgroundTint">@color/segmented_button_bg</item>
+        <item name="android:textColor">@color/segmented_button_text</item>
+        <item name="strokeColor">@color/segmented_button_stroke</item>
+        <item name="android:textAllCaps">false</item>
+        <item name="android:textSize">14sp</item>
+    </style>
+
+    <style name="Widget.PlayTranslate.ModeButton" parent="Widget.Material3.Button.OutlinedButton">
         <item name="android:textSize">13sp</item>
         <item name="android:letterSpacing">0.05</item>
         <item name="android:paddingStart">16dp</item>
@@ -155,27 +184,27 @@
         <item name="android:padding">12dp</item>
     </style>
 
-    <style name="Widget.PlayTranslate.SectionLabel" parent="Widget.MaterialComponents.TextView">
+    <style name="Widget.PlayTranslate.SectionLabel" parent="">
         <item name="android:textSize">10sp</item>
         <item name="android:textColor">?attr/colorTextSecondary</item>
         <item name="android:letterSpacing">0.15</item>
         <item name="android:textAllCaps">true</item>
     </style>
 
-    <style name="Widget.PlayTranslate.OriginalText" parent="Widget.MaterialComponents.TextView">
+    <style name="Widget.PlayTranslate.OriginalText" parent="">
         <item name="android:textSize">24sp</item>
         <item name="android:textColor">?attr/colorTextPrimary</item>
         <item name="android:lineSpacingMultiplier">1.5</item>
     </style>
 
-    <style name="Widget.PlayTranslate.TranslationText" parent="Widget.MaterialComponents.TextView">
+    <style name="Widget.PlayTranslate.TranslationText" parent="">
         <item name="android:textSize">24sp</item>
         <item name="android:textColor">?attr/colorTextTranslation</item>
         <item name="android:lineSpacingMultiplier">1</item>
     </style>
 
     <!-- Transparent bridge activity (no color theming needed) -->
-    <style name="Theme.PlayTranslate.Transparent" parent="Theme.MaterialComponents.NoActionBar">
+    <style name="Theme.PlayTranslate.Transparent" parent="Theme.Material3.DayNight.NoActionBar">
         <item name="android:windowIsTranslucent">true</item>
         <item name="android:windowBackground">@android:color/transparent</item>
         <item name="android:windowContentOverlay">@null</item>
@@ -196,12 +225,12 @@
         <item name="android:windowExitAnimation">@anim/slide_out_right</item>
     </style>
 
-    <style name="Theme.PlayTranslate.BottomSheetDialog" parent="Theme.MaterialComponents.BottomSheetDialog">
+    <style name="Theme.PlayTranslate.BottomSheetDialog" parent="Theme.Material3.DayNight.BottomSheetDialog">
         <item name="bottomSheetStyle">@style/Widget.PlayTranslate.BottomSheet</item>
         <item name="android:windowIsFloating">false</item>
     </style>
 
-    <style name="Widget.PlayTranslate.BottomSheet" parent="Widget.MaterialComponents.BottomSheet">
+    <style name="Widget.PlayTranslate.BottomSheet" parent="Widget.Material3.BottomSheet">
         <item name="android:background">?attr/colorBgSurface</item>
         <item name="backgroundTint">?attr/colorBgSurface</item>
     </style>

@@ -26,7 +26,7 @@ import android.widget.EditText
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.RadioButton
-import android.widget.Switch
+import com.google.android.material.materialswitch.MaterialSwitch
 import android.widget.TextView
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.fragment.app.DialogFragment
@@ -148,7 +148,7 @@ class SettingsBottomSheet : DialogFragment() {
         }
 
         // ── Overlay icon toggle ──────────────────────────────────────────
-        val switchOverlayIcon = view.findViewById<Switch>(R.id.switchOverlayIcon)
+        val switchOverlayIcon = view.findViewById<MaterialSwitch>(R.id.switchOverlayIcon)
         val tvOverlayIconTitle = view.findViewById<TextView>(R.id.tvOverlayIconTitle)
         val tvOverlayIconHint = view.findViewById<TextView>(R.id.tvOverlayIconHint)
         // Draw half-circle icon preview matching the on-screen appearance
@@ -197,7 +197,7 @@ class SettingsBottomSheet : DialogFragment() {
         }
 
         // ── Compact icon toggle ───────────────────────────────────────────
-        val switchCompactIcon = view.findViewById<Switch>(R.id.switchCompactIcon)
+        val switchCompactIcon = view.findViewById<MaterialSwitch>(R.id.switchCompactIcon)
         switchCompactIcon.isChecked = prefs.compactOverlayIcon
         switchCompactIcon.setOnCheckedChangeListener { _, checked ->
             prefs.compactOverlayIcon = checked
@@ -341,7 +341,7 @@ class SettingsBottomSheet : DialogFragment() {
         val llDebugSection = view.findViewById<LinearLayout>(R.id.llDebugSection)
         if (com.playtranslate.BuildConfig.DEBUG) {
             llDebugSection.visibility = View.VISIBLE
-            val switchForceSingleScreen = view.findViewById<Switch>(R.id.switchForceSingleScreen)
+            val switchForceSingleScreen = view.findViewById<MaterialSwitch>(R.id.switchForceSingleScreen)
             switchForceSingleScreen.isChecked = prefs.debugForceSingleScreen
             switchForceSingleScreen.setOnCheckedChangeListener { _, checked ->
                 prefs.debugForceSingleScreen = checked
@@ -350,7 +350,7 @@ class SettingsBottomSheet : DialogFragment() {
             view.findViewById<View>(R.id.rowForceSingleScreen).setOnClickListener {
                 switchForceSingleScreen.toggle()
             }
-            val switchShowOcrBoxes = view.findViewById<Switch>(R.id.switchShowOcrBoxes)
+            val switchShowOcrBoxes = view.findViewById<MaterialSwitch>(R.id.switchShowOcrBoxes)
             switchShowOcrBoxes.isChecked = prefs.debugShowOcrBoxes
             switchShowOcrBoxes.setOnCheckedChangeListener { _, checked ->
                 prefs.debugShowOcrBoxes = checked
@@ -364,7 +364,7 @@ class SettingsBottomSheet : DialogFragment() {
             view.findViewById<View>(R.id.rowShowOcrBoxes).setOnClickListener {
                 switchShowOcrBoxes.toggle()
             }
-            val switchDetectionLog = view.findViewById<Switch>(R.id.switchDetectionLog)
+            val switchDetectionLog = view.findViewById<MaterialSwitch>(R.id.switchDetectionLog)
             switchDetectionLog.isChecked = prefs.debugShowDetectionLog
             switchDetectionLog.setOnCheckedChangeListener { _, checked ->
                 prefs.debugShowDetectionLog = checked
@@ -401,7 +401,7 @@ class SettingsBottomSheet : DialogFragment() {
         val v = view ?: return
         val ctx = context ?: return
         val prefs = Prefs(ctx)
-        val sw = v.findViewById<Switch>(R.id.switchOverlayIcon) ?: return
+        val sw = v.findViewById<MaterialSwitch>(R.id.switchOverlayIcon) ?: return
         sw.isChecked = prefs.showOverlayIcon && PlayTranslateAccessibilityService.isEnabled
     }
 

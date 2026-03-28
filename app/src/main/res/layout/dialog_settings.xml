@@ -30,7 +30,7 @@
 
         <Button
             android:id="@+id/btnCloseSettings"
-            style="@style/Widget.MaterialComponents.Button.TextButton"
+            style="@style/Widget.Material3.Button.TextButton"
             android:layout_width="48dp"
             android:layout_height="48dp"
             android:text="&#x2715;"
@@ -196,7 +196,7 @@
 
                 </LinearLayout>
 
-                <Switch
+                <com.google.android.material.materialswitch.MaterialSwitch
                     android:id="@+id/switchOverlayIcon"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
@@ -221,7 +221,7 @@
                     android:textColor="?attr/colorTextPrimary"
                     android:textSize="14sp" />
 
-                <Switch
+                <com.google.android.material.materialswitch.MaterialSwitch
                     android:id="@+id/switchCompactIcon"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content" />
@@ -258,7 +258,7 @@
 
                 <com.google.android.material.button.MaterialButton
                     android:id="@+id/btnModeOverlays"
-                    style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+                    style="@style/Widget.PlayTranslate.SegmentedButton"
                     android:layout_width="0dp"
                     android:layout_height="wrap_content"
                     android:layout_weight="1"
@@ -266,7 +266,7 @@
 
                 <com.google.android.material.button.MaterialButton
                     android:id="@+id/btnModeInApp"
-                    style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+                    style="@style/Widget.PlayTranslate.SegmentedButton"
                     android:layout_width="0dp"
                     android:layout_height="wrap_content"
                     android:layout_weight="1"
@@ -601,7 +601,7 @@
                         android:textColor="?attr/colorTextPrimary"
                         android:textSize="14sp" />
 
-                    <Switch
+                    <com.google.android.material.materialswitch.MaterialSwitch
                         android:id="@+id/switchForceSingleScreen"
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content" />
@@ -624,7 +624,7 @@
                         android:textColor="?attr/colorTextPrimary"
                         android:textSize="14sp" />
 
-                    <Switch
+                    <com.google.android.material.materialswitch.MaterialSwitch
                         android:id="@+id/switchShowOcrBoxes"
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content" />
@@ -647,7 +647,7 @@
                         android:textColor="?attr/colorTextPrimary"
                         android:textSize="14sp" />
 
-                    <Switch
+                    <com.google.android.material.materialswitch.MaterialSwitch
                         android:id="@+id/switchDetectionLog"
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content" />

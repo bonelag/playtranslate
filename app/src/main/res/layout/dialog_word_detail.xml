@@ -22,7 +22,7 @@
 
         <Button
             android:id="@+id/btnCloseWord"
-            style="@style/Widget.MaterialComponents.Button.TextButton"
+            style="@style/Widget.Material3.Button.TextButton"
             android:layout_width="48dp"
             android:layout_height="48dp"
             android:text="✕"

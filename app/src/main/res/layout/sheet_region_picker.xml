@@ -15,7 +15,7 @@
 
         <Button
             android:id="@+id/btnEditRegion"
-            style="@style/Widget.MaterialComponents.Button.TextButton"
+            style="@style/Widget.Material3.Button.TextButton"
             android:layout_width="72dp"
             android:layout_height="wrap_content"
             android:text="@string/label_edit"
@@ -37,7 +37,7 @@
 
         <Button
             android:id="@+id/btnAddRegion"
-            style="@style/Widget.MaterialComponents.Button.TextButton"
+            style="@style/Widget.Material3.Button.TextButton"
             android:layout_width="72dp"
             android:layout_height="wrap_content"
             android:text="+"
