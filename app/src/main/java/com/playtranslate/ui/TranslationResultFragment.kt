@@ -11,6 +11,7 @@ import android.view.ViewGroup
 import android.widget.ImageButton
 import android.widget.LinearLayout
 import android.widget.PopupWindow
+import android.text.StaticLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
@@ -225,12 +226,49 @@ class TranslationResultFragment : Fragment() {
         labelOriginal.text    = langDisplayName(selectedSourceLang())
         labelTranslation.text = langDisplayName(selectedTargetLang())
         statusContainer.visibility = View.GONE
-        resultsContent.visibility  = View.VISIBLE
+        resultsContent.visibility  = View.INVISIBLE
         resultActionButtons.visibility = View.VISIBLE
         btnResultAnki.visibility = View.VISIBLE
         resultsContent.scrollTo(0, 0)
         onAnkiEnabledChanged?.invoke(false)
+        // Fit text sizes after layout so view widths are available, then reveal
+        resultsContent.post {
+            fitTextSizes()
+            resultsContent.visibility = View.VISIBLE
+        }
         startWordLookups(result.originalText)
+    }
+
+    private companion object {
+        const val TEXT_SIZE_MAX_SP = 24f
+        const val TEXT_SIZE_MIN_SP = 16f
+    }
+
+    /**
+     * Shrink translation and original text so each tries to fit within
+     * half the visible scroll area. Stops shrinking at [TEXT_SIZE_MIN_SP].
+     */
+    private fun fitTextSizes() {
+        val scrollHeight = resultsContent.height.takeIf { it > 0 } ?: return
+        val halfHeight = scrollHeight / 2
+        fitTextView(tvTranslation, TEXT_SIZE_MAX_SP, TEXT_SIZE_MIN_SP, halfHeight)
+        fitTextView(tvOriginal, TEXT_SIZE_MAX_SP, TEXT_SIZE_MIN_SP, halfHeight)
+    }
+
+    private fun fitTextView(tv: TextView, maxSp: Float, minSp: Float, targetHeightPx: Int) {
+        val widthPx = tv.width.takeIf { it > 0 } ?: return
+        var sizeSp = maxSp
+        while (sizeSp > minSp) {
+            tv.setTextSize(TypedValue.COMPLEX_UNIT_SP, sizeSp)
+            val height = StaticLayout.Builder
+                .obtain(tv.text, 0, tv.text.length, tv.paint, widthPx)
+                .setLineSpacing(tv.lineSpacingExtra, tv.lineSpacingMultiplier)
+                .build()
+                .height
+            if (height <= targetHeightPx) break
+            sizeSp -= 1f
+        }
+        tv.setTextSize(TypedValue.COMPLEX_UNIT_SP, sizeSp)
     }
 
     /** Called by the host activity when its Anki button is tapped. */
