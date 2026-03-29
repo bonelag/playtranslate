@@ -184,10 +184,30 @@ class SettingsBottomSheet : DialogFragment() {
         )
         // Make subtext same color as title (both modes)
         tvOverlayIconHint.setTextColor(requireContext().themeColor(R.attr.colorTextPrimary))
+
+        val rowOverlayIcon = view.findViewById<View>(R.id.rowOverlayIcon)
+        fun updateIconRowStyle(isOn: Boolean) {
+            if (isSingle && !isOn) {
+                val red = android.graphics.Color.parseColor("#C95050")
+                switchOverlayIcon.trackTintList = android.content.res.ColorStateList.valueOf(
+                    requireContext().themeColor(R.attr.colorBgDivider))
+                switchOverlayIcon.thumbTintList = android.content.res.ColorStateList.valueOf(red)
+                rowOverlayIcon.setBackgroundColor(android.graphics.Color.argb(20,
+                    android.graphics.Color.red(red), android.graphics.Color.green(red),
+                    android.graphics.Color.blue(red)))
+            } else {
+                switchOverlayIcon.thumbTintList = requireContext().resources.getColorStateList(R.color.switch_thumb, requireContext().theme)
+                switchOverlayIcon.trackTintList = requireContext().resources.getColorStateList(R.color.switch_track, requireContext().theme)
+                rowOverlayIcon.setBackgroundColor(android.graphics.Color.TRANSPARENT)
+            }
+        }
+
         switchOverlayIcon.isChecked = prefs.showOverlayIcon && PlayTranslateAccessibilityService.isEnabled
+        updateIconRowStyle(switchOverlayIcon.isChecked)
         switchOverlayIcon.setOnCheckedChangeListener { _, checked ->
             if (checked && !PlayTranslateAccessibilityService.isEnabled) {
                 switchOverlayIcon.isChecked = false
+                updateIconRowStyle(false)
                 androidx.appcompat.app.AlertDialog.Builder(requireContext())
                     .setTitle(R.string.overlay_icon_a11y_required_title)
                     .setMessage(R.string.overlay_icon_a11y_required_message)
@@ -199,6 +219,7 @@ class SettingsBottomSheet : DialogFragment() {
                 return@setOnCheckedChangeListener
             }
             prefs.showOverlayIcon = checked
+            updateIconRowStyle(checked)
             PlayTranslateAccessibilityService.instance?.ensureFloatingIcon()
         }
         view.findViewById<View>(R.id.rowOverlayIcon).setOnClickListener {
