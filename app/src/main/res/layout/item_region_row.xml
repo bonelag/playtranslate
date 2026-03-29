@@ -42,12 +42,13 @@
     <!-- Delete button (visible in edit mode) -->
     <ImageView
         android:id="@+id/btnDeleteRegion"
-        android:layout_width="32dp"
+        android:layout_width="48dp"
         android:layout_height="32dp"
-        android:layout_marginStart="8dp"
+        android:layout_marginStart="4dp"
+        android:paddingHorizontal="12dp"
         android:src="@drawable/ic_close"
         android:tint="@color/status_error"
-        android:scaleType="center"
+        android:scaleType="centerInside"
         android:background="?attr/selectableItemBackgroundBorderless"
         android:visibility="gone"
         android:contentDescription="Delete region" />
