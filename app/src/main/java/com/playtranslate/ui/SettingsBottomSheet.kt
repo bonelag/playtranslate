@@ -252,10 +252,10 @@ class SettingsBottomSheet : DialogFragment() {
             }
         })
 
-        view.findViewById<TextView>(R.id.tvDeeplHint).apply {
-            Linkify.addLinks(this, Linkify.WEB_URLS)
-            movementMethod = LinkMovementMethod.getInstance()
-        }
+        addLinkRow(view.findViewById(R.id.llDeeplLink),
+            "Get free DeepL API key",
+            "Adding a DeepL API key potentially improves online translations. The free plan requires a credit card and includes 500,000 characters per month.",
+            "https://www.deepl.com/en/pro#developer")
 
         // ── Display selector ─────────────────────────────────────────────
 
