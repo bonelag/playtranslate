@@ -404,6 +404,16 @@ class SettingsBottomSheet : DialogFragment() {
             getString(R.string.support_donate_subtitle, appName),
             "https://go.playtranslate.com/donate")
 
+        // ── Version ─────────────────────────────────────────────────────
+        val versionName = com.playtranslate.BuildConfig.VERSION_NAME
+        llSupportLinks.addView(TextView(requireContext()).apply {
+            text = "$appName v$versionName"
+            setTextColor(requireContext().themeColor(R.attr.colorTextHint))
+            textSize = 12f
+            gravity = Gravity.CENTER
+            setPadding(0, (12 * resources.displayMetrics.density).toInt(), 0, 0)
+        })
+
         // ── Debug section (debug builds only) ────────────────────────────
         val llDebugSection = view.findViewById<LinearLayout>(R.id.llDebugSection)
         if (com.playtranslate.BuildConfig.DEBUG) {
