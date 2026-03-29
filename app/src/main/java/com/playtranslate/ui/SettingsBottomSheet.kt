@@ -438,11 +438,13 @@ class SettingsBottomSheet : DialogFragment() {
         super.onResume()
         refreshAnkiSection()
         refreshOverlayIconSwitch()
+        refreshAutoModeToggle()
 
         val ctx = context ?: return
         val sp = ctx.getSharedPreferences("playtranslate_prefs", Context.MODE_PRIVATE)
         prefsListener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
             if (key == "show_overlay_icon") refreshOverlayIconSwitch()
+            if (key == "auto_translation_mode") refreshAutoModeToggle()
         }
         sp.registerOnSharedPreferenceChangeListener(prefsListener)
     }
@@ -461,6 +463,17 @@ class SettingsBottomSheet : DialogFragment() {
         val prefs = Prefs(ctx)
         val sw = v.findViewById<MaterialSwitch>(R.id.switchOverlayIcon) ?: return
         sw.isChecked = prefs.showOverlayIcon && PlayTranslateAccessibilityService.isEnabled
+    }
+
+    private fun refreshAutoModeToggle() {
+        val v = currentView ?: view ?: return
+        val ctx = context ?: return
+        val toggle = v.findViewById<com.google.android.material.button.MaterialButtonToggleGroup>(R.id.toggleAutoMode) ?: return
+        val checkedId = when (Prefs(ctx).autoTranslationMode) {
+            AutoTranslationMode.OVERLAYS -> R.id.btnModeOverlays
+            AutoTranslationMode.IN_APP_ONLY -> R.id.btnModeInApp
+        }
+        if (toggle.checkedButtonId != checkedId) toggle.check(checkedId)
     }
 
     // ── Anki section ──────────────────────────────────────────────────────
