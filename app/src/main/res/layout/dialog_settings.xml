@@ -207,6 +207,13 @@
 
             </LinearLayout>
 
+            <!-- Wrapper for settings below the icon toggle (dimmed when icon is off on single-screen) -->
+            <LinearLayout
+                android:id="@+id/settingsBelowIcon"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical">
+
             <!-- Small icon toggle -->
             <LinearLayout
                 android:id="@+id/rowCompactIcon"
@@ -615,6 +622,8 @@
                 </LinearLayout>
 
             </LinearLayout>
+
+            </LinearLayout> <!-- settingsBelowIcon -->
 
         </LinearLayout>
 

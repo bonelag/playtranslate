@@ -185,20 +185,12 @@ class SettingsBottomSheet : DialogFragment() {
         // Make subtext same color as title (both modes)
         tvOverlayIconHint.setTextColor(requireContext().themeColor(R.attr.colorTextPrimary))
 
-        val rowOverlayIcon = view.findViewById<View>(R.id.rowOverlayIcon)
+        val settingsBelowIcon = view.findViewById<View>(R.id.settingsBelowIcon)
         fun updateIconRowStyle(isOn: Boolean) {
             if (isSingle && !isOn) {
-                val red = android.graphics.Color.parseColor("#C95050")
-                switchOverlayIcon.trackTintList = android.content.res.ColorStateList.valueOf(
-                    requireContext().themeColor(R.attr.colorBgDivider))
-                switchOverlayIcon.thumbTintList = android.content.res.ColorStateList.valueOf(red)
-                rowOverlayIcon.setBackgroundColor(android.graphics.Color.argb(20,
-                    android.graphics.Color.red(red), android.graphics.Color.green(red),
-                    android.graphics.Color.blue(red)))
+                settingsBelowIcon.alpha = 0.4f
             } else {
-                switchOverlayIcon.thumbTintList = requireContext().resources.getColorStateList(R.color.switch_thumb, requireContext().theme)
-                switchOverlayIcon.trackTintList = requireContext().resources.getColorStateList(R.color.switch_track, requireContext().theme)
-                rowOverlayIcon.setBackgroundColor(android.graphics.Color.TRANSPARENT)
+                settingsBelowIcon.alpha = 1f
             }
         }
 
