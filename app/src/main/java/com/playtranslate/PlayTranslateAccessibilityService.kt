@@ -941,7 +941,7 @@ class PlayTranslateAccessibilityService : AccessibilityService() {
                     if (overlayWm != null) OverlayAlert.Builder(displayCtx, overlayWm)
                         .setTitle("Dual screen required")
                         .setMessage("In-App Only mode shows translations in the app, which requires a dual screen setup.\n\nYou can start with overlay mode instead.")
-                        .addButton("Start with Overlays", android.graphics.Color.parseColor("#D4A020")) {
+                        .addButton("Start with Overlays", android.graphics.Color.parseColor("#5DB2EB")) {
                             prefs.autoTranslationMode = AutoTranslationMode.OVERLAYS
                             toggleLiveDirect(true)
                         }
@@ -1046,7 +1046,7 @@ class PlayTranslateAccessibilityService : AccessibilityService() {
         } else {
             builder.setTitle("Hide $appName game screen controls?")
                 .setMessage("\u201CHide for Now\u201D brings it back next time you open $appName. \u201CTurn Off\u201D disables it until re-enabled in settings.")
-                .addButton("Hide for Now", android.graphics.Color.parseColor("#D4A020")) {
+                .addButton("Hide for Now", android.graphics.Color.parseColor("#5DB2EB")) {
                     hideFloatingIcon()
                 }
                 .addButton("Turn Off", android.graphics.Color.parseColor("#E04040")) {
