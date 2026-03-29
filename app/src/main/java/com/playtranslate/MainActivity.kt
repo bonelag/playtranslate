@@ -44,6 +44,7 @@ import com.playtranslate.dictionary.DictionaryManager
 import com.playtranslate.model.TextSegment
 import com.playtranslate.model.TranslationResult
 import com.playtranslate.ui.ClickableTextView
+import com.playtranslate.ui.DimController
 import com.playtranslate.AnkiManager
 import com.playtranslate.TranslationManager
 import com.playtranslate.ui.AddCustomRegionSheet
@@ -133,6 +134,7 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
     private var selectedTab = Tab.TRANSLATE
 
     private val prefs by lazy { Prefs(this) }
+    private var dimController: DimController? = null
 
     private val isLiveMode get() = captureService?.liveModeState?.value == true
     /** True while programmatic scrollTo(0,0) is in progress to prevent auto-pause. */
@@ -253,6 +255,11 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
 
         // Default to translation tab on launch
         selectTab(Tab.TRANSLATE)
+
+        // Start dim controller on dual-screen when not in live mode
+        if (!isSingleScreen() && !isLiveMode) {
+            dimController = DimController(findViewById(R.id.dimOverlay))
+        }
     }
 
     override fun onNewIntent(intent: Intent?) {
@@ -274,9 +281,15 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
         }
     }
 
+    override fun onUserInteraction() {
+        super.onUserInteraction()
+        dimController?.onInteraction()
+    }
+
     override fun onResume() {
         super.onResume()
         isInForeground = true
+        dimController?.onInteraction()
         setupDetectionLog()
         // Re-wire service callbacks in case TranslationResultActivity overwrote them
         if (serviceConnected) wireServiceCallbacks()
@@ -297,6 +310,8 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
     }
 
     override fun onDestroy() {
+        dimController?.cancel()
+        dimController = null
         (getSystemService(Context.DISPLAY_SERVICE) as DisplayManager)
             .unregisterDisplayListener(displayListener)
         if (isLiveMode) captureService?.stopLive()
@@ -459,6 +474,12 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
     private fun onLiveModeChanged(isLive: Boolean) {
         updateMenuLiveItem()
         updateRegionButton()
+        // Dim controller: cancel on any live mode change, recreate only when stopping
+        dimController?.cancel()
+        dimController = null
+        if (!isLive && !isSingleScreen()) {
+            dimController = DimController(findViewById(R.id.dimOverlay))
+        }
         if (isLive) {
             resultFragment?.showStatus(searchingStatusText())
         } else {

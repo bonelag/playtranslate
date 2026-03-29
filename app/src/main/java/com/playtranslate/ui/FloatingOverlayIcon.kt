@@ -165,6 +165,8 @@ class FloatingOverlayIcon(context: Context) : View(context) {
     var onHoldEnd: (() -> Unit)? = null
     /** Called when a hold is cancelled because the user started dragging. */
     var onHoldCancel: (() -> Unit)? = null
+    /** Called on every touch event (for dim controller reset). */
+    var onAnyTouch: (() -> Unit)? = null
 
     var wm: WindowManager? = null
     var params: WindowManager.LayoutParams? = null
@@ -339,6 +341,7 @@ class FloatingOverlayIcon(context: Context) : View(context) {
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
+        onAnyTouch?.invoke()
         parent?.requestDisallowInterceptTouchEvent(true)
 
         when (event.actionMasked) {

@@ -23,6 +23,7 @@ import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
+import com.playtranslate.ui.DimController
 import com.playtranslate.ui.DragLookupController
 import com.playtranslate.ui.FloatingIconMenu
 import com.playtranslate.ui.FloatingOverlayIcon
@@ -840,6 +841,7 @@ class PlayTranslateAccessibilityService : AccessibilityService() {
         icon.onHoldCancel = { CaptureService.instance?.holdCancel() }
         icon.onHoldStart  = { CaptureService.instance?.holdStart() }
         icon.onHoldEnd    = { CaptureService.instance?.holdEnd() }
+        icon.onAnyTouch   = { DimController.notifyInteraction() }
         dragLookupController = controller
 
         try {
