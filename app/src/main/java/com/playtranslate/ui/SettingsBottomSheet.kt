@@ -551,21 +551,28 @@ class SettingsBottomSheet : DialogFragment() {
         val thumbW = (80 * dp).toInt()
         val thumbH = (50 * dp).toInt()
 
+        val outlineColor = ctx.themeColor(
+            if (isSelected) R.attr.colorAccentPrimary else R.attr.colorTextHint
+        )
         val row = LinearLayout(ctx).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding((4 * dp).toInt(), (8 * dp).toInt(), (12 * dp).toInt(), (8 * dp).toInt())
-            setBackgroundColor(ctx.themeColor(if (isSelected) R.attr.colorBgCard else R.attr.colorBgSurface))
-        }
-
-        val rb = RadioButton(ctx).apply {
-            isChecked = isSelected
-            isClickable = false
-            isFocusable = false
+            setPadding((12 * dp).toInt(), (8 * dp).toInt(), (12 * dp).toInt(), (8 * dp).toInt())
+            val accent = ctx.themeColor(R.attr.colorAccentPrimary)
+            val bgColor = if (isSelected) android.graphics.Color.argb(15,
+                android.graphics.Color.red(accent),
+                android.graphics.Color.green(accent),
+                android.graphics.Color.blue(accent))
+            else ctx.themeColor(R.attr.colorBgSurface)
+            background = android.graphics.drawable.GradientDrawable().apply {
+                setColor(bgColor)
+                setStroke((1 * dp).toInt(), outlineColor)
+                cornerRadius = 8 * dp
+            }
             layoutParams = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
-            ).also { it.marginEnd = (4 * dp).toInt() }
+            ).also { it.bottomMargin = (4 * dp).toInt() }
         }
 
         val iv = ImageView(ctx).apply {
@@ -581,11 +588,11 @@ class SettingsBottomSheet : DialogFragment() {
         val tv = TextView(ctx).apply {
             text = "Display ${display.displayId}  —  ${display.name}"
             textSize = 15f
-            setTextColor(ctx.themeColor(R.attr.colorTextPrimary))
+            setTypeface(null, android.graphics.Typeface.BOLD)
+            setTextColor(ctx.themeColor(if (isSelected) R.attr.colorAccentPrimary else R.attr.colorTextHint))
             layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
         }
 
-        row.addView(rb)
         row.addView(iv)
         row.addView(tv)
         row.setOnClickListener {
@@ -863,7 +870,7 @@ class SettingsBottomSheet : DialogFragment() {
             val iconH = size * 0.5f
             val iconScale = iconH / iconBmp.height
             val iconW = iconBmp.width * iconScale
-            val iconCx = circleR / 2f - dp
+            val iconCx = circleR / 2f - 5 * dp
             val dst = android.graphics.RectF(
                 iconCx - iconW / 2f, circleR - iconH / 2f,
                 iconCx + iconW / 2f, circleR + iconH / 2f
