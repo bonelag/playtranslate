@@ -643,7 +643,7 @@ class CaptureService : Service() {
     private fun getCachedBoxesForMode(): List<TranslationOverlayView.TextBox>? {
         val s = session
         return if (Prefs(this).overlayMode == OverlayMode.FURIGANA)
-            s.cachedFuriganaBoxes ?: s.cachedOverlayBoxes
+            s.cachedFuriganaBoxes
         else
             s.cachedOverlayBoxes
     }
@@ -768,7 +768,8 @@ class CaptureService : Service() {
             else OverlayDiffResult(0f, emptySet())
             val overlayDiff = overlayResult.maxDiff
             if (overlayResult.triggeredBoxIndices.isNotEmpty()) {
-                val allBoxes = s.cachedOverlayBoxes
+                // Use detectionOverlayTextBoxes (what's actually on screen) — not cachedOverlayBoxes
+                val allBoxes = s.detectionOverlayTextBoxes.ifEmpty { null }
                 val fullBoxes = s.detectionOverlayBoxes
                 if (allBoxes != null && fullBoxes.isNotEmpty()) {
                     val toRemove = findNearbyBoxIndices(overlayResult.triggeredBoxIndices, fullBoxes)
@@ -777,8 +778,13 @@ class CaptureService : Service() {
                     val remainingBoxes = allBoxes.filterIndexed { i, _ -> i !in toRemove }
                     val remainingFullBoxes = fullBoxes.filterIndexed { i, _ -> i !in toRemove }
 
-                    s.cachedOverlayBoxes = remainingBoxes.ifEmpty { null }
-                    s.cachedFuriganaBoxes = null  // invalidate — will be rebuilt on next clean frame
+                    // Update the appropriate mode-specific cache
+                    if (Prefs(this).overlayMode == OverlayMode.FURIGANA) {
+                        s.cachedFuriganaBoxes = remainingBoxes.ifEmpty { null }
+                    } else {
+                        s.cachedOverlayBoxes = remainingBoxes.ifEmpty { null }
+                    }
+                    s.detectionOverlayTextBoxes = remainingBoxes
                     s.detectionOverlayBoxes = remainingFullBoxes
                     // Clear dedup text so the removed boxes' text is re-discovered as "new"
                     s.lastLiveOcrText = null
@@ -962,12 +968,29 @@ class CaptureService : Service() {
                 }
             }
 
-            // Skip translation if furigana mode and no one sees the in-app panel
-            val skipTranslation = isFuriganaMode &&
-                (Prefs.isSingleScreen(this@CaptureService) || !MainActivity.isInForeground)
-
-            if (!skipTranslation) {
-                // Show shimmer placeholders (translation mode only)
+            if (isFuriganaMode) {
+                // Furigana mode: only translate for the in-app panel if it's visible
+                // No color sampling, shimmer, or translation box caching needed
+                val appPanelVisible = !Prefs.isSingleScreen(this@CaptureService) && MainActivity.isInForeground
+                if (appPanelVisible) {
+                    onTranslationStarted?.invoke()
+                    val perGroup = translateGroupsSeparately(liveGroupTexts)
+                    val translated = perGroup.joinToString("\n\n") { it.first }
+                    val note = perGroup.mapNotNull { it.second }.firstOrNull()
+                    val timestamp = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
+                    onResult?.invoke(
+                        TranslationResult(
+                            originalText   = newText,
+                            segments       = ocrResult.segments,
+                            translatedText = translated,
+                            timestamp      = timestamp,
+                            screenshotPath = screenshotPath,
+                            note           = note
+                        )
+                    )
+                }
+            } else {
+                // Translation mode: shimmer → translate → show translation overlays
                 val cRef = colorRef!!
                 val colors = sampleGroupColors(cRef, liveGroupBounds, left, top, colorScale)
                 val placeholderBoxes = liveGroupBounds.mapIndexed { idx, bounds ->
@@ -975,11 +998,8 @@ class CaptureService : Service() {
                     val lineCount = liveGroupLineCounts.getOrElse(idx) { 1 }
                     TranslationOverlayView.TextBox("", bounds, bgColor, textColor, lineCount)
                 }
-                if (!isFuriganaMode) {
-                    showLiveOverlay(placeholderBoxes, left, top, screenshotW, screenshotH)
-                }
+                showLiveOverlay(placeholderBoxes, left, top, screenshotW, screenshotH)
 
-                // Translate (for in-app panel, overlays in translation mode)
                 onTranslationStarted?.invoke()
                 val perGroup = translateGroupsSeparately(liveGroupTexts)
                 val translated = perGroup.joinToString("\n\n") { it.first }
@@ -996,28 +1016,25 @@ class CaptureService : Service() {
                     )
                 )
 
-                // Cache translation boxes and show overlays (translation mode)
                 if (liveGroupBounds.size == perGroup.size) {
                     val translationBoxes = perGroup.zip(placeholderBoxes).map { (tr, placeholder) ->
                         placeholder.copy(translatedText = tr.first)
                     }
                     s.cachedOverlayBoxes = translationBoxes
-                    if (!isFuriganaMode) {
-                        s.cachedOcrResult = ocrResult
-                        s.cachedOverlayCropLeft = left
-                        s.cachedOverlayCropTop = top
-                        s.cachedOverlayScreenW = screenshotW
-                        s.cachedOverlayScreenH = screenshotH
-                        showLiveOverlay(translationBoxes, left, top, screenshotW, screenshotH)
-                        val fullDisplayBoxes = translationBoxes.map { b ->
-                            android.graphics.Rect(
-                                b.bounds.left + left, b.bounds.top + top,
-                                b.bounds.right + left, b.bounds.bottom + top
-                            )
-                        }
-                        setupDetection(raw, fullDisplayBoxes, translationBoxes)
+                    s.cachedOcrResult = ocrResult
+                    s.cachedOverlayCropLeft = left
+                    s.cachedOverlayCropTop = top
+                    s.cachedOverlayScreenW = screenshotW
+                    s.cachedOverlayScreenH = screenshotH
+                    showLiveOverlay(translationBoxes, left, top, screenshotW, screenshotH)
+                    val fullDisplayBoxes = translationBoxes.map { b ->
+                        android.graphics.Rect(
+                            b.bounds.left + left, b.bounds.top + top,
+                            b.bounds.right + left, b.bounds.bottom + top
+                        )
                     }
-                    DetectionLog.log("processClean: done, ${translationBoxes.size} translation boxes cached")
+                    setupDetection(raw, fullDisplayBoxes, translationBoxes)
+                    DetectionLog.log("processClean: done, ${translationBoxes.size} translation boxes")
                 }
             }
         } catch (e: kotlinx.coroutines.CancellationException) {
@@ -1574,12 +1591,28 @@ class CaptureService : Service() {
                 }
             }
 
-            // Skip translation if furigana mode and no one sees the in-app panel
-            val skipTranslation = isFuriganaMode &&
-                (Prefs.isSingleScreen(this@CaptureService) || !MainActivity.isInForeground)
-
-            if (!skipTranslation) {
-                // Sample colors and show shimmer placeholders (translation mode only)
+            if (isFuriganaMode) {
+                // Furigana mode: only translate for the in-app panel if it's visible
+                val appPanelVisible = !Prefs.isSingleScreen(this@CaptureService) && MainActivity.isInForeground
+                if (appPanelVisible) {
+                    onTranslationStarted?.invoke()
+                    val perGroup = translateGroupsSeparately(liveGroupTexts)
+                    val translated = perGroup.joinToString("\n\n") { it.first }
+                    val note = perGroup.mapNotNull { it.second }.firstOrNull()
+                    val timestamp = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
+                    onResult?.invoke(
+                        TranslationResult(
+                            originalText   = newText,
+                            segments       = ocrResult.segments,
+                            translatedText = translated,
+                            timestamp      = timestamp,
+                            screenshotPath = screenshotPath,
+                            note           = note
+                        )
+                    )
+                }
+            } else {
+                // Translation mode: shimmer → translate → show translation overlays
                 val cRef = colorRef!!
                 val colors = sampleGroupColors(cRef, liveGroupBounds, left, top, colorScale)
                 val placeholderBoxes = liveGroupBounds.mapIndexed { idx, bounds ->
@@ -1587,11 +1620,8 @@ class CaptureService : Service() {
                     val lineCount = liveGroupLineCounts.getOrElse(idx) { 1 }
                     TranslationOverlayView.TextBox("", bounds, bgColor, textColor, lineCount)
                 }
-                if (!isFuriganaMode) {
-                    showLiveOverlay(placeholderBoxes, left, top, screenshotW, screenshotH)
-                }
+                showLiveOverlay(placeholderBoxes, left, top, screenshotW, screenshotH)
 
-                // Translate (for in-app panel, overlays in translation mode)
                 onTranslationStarted?.invoke()
                 val perGroup = translateGroupsSeparately(liveGroupTexts)
                 val translated = perGroup.joinToString("\n\n") { it.first }
@@ -1608,20 +1638,17 @@ class CaptureService : Service() {
                     )
                 )
 
-                // Cache translation boxes and show overlays (translation mode)
                 if (liveGroupBounds.size == perGroup.size) {
                     val translationBoxes = perGroup.zip(placeholderBoxes).map { (tr, placeholder) ->
                         placeholder.copy(translatedText = tr.first)
                     }
                     s.cachedOverlayBoxes = translationBoxes
-                    if (!isFuriganaMode) {
-                        s.cachedOcrResult = ocrResult
-                        s.cachedOverlayCropLeft = left
-                        s.cachedOverlayCropTop = top
-                        s.cachedOverlayScreenW = screenshotW
-                        s.cachedOverlayScreenH = screenshotH
-                        showLiveOverlay(translationBoxes, left, top, screenshotW, screenshotH)
-                    }
+                    s.cachedOcrResult = ocrResult
+                    s.cachedOverlayCropLeft = left
+                    s.cachedOverlayCropTop = top
+                    s.cachedOverlayScreenW = screenshotW
+                    s.cachedOverlayScreenH = screenshotH
+                    showLiveOverlay(translationBoxes, left, top, screenshotW, screenshotH)
                 }
             }
         } catch (e: kotlinx.coroutines.CancellationException) {
