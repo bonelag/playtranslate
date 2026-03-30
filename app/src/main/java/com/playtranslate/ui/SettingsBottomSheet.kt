@@ -34,6 +34,7 @@ import androidx.lifecycle.lifecycleScope
 import com.playtranslate.AnkiManager
 import com.playtranslate.AutoTranslationMode
 import com.playtranslate.CaptureService
+import com.playtranslate.OverlayMode
 import com.playtranslate.Prefs
 import com.playtranslate.R
 import com.playtranslate.fullScreenDialogTheme
@@ -353,6 +354,32 @@ class SettingsBottomSheet : DialogFragment() {
             if (CaptureService.instance?.isLive == true) {
                 CaptureService.instance?.stopLive()
             }
+        }
+
+        // ── Overlay mode toggle ────────────────────────────────────────────
+        val toggleOverlayMode = view.findViewById<com.google.android.material.button.MaterialButtonToggleGroup>(R.id.toggleOverlayMode)
+        val tvOverlayModeHint = view.findViewById<TextView>(R.id.tvOverlayModeHint)
+
+        fun updateOverlayModeHint() {
+            tvOverlayModeHint.text = when (prefs.overlayMode) {
+                OverlayMode.TRANSLATION -> "Show translated text over game text"
+                OverlayMode.FURIGANA -> "Show hiragana readings above kanji"
+            }
+        }
+
+        toggleOverlayMode.check(when (prefs.overlayMode) {
+            OverlayMode.TRANSLATION -> R.id.btnOverlayTranslation
+            OverlayMode.FURIGANA -> R.id.btnOverlayFurigana
+        })
+        updateOverlayModeHint()
+
+        toggleOverlayMode.addOnButtonCheckedListener { _, checkedId, isChecked ->
+            if (!isChecked) return@addOnButtonCheckedListener
+            prefs.overlayMode = when (checkedId) {
+                R.id.btnOverlayFurigana -> OverlayMode.FURIGANA
+                else -> OverlayMode.TRANSLATION
+            }
+            updateOverlayModeHint()
         }
 
         // ── Capture interval (auto-save on text change) ───────────────────

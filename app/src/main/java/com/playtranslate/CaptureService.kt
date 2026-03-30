@@ -34,6 +34,7 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import android.hardware.display.DisplayManager
+import com.playtranslate.dictionary.DictionaryManager
 import com.playtranslate.ui.TranslationOverlayView
 
 private const val TAG = "CaptureService"
@@ -83,6 +84,8 @@ class CaptureService : Service() {
         // Live mode / dedup
         var lastLiveOcrText: String? = null
         var cachedOverlayBoxes: List<TranslationOverlayView.TextBox>? = null
+        var cachedFuriganaBoxes: List<TranslationOverlayView.TextBox>? = null
+        var cachedOcrResult: OcrManager.OcrResult? = null
         var cachedOverlayCropLeft = 0
         var cachedOverlayCropTop = 0
         var cachedOverlayScreenW = 0
@@ -111,6 +114,8 @@ class CaptureService : Service() {
         fun clearCachedState() {
             lastLiveOcrText = null
             cachedOverlayBoxes = null
+            cachedFuriganaBoxes = null
+            cachedOcrResult = null
             sceneMoving = false
             forceCheckC = false
             detectionRefNonOverlay = null
@@ -485,9 +490,17 @@ class CaptureService : Service() {
         session.cachedOverlayCropTop = pipeline.cropTop
         session.cachedOverlayScreenW = pipeline.screenshotW
         session.cachedOverlayScreenH = pipeline.screenshotH
+        session.cachedOcrResult = pipeline.ocrResult
         // Store bounds + translations for building overlay boxes on hold
         session.cachedOverlayBoxes = pipeline.groupBounds.zip(pipeline.groupTranslations)
             .map { (bounds, text) -> TranslationOverlayView.TextBox(text, bounds) }
+        // Pre-build furigana boxes if in furigana mode (for hold-to-preview)
+        val ocr = pipeline.ocrResult
+        if (ocr != null && Prefs(this).overlayMode == OverlayMode.FURIGANA) {
+            session.scope.launch {
+                session.cachedFuriganaBoxes = buildFuriganaBoxes(ocr)
+            }
+        }
     }
 
     /** Build color-matched overlay boxes from the cached screenshot and pipeline data. */
@@ -516,6 +529,79 @@ class CaptureService : Service() {
             colorRef?.let { if (!it.isRecycled) it.recycle() }
         }
     }
+
+    // ── Furigana overlay building ────────────────────────────────────────
+
+    /**
+     * Build furigana (hiragana reading) overlay boxes positioned above kanji words.
+     *
+     * Uses per-line bounding boxes with proportional character positioning —
+     * ML Kit elements are too coarse for Japanese (often entire lines), so we
+     * tokenize each line independently and compute horizontal position based on
+     * character offset within the line (Japanese text is roughly monospaced).
+     */
+    private suspend fun buildFuriganaBoxes(
+        ocrResult: OcrManager.OcrResult
+    ): List<TranslationOverlayView.TextBox> {
+        val boxes = mutableListOf<TranslationOverlayView.TextBox>()
+        val dict = DictionaryManager.get(this)
+
+        for (groupIdx in ocrResult.groupTexts.indices) {
+            val lines = ocrResult.lineBoxes.filter { it.groupIndex == groupIdx }
+            if (lines.isEmpty()) continue
+
+            for (line in lines) {
+                if (line.text.isEmpty()) continue
+                val tokens = dict.tokenizeWithSurfaces(line.text)
+                var charOffset = 0
+
+                for (token in tokens) {
+                    val reading = token.reading ?: continue
+                    if (reading == token.surface) continue
+                    if (token.surface.all(::isKana)) continue
+
+                    val startInLine = line.text.indexOf(token.surface, charOffset)
+                    if (startInLine < 0) continue
+                    val endInLine = startInLine + token.surface.length
+                    charOffset = endInLine
+
+                    // Proportional horizontal position within line bounds
+                    val lineW = line.bounds.width().toFloat()
+                    val charCount = line.text.length.toFloat()
+                    val left = line.bounds.left + (startInLine / charCount * lineW).toInt()
+                    val right = line.bounds.left + (endInLine / charCount * lineW).toInt()
+
+                    val furiganaHeight = (line.bounds.height() * 0.5f).toInt().coerceAtLeast(1)
+                    val furiganaBounds = android.graphics.Rect(
+                        left,
+                        (line.bounds.top - furiganaHeight).coerceAtLeast(0),
+                        right,
+                        line.bounds.top
+                    )
+
+                    boxes += TranslationOverlayView.TextBox(
+                        translatedText = reading,
+                        bounds = furiganaBounds,
+                        lineCount = 1,
+                        isFurigana = true
+                    )
+                }
+            }
+        }
+        return boxes
+    }
+
+    /** Return the appropriate cached overlay boxes for the current overlay mode. */
+    private fun getCachedBoxesForMode(): List<TranslationOverlayView.TextBox>? {
+        val s = session
+        return if (Prefs(this).overlayMode == OverlayMode.FURIGANA)
+            s.cachedFuriganaBoxes ?: s.cachedOverlayBoxes
+        else
+            s.cachedOverlayBoxes
+    }
+
+    private fun isKana(c: Char): Boolean =
+        c in '\u3040'..'\u309F' || c in '\u30A0'..'\u30FF' || c in '\uFF65'..'\uFF9F'
 
     fun stopLive() {
         liveActive = false
@@ -623,6 +709,7 @@ class CaptureService : Service() {
                 s.stabilizationFrameCount = 0
                 s.lastLiveOcrText = null
                 s.cachedOverlayBoxes = null
+                s.cachedFuriganaBoxes = null
                 PlayTranslateAccessibilityService.instance?.hideTranslationOverlay()
                 return
             }
@@ -643,6 +730,7 @@ class CaptureService : Service() {
                     val remainingFullBoxes = fullBoxes.filterIndexed { i, _ -> i !in toRemove }
 
                     s.cachedOverlayBoxes = remainingBoxes.ifEmpty { null }
+                    s.cachedFuriganaBoxes = null  // invalidate — will be rebuilt on next clean frame
                     s.detectionOverlayBoxes = remainingFullBoxes
                     // Clear dedup text so the removed boxes' text is re-discovered as "new"
                     s.lastLiveOcrText = null
@@ -752,6 +840,7 @@ class CaptureService : Service() {
                 DetectionLog.log("processClean: OCR returned null")
                 s.lastLiveOcrText = null
                 s.cachedOverlayBoxes = null
+                s.cachedFuriganaBoxes = null
                 PlayTranslateAccessibilityService.instance?.hideTranslationOverlay()
                 onLiveNoText?.invoke()
                 setupDetection(raw, emptyList(), emptyList())
@@ -765,6 +854,7 @@ class CaptureService : Service() {
                 DetectionLog.log("processClean: no source-lang chars")
                 s.lastLiveOcrText = null
                 s.cachedOverlayBoxes = null
+                s.cachedFuriganaBoxes = null
                 PlayTranslateAccessibilityService.instance?.hideTranslationOverlay()
                 onLiveNoText?.invoke()
                 setupDetection(raw, emptyList(), emptyList())
@@ -773,7 +863,7 @@ class CaptureService : Service() {
 
             // Dedup
             if (s.lastLiveOcrText != null && !isSignificantChange(s.lastLiveOcrText!!, dedupKey)) {
-                val boxes = s.cachedOverlayBoxes
+                val boxes = getCachedBoxesForMode()
                 if (boxes != null) {
                     DetectionLog.log("processClean: dedup match, re-showing cached")
                     showLiveOverlay(boxes, s.cachedOverlayCropLeft, s.cachedOverlayCropTop,
@@ -832,14 +922,21 @@ class CaptureService : Service() {
 
             // Show final overlays and set up detection
             if (liveGroupBounds.size == perGroup.size) {
-                val overlayBoxes = perGroup.zip(placeholderBoxes).map { (tr, placeholder) ->
+                val translationBoxes = perGroup.zip(placeholderBoxes).map { (tr, placeholder) ->
                     placeholder.copy(translatedText = tr.first)
                 }
-                s.cachedOverlayBoxes = overlayBoxes
+                s.cachedOverlayBoxes = translationBoxes
+                s.cachedOcrResult = ocrResult
                 s.cachedOverlayCropLeft = left
                 s.cachedOverlayCropTop = top
                 s.cachedOverlayScreenW = screenshotW
                 s.cachedOverlayScreenH = screenshotH
+
+                val overlayBoxes = if (Prefs(this@CaptureService).overlayMode == OverlayMode.FURIGANA) {
+                    val furigana = buildFuriganaBoxes(ocrResult)
+                    s.cachedFuriganaBoxes = furigana
+                    furigana.ifEmpty { translationBoxes }
+                } else translationBoxes
                 showLiveOverlay(overlayBoxes, left, top, screenshotW, screenshotH,
                     )
 
@@ -973,18 +1070,14 @@ class CaptureService : Service() {
             holdActive = true
             when (Prefs(this).autoTranslationMode) {
                 AutoTranslationMode.IN_APP_ONLY -> {
-                    // Show color-matched overlays from cached screenshot (polling pauses via holdActive)
+                    // Show overlays from cached data (polling pauses via holdActive)
                     val s = session
-                    val boxes = buildColorMatchedBoxes() ?: s.cachedOverlayBoxes
-                    if (boxes != null) {
-                        val a11y = PlayTranslateAccessibilityService.instance
-                        val dm = getSystemService(DisplayManager::class.java)
-                        val display = dm.getDisplay(gameDisplayId)
-                        if (a11y != null && display != null) {
-                            a11y.showTranslationOverlay(display, boxes,
-                                s.cachedOverlayCropLeft, s.cachedOverlayCropTop,
-                                s.cachedOverlayScreenW, s.cachedOverlayScreenH)
-                        }
+                    if (Prefs(this).overlayMode == OverlayMode.FURIGANA) {
+                        val boxes = s.cachedFuriganaBoxes
+                        if (boxes != null && boxes.isNotEmpty()) showHoldOverlay(s, boxes)
+                    } else {
+                        val boxes = buildColorMatchedBoxes() ?: s.cachedOverlayBoxes
+                        if (boxes != null) showHoldOverlay(s, boxes)
                     }
                 }
                 AutoTranslationMode.OVERLAYS -> {
@@ -995,6 +1088,18 @@ class CaptureService : Service() {
             onHoldLoadingChanged?.invoke(true)
             showOneShotOverlay()
             flashRegionIndicator()
+        }
+    }
+
+    /** Show overlay boxes on the game display (shared by hold-to-preview paths). */
+    private fun showHoldOverlay(s: RegionSession, boxes: List<TranslationOverlayView.TextBox>) {
+        val a11y = PlayTranslateAccessibilityService.instance
+        val dm = getSystemService(DisplayManager::class.java)
+        val display = dm.getDisplay(gameDisplayId)
+        if (a11y != null && display != null) {
+            a11y.showTranslationOverlay(display, boxes,
+                s.cachedOverlayCropLeft, s.cachedOverlayCropTop,
+                s.cachedOverlayScreenW, s.cachedOverlayScreenH)
         }
     }
 
@@ -1346,6 +1451,7 @@ class CaptureService : Service() {
             if (dedupKey.isNullOrEmpty()) {
                 s.lastLiveOcrText = null
                 s.cachedOverlayBoxes = null
+                s.cachedFuriganaBoxes = null
                 PlayTranslateAccessibilityService.instance?.hideTranslationOverlay()
                 onHoldLoadingChanged?.invoke(false)
                 if (!liveActive) {
@@ -1364,7 +1470,7 @@ class CaptureService : Service() {
             // Dedup: if text hasn't changed significantly, re-show cached overlay.
             // Skip dedup entirely if we have no previous text (first cycle after start/clear).
             if (s.lastLiveOcrText != null && !isSignificantChange(s.lastLiveOcrText!!, dedupKey)) {
-                val boxes = s.cachedOverlayBoxes
+                val boxes = getCachedBoxesForMode()
                 if (boxes != null) {
                     showLiveOverlay(boxes, s.cachedOverlayCropLeft, s.cachedOverlayCropTop,
                         s.cachedOverlayScreenW, s.cachedOverlayScreenH)
@@ -1412,16 +1518,23 @@ class CaptureService : Service() {
                 )
             )
 
-            // Update overlay with translated text
+            // Update overlay with translated text (or furigana)
             if (liveGroupBounds.size == perGroup.size) {
-                val overlayBoxes = perGroup.zip(placeholderBoxes).map { (tr, placeholder) ->
+                val translationBoxes = perGroup.zip(placeholderBoxes).map { (tr, placeholder) ->
                     placeholder.copy(translatedText = tr.first)
                 }
-                s.cachedOverlayBoxes = overlayBoxes
+                s.cachedOverlayBoxes = translationBoxes
+                s.cachedOcrResult = ocrResult
                 s.cachedOverlayCropLeft = left
                 s.cachedOverlayCropTop = top
                 s.cachedOverlayScreenW = screenshotW
                 s.cachedOverlayScreenH = screenshotH
+
+                val overlayBoxes = if (Prefs(this@CaptureService).overlayMode == OverlayMode.FURIGANA) {
+                    val furigana = buildFuriganaBoxes(ocrResult)
+                    s.cachedFuriganaBoxes = furigana
+                    furigana.ifEmpty { translationBoxes }
+                } else translationBoxes
                 showLiveOverlay(overlayBoxes, left, top, screenshotW, screenshotH)
             }
         } catch (e: kotlinx.coroutines.CancellationException) {
@@ -1596,7 +1709,8 @@ class CaptureService : Service() {
         val groupBounds: List<android.graphics.Rect>,
         val groupTranslations: List<String>,
         val cropLeft: Int, val cropTop: Int,
-        val screenshotW: Int, val screenshotH: Int
+        val screenshotW: Int, val screenshotH: Int,
+        val ocrResult: OcrManager.OcrResult? = null
     )
 
     /**
@@ -1646,7 +1760,8 @@ class CaptureService : Service() {
                 groupBounds = ocrResult.groupBounds,
                 groupTranslations = perGroup.map { it.first },
                 cropLeft = left, cropTop = top,
-                screenshotW = raw.width, screenshotH = raw.height
+                screenshotW = raw.width, screenshotH = raw.height,
+                ocrResult = ocrResult
             )
         } catch (e: Exception) {
             Log.e(TAG, "Capture cycle failed: ${e.message}", e)

@@ -53,6 +53,16 @@ class OcrManager private constructor() {
         val scaleFactor: Float
     )
 
+    /** A per-line bounding box with its processed text and group association. */
+    data class LineBox(
+        /** Processed text of this line (decorations stripped, pipes trimmed). */
+        val text: String,
+        /** Bounding box in original (pre-scale) bitmap coordinates. */
+        val bounds: Rect,
+        /** Index of the group this line belongs to. */
+        val groupIndex: Int
+    )
+
     data class OcrResult(
         /** Full text joined across groups, suitable for bulk translation. */
         val fullText: String,
@@ -64,6 +74,8 @@ class OcrManager private constructor() {
         val groupBounds: List<Rect> = emptyList(),
         /** Number of OCR lines per group (for skeleton placeholder display). */
         val groupLineCounts: List<Int> = emptyList(),
+        /** Per-line bounding boxes with processed text, for furigana positioning. */
+        val lineBoxes: List<LineBox> = emptyList(),
         /** Debug bounding boxes at block/line/element level, or null if debug is off. */
         val debugBoxes: OcrDebugBoxes? = null
     )
@@ -102,6 +114,7 @@ class OcrManager private constructor() {
         val segments = mutableListOf<TextSegment>()
         val fullTextBuilder = StringBuilder()
         val groupTexts = mutableListOf<String>()
+        val lineBoxes = mutableListOf<LineBox>()
 
         groups.forEachIndexed { gi, group ->
             if (gi > 0) {
@@ -115,6 +128,7 @@ class OcrManager private constructor() {
                     groupBuilder.append(" ")
                     segments += TextSegment("\n", isSeparator = true)
                 }
+                val lineBuilder = StringBuilder()
                 line.elements.forEachIndexed { ei, element ->
                     if (!isUiDecoration(element.text)) {
                         var text = element.text
@@ -124,8 +138,25 @@ class OcrManager private constructor() {
                         if (text.isNotEmpty()) {
                             fullTextBuilder.append(text)
                             groupBuilder.append(text)
+                            lineBuilder.append(text)
                             segments += TextSegment(text)
                         }
+                    }
+                }
+                // Collect per-line bounding box for furigana character positioning
+                val lineText = lineBuilder.toString()
+                if (lineText.isNotEmpty()) {
+                    line.boundingBox?.let { bb ->
+                        lineBoxes += LineBox(
+                            text = lineText,
+                            bounds = Rect(
+                                (bb.left / scaleFactor).toInt(),
+                                (bb.top / scaleFactor).toInt(),
+                                (bb.right / scaleFactor).toInt(),
+                                (bb.bottom / scaleFactor).toInt()
+                            ),
+                            groupIndex = gi
+                        )
                     }
                 }
             }
@@ -180,7 +211,7 @@ class OcrManager private constructor() {
         } else null
 
         val groupLineCounts = groups.map { it.size }
-        return OcrResult(fullText, segments, groupTexts, groupBounds, groupLineCounts, debugBoxes)
+        return OcrResult(fullText, segments, groupTexts, groupBounds, groupLineCounts, lineBoxes, debugBoxes)
     }
 
     /**

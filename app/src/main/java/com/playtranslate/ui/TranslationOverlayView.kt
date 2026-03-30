@@ -37,7 +37,9 @@ class TranslationOverlayView(context: Context) : FrameLayout(context) {
         /** Text color — estimated from game text or chosen for contrast. */
         val textColor: Int = Color.WHITE,
         /** Number of OCR lines in this group (for skeleton placeholders). */
-        val lineCount: Int = 1
+        val lineCount: Int = 1,
+        /** True for furigana readings (smaller text, pill background). */
+        val isFurigana: Boolean = false
     )
 
     private val dp = context.resources.displayMetrics.density
@@ -149,6 +151,24 @@ class TranslationOverlayView(context: Context) : FrameLayout(context) {
             val child: View = if (box.translatedText.isEmpty()) {
                 // Skeleton placeholder: matched bg with text-colored bars
                 buildSkeletonView(rectW, rectH, box.lineCount, box.bgColor, box.textColor)
+            } else if (box.isFurigana) {
+                // Furigana: small text with semi-transparent pill background
+                TextView(context).apply {
+                    text = box.translatedText
+                    setTextColor(Color.WHITE)
+                    typeface = Typeface.DEFAULT_BOLD
+                    gravity = Gravity.CENTER
+                    val hPad = (4f * dp).toInt()
+                    val vPad = (1f * dp).toInt()
+                    setPadding(hPad, vPad, hPad, vPad)
+                    background = GradientDrawable().apply {
+                        setColor(Color.argb(160, 0, 0, 0))
+                        cornerRadius = 4f * dp
+                    }
+                    TextViewCompat.setAutoSizeTextTypeUniformWithConfiguration(
+                        this, minTextSizeSp, maxTextSizeSp, 1, TypedValue.COMPLEX_UNIT_SP
+                    )
+                }
             } else {
                 // Translated text
                 TextView(context).apply {
