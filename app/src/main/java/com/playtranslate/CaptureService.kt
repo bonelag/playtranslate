@@ -535,10 +535,9 @@ class CaptureService : Service() {
     /**
      * Build furigana (hiragana reading) overlay boxes positioned above kanji words.
      *
-     * Uses per-line bounding boxes with proportional character positioning —
-     * ML Kit elements are too coarse for Japanese (often entire lines), so we
-     * tokenize each line independently and compute horizontal position based on
-     * character offset within the line (Japanese text is roughly monospaced).
+     * Uses dictionary readings (same source as in-app word taps) with okurigana
+     * stripping so readings align to kanji portions only. Per-line bounding boxes
+     * provide proportional character positioning (Japanese text is roughly monospaced).
      */
     private suspend fun buildFuriganaBoxes(
         ocrResult: OcrManager.OcrResult
@@ -552,24 +551,14 @@ class CaptureService : Service() {
 
             for (line in lines) {
                 if (line.text.isEmpty()) continue
-                val tokens = dict.tokenizeWithSurfaces(line.text)
-                var charOffset = 0
+                val furiganaTokens = dict.tokenizeForFurigana(line.text)
 
-                for (token in tokens) {
-                    val reading = token.reading ?: continue
-                    if (reading == token.surface) continue
-                    if (token.surface.all(::isKana)) continue
-
-                    val startInLine = line.text.indexOf(token.surface, charOffset)
-                    if (startInLine < 0) continue
-                    val endInLine = startInLine + token.surface.length
-                    charOffset = endInLine
-
+                for (ft in furiganaTokens) {
                     // Proportional horizontal position within line bounds
                     val lineW = line.bounds.width().toFloat()
                     val charCount = line.text.length.toFloat()
-                    val left = line.bounds.left + (startInLine / charCount * lineW).toInt()
-                    val right = line.bounds.left + (endInLine / charCount * lineW).toInt()
+                    val left = line.bounds.left + (ft.startOffset / charCount * lineW).toInt()
+                    val right = line.bounds.left + (ft.endOffset / charCount * lineW).toInt()
 
                     val furiganaHeight = (line.bounds.height() * 0.5f).toInt().coerceAtLeast(1)
                     val furiganaBounds = android.graphics.Rect(
@@ -580,7 +569,7 @@ class CaptureService : Service() {
                     )
 
                     boxes += TranslationOverlayView.TextBox(
-                        translatedText = reading,
+                        translatedText = ft.reading,
                         bounds = furiganaBounds,
                         lineCount = 1,
                         isFurigana = true

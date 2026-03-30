@@ -28,6 +28,18 @@ data class TokenWithReading(
     val reading: String?
 )
 
+/** A furigana annotation: reading text positioned over a kanji span within the original text. */
+data class FuriganaToken(
+    /** The kanji portion of the token (okurigana stripped). e.g. "聞" from "聞い". */
+    val kanjiSurface: String,
+    /** Hiragana reading for the kanji portion. e.g. "き" for "聞". */
+    val reading: String,
+    /** Character offset of [kanjiSurface] within the original input text. */
+    val startOffset: Int,
+    /** Character end offset (exclusive) of [kanjiSurface] within the original input text. */
+    val endOffset: Int
+)
+
 /**
  * Offline Japanese dictionary backed by a JMdict SQLite database bundled
  * as an app asset.  The database is copied from assets to internal storage
@@ -144,6 +156,149 @@ class DictionaryManager private constructor(private val context: Context) {
 
         Log.d(TAG, "tokenizeWithSurfaces: ${result.map { "(${it.surface} → ${it.lookupForm} [${it.reading}])" }}")
         result
+    }
+
+    /**
+     * Tokenize text and resolve readings from the dictionary for furigana display.
+     * Returns [FuriganaToken] list with okurigana stripped so readings align to
+     * kanji portions only. Uses dictionary readings (not Kuromoji) for accuracy.
+     */
+    suspend fun tokenizeForFurigana(text: String): List<FuriganaToken> = withContext(Dispatchers.IO) {
+        val allTokens = tokenizeWithSurfaces(text)
+        if (allTokens.isEmpty()) return@withContext emptyList()
+
+        // Lightweight reading-only lookups (single query each, no response building)
+        val uniqueForms = allTokens.map { it.lookupForm }.distinct()
+        val readingMap = mutableMapOf<String, String>()
+        for (form in uniqueForms) {
+            val kuromojiReading = allTokens.firstOrNull { it.lookupForm == form }?.reading
+            val reading = lookupReading(form, kuromojiReading)
+            if (!reading.isNullOrEmpty() && reading != form) {
+                readingMap[form] = reading
+            }
+        }
+        // Also map surface forms for conjugated tokens
+        for (tok in allTokens) {
+            if (tok.surface != tok.lookupForm && tok.lookupForm in readingMap) {
+                // Use Kuromoji reading for conjugated surface (closer to actual pronunciation)
+                val kReading = tok.reading
+                if (!kReading.isNullOrEmpty()) {
+                    readingMap[tok.surface] = kReading
+                }
+            }
+        }
+
+        // Build FuriganaTokens with character offsets and okurigana stripping
+        val result = mutableListOf<FuriganaToken>()
+        var searchFrom = 0
+        for (tok in allTokens) {
+            val reading = readingMap[tok.lookupForm]
+                ?: readingMap[tok.surface]
+                ?: tok.reading
+                ?: continue
+
+            val idx = text.indexOf(tok.surface, searchFrom)
+            if (idx < 0) continue
+            searchFrom = idx + tok.surface.length
+
+            // Skip pure kana tokens (no kanji to annotate)
+            val hasKanji = tok.surface.any { isKanji(it) }
+            if (!hasKanji) continue
+
+            // Strip matching okurigana from end and start
+            var surface = tok.surface
+            var r = reading
+            var leadStrip = 0
+            var tailStrip = 0
+
+            // Strip from end: matching kana
+            while (surface.length > 1 && r.isNotEmpty()
+                && isHiraganaOrKatakana(surface.last())
+                && hiraganaOf(surface.last()) == hiraganaOf(r.last())) {
+                surface = surface.dropLast(1)
+                r = r.dropLast(1)
+                tailStrip++
+            }
+            // Strip from start: matching kana
+            while (surface.length > 1 && r.isNotEmpty()
+                && isHiraganaOrKatakana(surface.first())
+                && hiraganaOf(surface.first()) == hiraganaOf(r.first())) {
+                surface = surface.drop(1)
+                r = r.drop(1)
+                leadStrip++
+            }
+
+            if (r.isEmpty() || surface.isEmpty()) continue
+
+            result += FuriganaToken(
+                kanjiSurface = surface,
+                reading = r,
+                startOffset = idx + leadStrip,
+                endOffset = idx + tok.surface.length - tailStrip
+            )
+        }
+        result
+    }
+
+    /**
+     * Lightweight reading-only lookup. Returns the hiragana reading for [word]
+     * or null if not found. Skips full response building — single query only.
+     */
+    private suspend fun lookupReading(word: String, kuromojiReading: String? = null): String? = withContext(Dispatchers.IO) {
+        val database = ensureOpen() ?: return@withContext null
+
+        // 1. Word appears in kanji table → get the first reading for that entry
+        //    (optionally narrowed by Kuromoji reading to pick the right homograph)
+        if (kuromojiReading != null) {
+            database.rawQuery(
+                """SELECT r.text FROM kanji k
+                   JOIN reading r ON r.entry_id = k.entry_id
+                   JOIN entry e ON e.id = k.entry_id
+                   WHERE k.text = ? AND r.text = ?
+                   ORDER BY e.freq_score DESC LIMIT 1""",
+                arrayOf(word, kuromojiReading)
+            ).use { c -> if (c.moveToFirst()) return@withContext c.getString(0) }
+        }
+
+        database.rawQuery(
+            """SELECT r.text FROM kanji k
+               JOIN reading r ON r.entry_id = k.entry_id
+               JOIN entry e ON e.id = k.entry_id
+               WHERE k.text = ?
+               ORDER BY r.position, e.freq_score DESC LIMIT 1""",
+            arrayOf(word)
+        ).use { c -> if (c.moveToFirst()) return@withContext c.getString(0) }
+
+        // 2. Word appears in reading table only (kana-only entries) → it IS the reading
+        database.rawQuery(
+            "SELECT text FROM reading WHERE text = ? LIMIT 1",
+            arrayOf(word)
+        ).use { c -> if (c.moveToFirst()) return@withContext c.getString(0) }
+
+        // 3. Try de-inflected candidates
+        for (candidate in Deinflector.candidates(word)) {
+            database.rawQuery(
+                """SELECT r.text FROM kanji k
+                   JOIN reading r ON r.entry_id = k.entry_id
+                   JOIN entry e ON e.id = k.entry_id
+                   WHERE k.text = ?
+                   ORDER BY r.position, e.freq_score DESC LIMIT 1""",
+                arrayOf(candidate.text)
+            ).use { c -> if (c.moveToFirst()) return@withContext c.getString(0) }
+        }
+
+        null
+    }
+
+    private fun isKanji(c: Char): Boolean =
+        c in '\u4E00'..'\u9FFF' || c in '\u3400'..'\u4DBF'
+
+    private fun isHiraganaOrKatakana(c: Char): Boolean =
+        c in '\u3040'..'\u309F' || c in '\u30A0'..'\u30FF'
+
+    private fun hiraganaOf(c: Char): Char = when {
+        c in '\u30A1'..'\u30F6' -> c - 0x60  // katakana → hiragana
+        else -> c
     }
 
     private fun isContentWord(pos: String?): Boolean = pos in setOf(
