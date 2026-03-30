@@ -170,8 +170,7 @@ class TranslationOverlayView(context: Context) : FrameLayout(context) {
                 ))
                 // Position after measurement: centered over kanji, bottom at text top
                 child.post {
-                    val cx = (rect.left + rect.right) / 2f
-                    child.translationX = cx - child.measuredWidth / 2f
+                    child.translationX = rect.left
                     child.translationY = rect.bottom - child.measuredHeight
                 }
             } else {
