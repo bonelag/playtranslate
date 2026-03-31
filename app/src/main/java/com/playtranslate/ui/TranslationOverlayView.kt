@@ -81,6 +81,19 @@ class TranslationOverlayView(context: Context) : FrameLayout(context) {
         }
     }
 
+    /** Remove specific boxes by content match. Removes only the corresponding
+     *  child views — surviving children stay in place with no rebuild. */
+    fun removeBoxesByContent(toRemove: List<TextBox>) {
+        if (toRemove.isEmpty()) return
+        val removeSet = toRemove.toSet()
+        for (i in (childCount - 1) downTo 0) {
+            if (i < boxes.size && boxes[i] in removeSet) {
+                removeViewAt(i)
+            }
+        }
+        boxes = boxes.filter { it !in removeSet }
+    }
+
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
         super.onSizeChanged(w, h, oldw, oldh)
         updateScales()

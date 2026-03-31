@@ -526,6 +526,11 @@ class CaptureService : Service() {
         return perGroup
     }
 
+    /** Remove specific overlay boxes without rebuilding the entire view. */
+    internal fun removeOverlayBoxes(toRemove: List<TranslationOverlayView.TextBox>) {
+        PlayTranslateAccessibilityService.instance?.removeOverlayBoxes(toRemove)
+    }
+
     internal fun showLiveOverlay(
         boxes: List<TranslationOverlayView.TextBox>,
         cropLeft: Int, cropTop: Int,

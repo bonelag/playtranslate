@@ -223,7 +223,7 @@ class FuriganaMode(private val service: CaptureService) : LiveMode {
                 if (pipeline != null) {
                     val prevText = lastOcrText
                     if (prevText != null && OverlayToolkit.isSignificantChange(prevText, pipeline.dedupKey)) {
-                        android.util.Log.w("FuriganaDbg", "TEXT CHANGED: requesting clean capture")
+                        android.util.Log.w("FuriganaDbg", "TEXT CHANGED: \"${prevText.take(40)}\" → \"${pipeline.dedupKey.take(40)}\"")
                         DetectionLog.log("Furigana: text changed, requesting clean capture")
 
                         // Selective invalidation: remove furigana for changed groups, keep the rest
@@ -233,17 +233,22 @@ class FuriganaMode(private val service: CaptureService) : LiveMode {
                                 OverlayToolkit.groupsMatch(old.groupText, old.groupBounds, newText, newBounds)
                             }
                         }
-                        val removed = furiganaGroups.size - surviving.size
-                        android.util.Log.d("FuriganaDbg", "  Groups: ${furiganaGroups.size} total, $removed changed, ${surviving.size} kept")
+                        val removed = furiganaGroups.filter { old ->
+                            !newOcrGroups.any { (newText, newBounds) ->
+                                OverlayToolkit.groupsMatch(old.groupText, old.groupBounds, newText, newBounds)
+                            }
+                        }
+                        android.util.Log.d("FuriganaDbg", "  Kept: ${surviving.map { "\"${it.groupText.take(20)}\"" }}")
+                        android.util.Log.d("FuriganaDbg", "  Removed: ${removed.map { "\"${it.groupText.take(20)}\"" }}")
+                        // Remove only the changed groups' child views — survivors stay in place
+                        val removedBoxes = removed.flatMap { it.boxes }
+                        service.removeOverlayBoxes(removedBoxes)
+
                         furiganaGroups = surviving
                         cachedFuriganaBoxes = surviving.flatMap { it.boxes }.ifEmpty { null }
                         lastOcrText = null  // force full rebuild on next clean frame
 
-                        // Re-show surviving furigana (unchanged groups stay visible)
-                        val boxes = cachedFuriganaBoxes
-                        if (boxes != null) {
-                            service.showLiveOverlay(boxes, cropLeft, cropTop, screenshotW, screenshotH)
-                        } else {
+                        if (cachedFuriganaBoxes == null) {
                             PlayTranslateAccessibilityService.instance?.hideTranslationOverlay()
                         }
 
