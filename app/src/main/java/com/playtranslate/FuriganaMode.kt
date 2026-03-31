@@ -147,7 +147,7 @@ class FuriganaMode(private val service: CaptureService) : LiveMode {
             val mgr = PlayTranslateAccessibilityService.instance?.screenshotManager
             mgr?.saveToCache(raw)
             val screenshotPath = mgr?.lastCleanPath
-            service.sendTranslationToPanel(ocrResult, screenshotPath)
+            service.translateAndSendToPanel(ocrResult, screenshotPath)
         } finally {
             if (!raw.isRecycled) raw.recycle()
         }

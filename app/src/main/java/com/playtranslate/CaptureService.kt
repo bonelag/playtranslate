@@ -389,7 +389,6 @@ class CaptureService : Service() {
             updateForegroundState()
             syncIconState()
         }
-    private val MAX_STABILIZATION_FRAMES = 10
 
     val isLive: Boolean get() = liveActive
 
@@ -552,15 +551,19 @@ class CaptureService : Service() {
         )
     }
 
-    /** Translate groups and send result to the in-app panel. Skips if panel not visible. */
-    internal suspend fun sendTranslationToPanel(
+    /**
+     * Translate OCR groups and send the result to the in-app panel.
+     * Returns per-group translations (for callers that also need them for overlay building).
+     * Returns null if skipped (panel not visible and forceShow=false).
+     */
+    internal suspend fun translateAndSendToPanel(
         ocrResult: OcrManager.OcrResult,
         screenshotPath: String?,
         forceShow: Boolean = false
-    ) {
+    ): List<Pair<String, String?>>? {
         if (!forceShow) {
             val appPanelVisible = !Prefs.isSingleScreen(this) && MainActivity.isInForeground
-            if (!appPanelVisible) return
+            if (!appPanelVisible) return null
         }
         onTranslationStarted?.invoke()
         val perGroup = translateGroupsSeparately(ocrResult.groupTexts)
@@ -575,6 +578,7 @@ class CaptureService : Service() {
             screenshotPath = screenshotPath,
             note           = note
         ))
+        return perGroup
     }
 
     internal fun showLiveOverlay(
@@ -702,25 +706,8 @@ class CaptureService : Service() {
             }
 
             if (isFuriganaMode) {
-                // Furigana mode: only translate for the in-app panel if it's visible
-                val appPanelVisible = !Prefs.isSingleScreen(this@CaptureService) && MainActivity.isInForeground
-                if (appPanelVisible) {
-                    onTranslationStarted?.invoke()
-                    val perGroup = translateGroupsSeparately(liveGroupTexts)
-                    val translated = perGroup.joinToString("\n\n") { it.first }
-                    val note = perGroup.mapNotNull { it.second }.firstOrNull()
-                    val timestamp = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
-                    onResult?.invoke(
-                        TranslationResult(
-                            originalText   = newText,
-                            segments       = ocrResult.segments,
-                            translatedText = translated,
-                            timestamp      = timestamp,
-                            screenshotPath = screenshotPath,
-                            note           = note
-                        )
-                    )
-                }
+                // Furigana mode: translate for in-app panel only
+                translateAndSendToPanel(ocrResult, screenshotPath)
             } else {
                 // Translation mode: shimmer → translate → show translation overlays
                 val cRef = colorRef!!
@@ -732,23 +719,9 @@ class CaptureService : Service() {
                 }
                 showLiveOverlay(placeholderBoxes, left, top, screenshotW, screenshotH)
 
-                onTranslationStarted?.invoke()
-                val perGroup = translateGroupsSeparately(liveGroupTexts)
-                val translated = perGroup.joinToString("\n\n") { it.first }
-                val note = perGroup.mapNotNull { it.second }.firstOrNull()
-                val timestamp = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
-                onResult?.invoke(
-                    TranslationResult(
-                        originalText   = newText,
-                        segments       = ocrResult.segments,
-                        translatedText = translated,
-                        timestamp      = timestamp,
-                        screenshotPath = screenshotPath,
-                        note           = note
-                    )
-                )
+                val perGroup = translateAndSendToPanel(ocrResult, screenshotPath, forceShow = true)
 
-                if (liveGroupBounds.size == perGroup.size) {
+                if (perGroup != null && liveGroupBounds.size == perGroup.size) {
                     val translationBoxes = perGroup.zip(placeholderBoxes).map { (tr, placeholder) ->
                         placeholder.copy(translatedText = tr.first)
                     }

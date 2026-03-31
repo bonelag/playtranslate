@@ -598,23 +598,11 @@ class TranslationOverlayMode(private val service: CaptureService) : LiveMode {
                 Canvas(bitmap).drawRect(l.toFloat(), t.toFloat(), r.toFloat(), b.toFloat(), fillPaint)
             }
 
-            val statusBarHeight = service.getStatusBarHeightForDisplay(service.gameDisplayId)
-            val top = maxOf((bitmap.height * service.activeRegion.top).toInt(), statusBarHeight)
-            val left = (bitmap.width * service.activeRegion.left).toInt()
-            val bottom = (bitmap.height * service.activeRegion.bottom).toInt()
-            val right = (bitmap.width * service.activeRegion.right).toInt()
-            val needsCrop = top > 0 || left > 0 || bottom < bitmap.height || right < bitmap.width
-            val cropped = if (needsCrop)
-                Bitmap.createBitmap(bitmap, left, top, (right - left).coerceAtLeast(1), (bottom - top).coerceAtLeast(1))
-            else bitmap
+            // OCR the filled bitmap using shared pipeline (crop → blackout → OCR)
+            val pipeline = service.runOcr(bitmap)
+            if (pipeline == null) return false
 
-            val ocrBitmap = service.blackoutFloatingIcon(cropped, left, top)
-            val ocrResult = service.ocrManager.recognise(ocrBitmap, service.sourceLang, screenshotWidth = bitmap.width)
-            if (ocrBitmap !== bitmap) ocrBitmap.recycle()
-            if (ocrResult == null) return false
-
-            val newDedupKey = ocrResult.fullText.filter { c -> OcrManager.isSourceLangChar(c, service.sourceLang) }
-            if (newDedupKey.isEmpty()) return false
+            val (ocrResult, newDedupKey, left, top, _, _) = pipeline
             val prevText = lastOcrText
             if (prevText != null && !OverlayToolkit.hasSignificantAdditions(prevText, newDedupKey)) return false
 

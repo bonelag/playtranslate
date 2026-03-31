@@ -82,13 +82,13 @@ object OverlayToolkit {
         }
     }
 
-    fun colorLuminance(color: Int): Double {
+    private fun colorLuminance(color: Int): Double {
         return 0.299 * Color.red(color) +
             0.587 * Color.green(color) +
             0.114 * Color.blue(color)
     }
 
-    fun averageColor(
+    private fun averageColor(
         bitmap: Bitmap, l: Int, t: Int, r: Int, b: Int,
         excludeInner: Rect? = null
     ): Int {
@@ -110,38 +110,6 @@ object OverlayToolkit {
         if (count == 0) return Color.argb(230, 0, 0, 0)
         return Color.argb(230,
             (rSum / count).toInt(), (gSum / count).toInt(), (bSum / count).toInt())
-    }
-
-    /**
-     * Color-match overlay boxes from a screenshot file.
-     * All inputs as parameters — no mode state access.
-     */
-    fun buildColorMatchedBoxes(
-        boxes: List<TranslationOverlayView.TextBox>,
-        screenshotPath: String,
-        cropLeft: Int, cropTop: Int,
-        colorScale: Int = 4
-    ): List<TranslationOverlayView.TextBox>? {
-        val bitmap = android.graphics.BitmapFactory.decodeFile(screenshotPath) ?: return null
-        var colorRef: Bitmap? = null
-        try {
-            colorRef = Bitmap.createScaledBitmap(
-                bitmap, bitmap.width / colorScale, bitmap.height / colorScale, false
-            )
-            bitmap.recycle()
-            val colors = sampleGroupColors(colorRef, boxes.map { it.bounds },
-                cropLeft, cropTop, colorScale)
-            colorRef.recycle()
-            return boxes.mapIndexed { idx, box ->
-                val (bg, tc) = colors[idx]
-                box.copy(bgColor = bg, textColor = tc)
-            }
-        } catch (_: Exception) {
-            return null
-        } finally {
-            if (!bitmap.isRecycled) bitmap.recycle()
-            colorRef?.let { if (!it.isRecycled) it.recycle() }
-        }
     }
 
     // ── Furigana box building ─────────────────────────────────────────────
@@ -325,16 +293,4 @@ object OverlayToolkit {
 
     // ── Factory ───────────────────────────────────────────────────────────
 
-    /**
-     * Create a box builder function for the given overlay mode.
-     * Used by one-shot to build the right type of boxes without mode checks in the pipeline.
-     */
-    fun createOverlayBoxBuilder(
-        overlayMode: OverlayMode,
-        dictionary: DictionaryManager,
-        furiganaPaint: TextPaint
-    ): ((OcrManager.OcrResult) -> List<TranslationOverlayView.TextBox>)? = when (overlayMode) {
-        OverlayMode.FURIGANA -> { ocrResult -> buildFuriganaBoxes(ocrResult, dictionary, furiganaPaint) }
-        OverlayMode.TRANSLATION -> null  // translation boxes are built inline with color sampling
-    }
 }
