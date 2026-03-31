@@ -6,6 +6,8 @@ import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
+import android.graphics.Typeface
+import android.text.TextPaint
 import android.app.NotificationManager
 import androidx.lifecycle.MutableLiveData
 import android.app.PendingIntent
@@ -140,6 +142,14 @@ class CaptureService : Service() {
     private var session = RegionSession(RegionEntry("", 0f, 1f))
 
     // ── Pipeline ──────────────────────────────────────────────────────────
+
+    /** TextPaint for measuring relative character widths (furigana positioning). */
+    private val furiganaPaint by lazy {
+        TextPaint().apply {
+            typeface = Typeface.create("sans-serif", Typeface.NORMAL)
+            textSize = 100f  // arbitrary — only relative proportions matter
+        }
+    }
 
     private val ocrManager get() = OcrManager.instance
     private var translationManager: TranslationManager? = null  // ML Kit offline fallback
@@ -562,13 +572,21 @@ class CaptureService : Service() {
                 val positionMapper: (Int, Int) -> Pair<Int, Int> = if (line.elements.isNotEmpty()) {
                     buildCharToElementMapper(line.elements)
                 } else {
-                    // No element boxes — proportional within line bounds
+                    // No element boxes — weighted proportional within line bounds
                     val lineW = line.bounds.width().toFloat()
-                    val charCount = line.text.length.toFloat()
                     val lineLeft = line.bounds.left
+                    val charWidths = FloatArray(line.text.length).also {
+                        furiganaPaint.getTextWidths(line.text, it)
+                    }
+                    val totalWeight = charWidths.sum()
                     fun(s: Int, e: Int): Pair<Int, Int> {
-                        val l = lineLeft + (s / charCount * lineW).toInt()
-                        val r = lineLeft + (e / charCount * lineW).toInt()
+                        if (totalWeight <= 0f) return lineLeft to lineLeft
+                        val lWeight = (0 until s.coerceIn(0, charWidths.size))
+                            .sumOf { charWidths[it].toDouble() }.toFloat()
+                        val rWeight = (0 until e.coerceIn(0, charWidths.size))
+                            .sumOf { charWidths[it].toDouble() }.toFloat()
+                        val l = lineLeft + (lWeight / totalWeight * lineW).toInt()
+                        val r = lineLeft + (rWeight / totalWeight * lineW).toInt()
                         return l to r
                     }
                 }
@@ -599,7 +617,8 @@ class CaptureService : Service() {
     /**
      * Build a mapper from (startCharOffset, endCharOffset) → (left, right) pixel positions,
      * using actual element bounding boxes. Characters within multi-char elements are
-     * positioned proportionally within that element's bounds.
+     * positioned using TextPaint-weighted relative widths rather than uniform division,
+     * so punctuation and half-width characters don't cause cascading misalignment.
      */
     private fun buildCharToElementMapper(
         elements: List<OcrManager.ElementBox>
@@ -613,6 +632,11 @@ class CaptureService : Service() {
             }
         }
 
+        // Pre-compute TextPaint character widths per element for weighted interpolation
+        val elemWidths = elements.map { elem ->
+            FloatArray(elem.text.length).also { furiganaPaint.getTextWidths(elem.text, it) }
+        }
+
         return { startOffset: Int, endOffset: Int ->
             val safeStart = startOffset.coerceIn(0, charMap.size - 1)
             val safeEnd = (endOffset - 1).coerceIn(0, charMap.size - 1)
@@ -623,17 +647,21 @@ class CaptureService : Service() {
             val startElem = elements[startMapping.elemIdx]
             val endElem = elements[endMapping.elemIdx]
 
-            // Left edge: interpolate within the start element
-            val startElemW = startElem.bounds.width().toFloat()
-            val startElemChars = startElem.text.length.toFloat()
-            val left = startElem.bounds.left +
-                (startMapping.offsetInElem / startElemChars * startElemW).toInt()
+            // Left edge: weighted position within the start element
+            val startWeights = elemWidths[startMapping.elemIdx]
+            val startTotalWeight = startWeights.sum()
+            val startPrecedingWeight = (0 until startMapping.offsetInElem).sumOf { startWeights[it].toDouble() }.toFloat()
+            val left = if (startTotalWeight > 0f)
+                startElem.bounds.left + (startPrecedingWeight / startTotalWeight * startElem.bounds.width()).toInt()
+            else startElem.bounds.left
 
-            // Right edge: interpolate within the end element (end of the character)
-            val endElemW = endElem.bounds.width().toFloat()
-            val endElemChars = endElem.text.length.toFloat()
-            val right = endElem.bounds.left +
-                ((endMapping.offsetInElem + 1) / endElemChars * endElemW).toInt()
+            // Right edge: weighted position within the end element (end of the character)
+            val endWeights = elemWidths[endMapping.elemIdx]
+            val endTotalWeight = endWeights.sum()
+            val endPrecedingWeight = (0..endMapping.offsetInElem).sumOf { endWeights[it].toDouble() }.toFloat()
+            val right = if (endTotalWeight > 0f)
+                endElem.bounds.left + (endPrecedingWeight / endTotalWeight * endElem.bounds.width()).toInt()
+            else endElem.bounds.right
 
             left to right
         }
