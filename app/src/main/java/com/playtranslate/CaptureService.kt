@@ -839,8 +839,8 @@ class CaptureService : Service() {
             if (s.forceCheckC) s.forceCheckC = false
             if (anyChange) {
                 DetectionLog.log("C: Change (non=${"%.2f".format(nonOverlayDiff*100)}% ovr=${"%.2f".format(overlayDiff*100)}%)")
-                if (s.cachedOverlayBoxes.isNullOrEmpty()) {
-                    // No overlays — raw screenshot is unobstructed, use as clean
+                if (s.detectionOverlayBoxes.isEmpty()) {
+                    // No overlays on screen — raw screenshot is unobstructed, use as clean
                     DetectionLog.log("C: No overlays → raw as clean")
                     handleCleanFrame(bitmap)
                     return
@@ -1366,7 +1366,7 @@ class CaptureService : Service() {
         overlayBoxes: List<android.graphics.Rect>
     ): Boolean {
         val s = session
-        val overlays = s.cachedOverlayBoxes
+        val overlays = s.cachedOverlayBoxes ?: s.detectionOverlayTextBoxes.ifEmpty { null }
         if (overlays == null) { bitmap.recycle(); return false }
         val cropL = s.cachedOverlayCropLeft
         val cropT = s.cachedOverlayCropTop
@@ -1376,6 +1376,8 @@ class CaptureService : Service() {
             val colorScale = 4
             colorRef = Bitmap.createScaledBitmap(bitmap, bitmap.width / colorScale, bitmap.height / colorScale, false)
 
+            // Fill overlay regions with their background color so OCR doesn't read overlay text.
+            // For furigana (transparent overlays), sample the actual background from the color ref.
             val fillPadding = FILL_PADDING
             val fillPaint = Paint()
             for (box in overlays) {
@@ -1383,7 +1385,13 @@ class CaptureService : Service() {
                 val t = (box.bounds.top + cropT - fillPadding).coerceAtLeast(0)
                 val r = (box.bounds.right + cropL + fillPadding).coerceAtMost(bitmap.width)
                 val b = (box.bounds.bottom + cropT + fillPadding).coerceAtMost(bitmap.height)
-                fillPaint.color = box.bgColor or (0xFF shl 24)
+                if (box.isFurigana) {
+                    // Furigana has no background — sample the game background from the color ref
+                    fillPaint.color = averageColor(colorRef, l / colorScale, t / colorScale,
+                        r / colorScale, b / colorScale)
+                } else {
+                    fillPaint.color = box.bgColor or (0xFF shl 24)
+                }
                 Canvas(bitmap).drawRect(l.toFloat(), t.toFloat(), r.toFloat(), b.toFloat(), fillPaint)
             }
 
