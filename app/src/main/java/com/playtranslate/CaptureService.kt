@@ -66,7 +66,7 @@ class CaptureService : Service() {
 
     // ── Coroutines ────────────────────────────────────────────────────────
 
-    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+    internal val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 
     // ── Region session ───────────────────────────────────────────────────
     //
@@ -151,20 +151,20 @@ class CaptureService : Service() {
     // ── Pipeline ──────────────────────────────────────────────────────────
 
     /** TextPaint for measuring relative character widths (furigana positioning). */
-    private val furiganaPaint by lazy {
+    internal val furiganaPaint by lazy {
         TextPaint().apply {
             typeface = Typeface.create("sans-serif", Typeface.NORMAL)
             textSize = 100f  // arbitrary — only relative proportions matter
         }
     }
 
-    private val ocrManager get() = OcrManager.instance
+    internal val ocrManager get() = OcrManager.instance
     private var translationManager: TranslationManager? = null  // ML Kit offline fallback
     private var deeplTranslator: DeepLTranslator?  = null       // optional, key required
     private var lingvaTranslator: LingvaTranslator? = null      // always present after configure()
 
-    private var gameDisplayId: Int = 0
-    private var sourceLang: String = TranslateLanguage.JAPANESE
+    internal var gameDisplayId: Int = 0
+    internal var sourceLang: String = TranslateLanguage.JAPANESE
     private var savedRegion = RegionEntry("", 0f, 1f)
     private var overrideRegion: RegionEntry? = null
 
@@ -423,7 +423,7 @@ class CaptureService : Service() {
 
     /** Observable live mode state. Observe this to react to live mode changes. */
     val liveModeState = MutableLiveData(false)
-    private var liveActive: Boolean
+    internal var liveActive: Boolean
         get() = liveModeState.value == true
         set(v) {
             liveModeState.value = v
@@ -433,6 +433,8 @@ class CaptureService : Service() {
     private val MAX_STABILIZATION_FRAMES = 10
 
     val isLive: Boolean get() = liveActive
+
+    internal var liveMode: LiveMode? = null
 
     fun startLive() {
         liveActive = true
@@ -445,8 +447,11 @@ class CaptureService : Service() {
         val prefs = Prefs(this)
         when (prefs.autoTranslationMode) {
             AutoTranslationMode.OVERLAYS -> {
-                if (prefs.overlayMode == OverlayMode.FURIGANA) startLiveFurigana()
-                else startLiveOverlay()
+                if (prefs.overlayMode == OverlayMode.FURIGANA) {
+                    liveMode = FuriganaMode(this).also { it.start() }
+                } else {
+                    startLiveOverlay()
+                }
             }
             AutoTranslationMode.IN_APP_ONLY -> startLiveInApp()
         }
@@ -892,6 +897,8 @@ class CaptureService : Service() {
         c in '\u3040'..'\u309F' || c in '\u30A0'..'\u30FF' || c in '\uFF65'..'\uFF9F'
 
     fun stopLive() {
+        liveMode?.stop()
+        liveMode = null
         liveActive = false
         session.cancel()
         session = RegionSession(activeRegion)
@@ -1362,13 +1369,18 @@ class CaptureService : Service() {
     fun refreshLiveOverlay() {
         if (!liveActive) return
         Log.d(TAG, "REFRESH: refreshLiveOverlay called")
-        session.clearCachedState()
-        session.interactionDebounceJob?.cancel()
-        session.cleanProcessingJob?.cancel()
-        when (Prefs(this).autoTranslationMode) {
-            AutoTranslationMode.OVERLAYS ->
-                PlayTranslateAccessibilityService.instance?.screenshotManager?.requestCleanCapture()
-            AutoTranslationMode.IN_APP_ONLY -> {} // next poll cycle re-captures (dedup cleared)
+        val mode = liveMode
+        if (mode != null) {
+            mode.refresh()
+        } else {
+            session.clearCachedState()
+            session.interactionDebounceJob?.cancel()
+            session.cleanProcessingJob?.cancel()
+            when (Prefs(this).autoTranslationMode) {
+                AutoTranslationMode.OVERLAYS ->
+                    PlayTranslateAccessibilityService.instance?.screenshotManager?.requestCleanCapture()
+                AutoTranslationMode.IN_APP_ONLY -> {}
+            }
         }
     }
 
@@ -1467,7 +1479,7 @@ class CaptureService : Service() {
      * Called after a screenshot is captured so the indicator doesn't
      * appear in the screenshot.
      */
-    private fun flashRegionIndicator() {
+    internal fun flashRegionIndicator() {
         val a11y = PlayTranslateAccessibilityService.instance ?: return
         val dm = getSystemService(DisplayManager::class.java)
         val display = dm.getDisplay(gameDisplayId) ?: return
@@ -1715,7 +1727,7 @@ class CaptureService : Service() {
         }
     }
 
-    private fun showLiveOverlay(
+    internal fun showLiveOverlay(
         boxes: List<TranslationOverlayView.TextBox>,
         cropLeft: Int, cropTop: Int,
         screenshotW: Int, screenshotH: Int
@@ -2033,7 +2045,7 @@ class CaptureService : Service() {
      * @param cropLeft Left offset of the crop in full-screen coordinates.
      * @param cropTop  Top offset of the crop in full-screen coordinates.
      */
-    private fun blackoutFloatingIcon(bitmap: Bitmap, cropLeft: Int = 0, cropTop: Int = 0): Bitmap {
+    internal fun blackoutFloatingIcon(bitmap: Bitmap, cropLeft: Int = 0, cropTop: Int = 0): Bitmap {
         // In compact mode the icon is a tiny sliver at the edge — skip blackout
         if (Prefs(this).compactOverlayIcon) return bitmap
         val iconRect = PlayTranslateAccessibilityService.instance?.getFloatingIconRect()
@@ -2164,7 +2176,7 @@ class CaptureService : Service() {
      * Translates each group in parallel, using cached results for groups
      * whose original text hasn't changed. Only cache misses hit the network.
      */
-    private suspend fun translateGroupsSeparately(groupTexts: List<String>): List<Pair<String, String?>> {
+    internal suspend fun translateGroupsSeparately(groupTexts: List<String>): List<Pair<String, String?>> {
         val uncached = groupTexts.withIndex()
             .filter { (_, text) -> text !in translationCache }
 
@@ -2258,7 +2270,7 @@ class CaptureService : Service() {
      * status bar or it cannot be determined. Uses window insets on API 30+ and falls
      * back to comparing real vs. usable display metrics on older versions.
      */
-    private fun getStatusBarHeightForDisplay(displayId: Int): Int {
+    internal fun getStatusBarHeightForDisplay(displayId: Int): Int {
         val dm = getSystemService(android.hardware.display.DisplayManager::class.java) ?: return 0
         val display = dm.getDisplay(displayId) ?: return 0
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
