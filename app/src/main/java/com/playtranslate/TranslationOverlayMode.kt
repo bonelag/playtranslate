@@ -143,16 +143,6 @@ class TranslationOverlayMode(private val service: CaptureService) : LiveMode {
 
         var colorRef: Bitmap? = null
         try {
-            val statusBarHeight = service.getStatusBarHeightForDisplay(service.gameDisplayId)
-            val top    = maxOf((raw.height * service.activeRegion.top).toInt(), statusBarHeight)
-            val left   = (raw.width  * service.activeRegion.left).toInt()
-            val bottom = (raw.height * service.activeRegion.bottom).toInt()
-            val right  = (raw.width  * service.activeRegion.right).toInt()
-            val needsCrop = top > 0 || left > 0 || bottom < raw.height || right < raw.width
-            val bitmap = if (needsCrop)
-                Bitmap.createBitmap(raw, left, top, (right - left).coerceAtLeast(1), (bottom - top).coerceAtLeast(1))
-            else raw
-
             val colorScale = 4
             colorRef = Bitmap.createScaledBitmap(raw, raw.width / colorScale, raw.height / colorScale, false)
 
@@ -161,12 +151,11 @@ class TranslationOverlayMode(private val service: CaptureService) : LiveMode {
                 service.flashRegionIndicator()
             }
 
-            val ocrBitmap = service.blackoutFloatingIcon(bitmap, left, top)
-            val ocrResult = service.ocrManager.recognise(ocrBitmap, service.sourceLang, screenshotWidth = raw.width)
-            if (ocrBitmap !== raw) ocrBitmap.recycle()
+            // Shared OCR pipeline: crop → blackout icon → OCR → filter source chars
+            val pipeline = service.runOcr(raw)
 
-            if (ocrResult == null) {
-                DetectionLog.log("processClean: OCR returned null")
+            if (pipeline == null) {
+                DetectionLog.log("processClean: OCR returned null/empty")
                 lastOcrText = null
                 cachedOverlayBoxes = null
                 PlayTranslateAccessibilityService.instance?.hideTranslationOverlay()
@@ -175,18 +164,7 @@ class TranslationOverlayMode(private val service: CaptureService) : LiveMode {
                 return
             }
 
-            val newText = ocrResult.fullText
-            val dedupKey = newText.filter { c -> OcrManager.isSourceLangChar(c, service.sourceLang) }
-
-            if (dedupKey.isEmpty()) {
-                DetectionLog.log("processClean: no source-lang chars")
-                lastOcrText = null
-                cachedOverlayBoxes = null
-                PlayTranslateAccessibilityService.instance?.hideTranslationOverlay()
-                service.onLiveNoText?.invoke()
-                setupDetection(raw, emptyList(), emptyList())
-                return
-            }
+            val (ocrResult, dedupKey, left, top, _, _) = pipeline
 
             // Dedup
             if (lastOcrText != null && !OverlayToolkit.isSignificantChange(lastOcrText!!, dedupKey)) {
@@ -210,11 +188,10 @@ class TranslationOverlayMode(private val service: CaptureService) : LiveMode {
             val mgr = PlayTranslateAccessibilityService.instance?.screenshotManager
             val screenshotPath = mgr?.saveToCache(raw)
 
-            val liveGroupTexts = ocrResult.groupTexts
             val liveGroupBounds = ocrResult.groupBounds
             val liveGroupLineCounts = ocrResult.groupLineCounts
 
-            // Translation mode: shimmer → translate → show translation overlays
+            // Shimmer placeholders → translate → show translation overlays
             val cRef = colorRef!!
             val colors = OverlayToolkit.sampleGroupColors(cRef, liveGroupBounds, left, top, colorScale)
             val placeholderBoxes = liveGroupBounds.mapIndexed { idx, bounds ->
@@ -224,19 +201,17 @@ class TranslationOverlayMode(private val service: CaptureService) : LiveMode {
             }
             service.showLiveOverlay(placeholderBoxes, left, top, raw.width, raw.height)
 
+            // Translate
             service.onTranslationStarted?.invoke()
-            val perGroup = service.translateGroupsSeparately(liveGroupTexts)
+            val perGroup = service.translateGroupsSeparately(ocrResult.groupTexts)
             val translated = perGroup.joinToString("\n\n") { it.first }
             val note = perGroup.mapNotNull { it.second }.firstOrNull()
-            val timestamp = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
+            val timestamp = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.getDefault()).format(java.util.Date())
             service.onResult?.invoke(
-                TranslationResult(
-                    originalText   = newText,
-                    segments       = ocrResult.segments,
-                    translatedText = translated,
-                    timestamp      = timestamp,
-                    screenshotPath = screenshotPath,
-                    note           = note
+                com.playtranslate.model.TranslationResult(
+                    originalText = ocrResult.fullText, segments = ocrResult.segments,
+                    translatedText = translated, timestamp = timestamp,
+                    screenshotPath = screenshotPath, note = note
                 )
             )
 

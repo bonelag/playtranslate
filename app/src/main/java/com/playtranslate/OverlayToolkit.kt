@@ -288,7 +288,9 @@ object OverlayToolkit {
 
         val ocrBitmap = blackoutFloatingIcon(bitmap, left, top, iconRect, compactIcon)
         val ocrResult = ocrManager.recognise(ocrBitmap, sourceLang, screenshotWidth = raw.width)
+        // Clean up intermediate bitmaps (NOT raw — caller manages that)
         if (ocrBitmap !== raw && ocrBitmap !== bitmap) ocrBitmap.recycle()
+        if (bitmap !== raw && !bitmap.isRecycled) bitmap.recycle()
 
         if (ocrResult == null) return null
 

@@ -3,9 +3,7 @@ package com.playtranslate
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.RectF
-import android.util.Log
 import com.playtranslate.dictionary.DictionaryManager
-import com.playtranslate.model.TranslationResult
 import com.playtranslate.ui.TranslationOverlayView
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -13,9 +11,6 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
 
 private const val TAG = "FuriganaMode"
 
@@ -103,40 +98,22 @@ class FuriganaMode(private val service: CaptureService) : LiveMode {
         if (!service.isConfigured) { raw.recycle(); return }
 
         try {
-            val statusBarHeight = service.getStatusBarHeightForDisplay(service.gameDisplayId)
-            val top    = maxOf((raw.height * service.activeRegion.top).toInt(), statusBarHeight)
-            val left   = (raw.width  * service.activeRegion.left).toInt()
-            val bottom = (raw.height * service.activeRegion.bottom).toInt()
-            val right  = (raw.width  * service.activeRegion.right).toInt()
-            val needsCrop = top > 0 || left > 0 || bottom < raw.height || right < raw.width
-            val bitmap = if (needsCrop)
-                Bitmap.createBitmap(raw, left, top, (right - left).coerceAtLeast(1), (bottom - top).coerceAtLeast(1))
-            else raw
-
             if (showRegionFlash) {
                 showRegionFlash = false
                 service.flashRegionIndicator()
             }
 
-            val ocrBitmap = service.blackoutFloatingIcon(bitmap, left, top)
-            val ocrResult = service.ocrManager.recognise(ocrBitmap, service.sourceLang, screenshotWidth = raw.width)
-            if (ocrBitmap !== raw && ocrBitmap !== bitmap) ocrBitmap.recycle()
+            // Shared OCR pipeline: crop → blackout icon → OCR → filter source chars
+            val pipeline = service.runOcr(raw)
 
-            if (ocrResult == null) {
+            if (pipeline == null) {
                 cachedFuriganaBoxes = null
                 PlayTranslateAccessibilityService.instance?.hideTranslationOverlay()
                 service.onLiveNoText?.invoke()
                 return
             }
 
-            val newText = ocrResult.fullText
-            val dedupKey = newText.filter { c -> OcrManager.isSourceLangChar(c, service.sourceLang) }
-            if (dedupKey.isEmpty()) {
-                cachedFuriganaBoxes = null
-                PlayTranslateAccessibilityService.instance?.hideTranslationOverlay()
-                service.onLiveNoText?.invoke()
-                return
-            }
+            val (ocrResult, dedupKey, left, top, _, _) = pipeline
 
             // Dedup: if text unchanged and we have cached furigana, re-show
             if (lastOcrText != null && !OverlayToolkit.isSignificantChange(lastOcrText!!, dedupKey)) {
@@ -166,28 +143,11 @@ class FuriganaMode(private val service: CaptureService) : LiveMode {
             cleanRefBitmap?.recycle()
             cleanRefBitmap = raw.copy(raw.config ?: Bitmap.Config.ARGB_8888, false)
 
-            // Save screenshot for Anki
+            // Save screenshot for Anki + send translation to in-app panel
             val mgr = PlayTranslateAccessibilityService.instance?.screenshotManager
             mgr?.saveToCache(raw)
             val screenshotPath = mgr?.lastCleanPath
-
-            // Send to in-app panel if visible
-            val appPanelVisible = !Prefs.isSingleScreen(service) && MainActivity.isInForeground
-            if (appPanelVisible) {
-                service.onTranslationStarted?.invoke()
-                val perGroup = service.translateGroupsSeparately(ocrResult.groupTexts)
-                val translated = perGroup.joinToString("\n\n") { it.first }
-                val note = perGroup.mapNotNull { it.second }.firstOrNull()
-                val timestamp = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
-                service.onResult?.invoke(TranslationResult(
-                    originalText   = newText,
-                    segments       = ocrResult.segments,
-                    translatedText = translated,
-                    timestamp      = timestamp,
-                    screenshotPath = screenshotPath,
-                    note           = note
-                ))
-            }
+            service.sendTranslationToPanel(ocrResult, screenshotPath)
         } finally {
             if (!raw.isRecycled) raw.recycle()
         }
@@ -228,26 +188,11 @@ class FuriganaMode(private val service: CaptureService) : LiveMode {
         // OCR the patched frame asynchronously
         scope.launch {
             try {
-                val statusBarHeight = service.getStatusBarHeightForDisplay(service.gameDisplayId)
-                val top    = maxOf((patched.height * service.activeRegion.top).toInt(), statusBarHeight)
-                val left   = (patched.width  * service.activeRegion.left).toInt()
-                val bottom = (patched.height * service.activeRegion.bottom).toInt()
-                val right  = (patched.width  * service.activeRegion.right).toInt()
-                val needsCrop = top > 0 || left > 0 || bottom < patched.height || right < patched.width
-                val cropped = if (needsCrop)
-                    Bitmap.createBitmap(patched, left, top, (right - left).coerceAtLeast(1), (bottom - top).coerceAtLeast(1))
-                else patched
-
-                val ocrBitmap = service.blackoutFloatingIcon(cropped, left, top)
-                val ocrResult = service.ocrManager.recognise(ocrBitmap, service.sourceLang, screenshotWidth = patched.width)
-                if (ocrBitmap !== patched && ocrBitmap !== cropped) ocrBitmap.recycle()
-
-                if (ocrResult != null) {
-                    val newDedupKey = ocrResult.fullText
-                        .filter { c -> OcrManager.isSourceLangChar(c, service.sourceLang) }
+                // OCR the patched frame (same pipeline as clean frames)
+                val pipeline = service.runOcr(patched)
+                if (pipeline != null) {
                     val prevText = lastOcrText
-
-                    if (prevText != null && OverlayToolkit.isSignificantChange(prevText, newDedupKey)) {
+                    if (prevText != null && OverlayToolkit.isSignificantChange(prevText, pipeline.dedupKey)) {
                         DetectionLog.log("Furigana: text changed, requesting clean capture")
                         cleanRefBitmap?.recycle()
                         cleanRefBitmap = null

@@ -542,6 +542,41 @@ class CaptureService : Service() {
         a11y.showRegionIndicator(display, activeRegion)
     }
 
+    /** Run the shared OCR pipeline on a clean frame. Caller still owns raw bitmap. */
+    internal suspend fun runOcr(raw: Bitmap): OverlayToolkit.OcrPipelineResult? {
+        return OverlayToolkit.runOcrPipeline(
+            raw, activeRegion, sourceLang, ocrManager,
+            getStatusBarHeightForDisplay(gameDisplayId),
+            PlayTranslateAccessibilityService.instance?.getFloatingIconRect(),
+            Prefs(this).compactOverlayIcon
+        )
+    }
+
+    /** Translate groups and send result to the in-app panel. Skips if panel not visible. */
+    internal suspend fun sendTranslationToPanel(
+        ocrResult: OcrManager.OcrResult,
+        screenshotPath: String?,
+        forceShow: Boolean = false
+    ) {
+        if (!forceShow) {
+            val appPanelVisible = !Prefs.isSingleScreen(this) && MainActivity.isInForeground
+            if (!appPanelVisible) return
+        }
+        onTranslationStarted?.invoke()
+        val perGroup = translateGroupsSeparately(ocrResult.groupTexts)
+        val translated = perGroup.joinToString("\n\n") { it.first }
+        val note = perGroup.mapNotNull { it.second }.firstOrNull()
+        val timestamp = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.getDefault()).format(java.util.Date())
+        onResult?.invoke(com.playtranslate.model.TranslationResult(
+            originalText   = ocrResult.fullText,
+            segments       = ocrResult.segments,
+            translatedText = translated,
+            timestamp      = timestamp,
+            screenshotPath = screenshotPath,
+            note           = note
+        ))
+    }
+
     internal fun showLiveOverlay(
         boxes: List<TranslationOverlayView.TextBox>,
         cropLeft: Int, cropTop: Int,
