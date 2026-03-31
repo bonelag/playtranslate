@@ -81,6 +81,8 @@ class FuriganaMode(private val service: CaptureService) : LiveMode {
     // ── Clean frame handling ──────────────────────────────────────────────
 
     private fun handleCleanFrame(raw: Bitmap) {
+        android.util.Log.d("FuriganaDbg", "CLEAN FRAME received (ocrCount=$rawFrameOcrCount)")
+        rawFrameOcrCount = 0
         cleanProcessingJob?.cancel()
         cleanProcessingJob = scope.launch {
             try {
@@ -120,6 +122,10 @@ class FuriganaMode(private val service: CaptureService) : LiveMode {
                 val boxes = cachedFuriganaBoxes
                 if (boxes != null) {
                     service.showLiveOverlay(boxes, cropLeft, cropTop, screenshotW, screenshotH)
+                    // Restore clean reference if it was cleared by a false-positive text change
+                    if (cleanRefBitmap == null) {
+                        cleanRefBitmap = raw.copy(raw.config ?: android.graphics.Bitmap.Config.ARGB_8888, false)
+                    }
                     return
                 }
             }
@@ -147,7 +153,9 @@ class FuriganaMode(private val service: CaptureService) : LiveMode {
             val mgr = PlayTranslateAccessibilityService.instance?.screenshotManager
             mgr?.saveToCache(raw)
             val screenshotPath = mgr?.lastCleanPath
+            android.util.Log.d("FuriganaDbg", "CLEAN: furigana shown, starting translation for panel...")
             service.translateAndSendToPanel(ocrResult, screenshotPath)
+            android.util.Log.d("FuriganaDbg", "CLEAN: translation complete, cleanJob finishing")
         } finally {
             if (!raw.isRecycled) raw.recycle()
         }
@@ -155,15 +163,24 @@ class FuriganaMode(private val service: CaptureService) : LiveMode {
 
     // ── Raw frame handling (OCR-based change detection) ───────────────────
 
+    private var rawFrameSkipCount = 0
+    private var rawFrameOcrCount = 0
+
     private fun handleRawFrame(bitmap: Bitmap) {
         if (cleanProcessingJob?.isActive == true) {
+            rawFrameSkipCount++
+            if (rawFrameSkipCount % 10 == 1) {
+                android.util.Log.w("FuriganaDbg", "RAW SKIP: cleanJob active ($rawFrameSkipCount skipped)")
+            }
             bitmap.recycle()
             return
         }
+        rawFrameSkipCount = 0
 
         val ref = cleanRefBitmap
         val boxes = cachedFuriganaBoxes
         if (ref == null || boxes.isNullOrEmpty()) {
+            android.util.Log.w("FuriganaDbg", "RAW SKIP: ref=${ref != null} boxes=${boxes?.size ?: 0}")
             bitmap.recycle()
             return
         }
@@ -192,17 +209,21 @@ class FuriganaMode(private val service: CaptureService) : LiveMode {
         }
 
         // OCR the patched frame asynchronously (ownership transferred to coroutine)
+        rawFrameOcrCount++
         scope.launch {
             try {
                 val pipeline = service.runOcr(patched)
                 if (pipeline != null) {
                     val prevText = lastOcrText
                     if (prevText != null && OverlayToolkit.isSignificantChange(prevText, pipeline.dedupKey)) {
+                        android.util.Log.w("FuriganaDbg", "TEXT CHANGED: requesting clean capture")
                         DetectionLog.log("Furigana: text changed, requesting clean capture")
                         cleanRefBitmap?.recycle()
                         cleanRefBitmap = null
                         PlayTranslateAccessibilityService.instance?.screenshotManager?.requestCleanCapture()
                     }
+                } else {
+                    android.util.Log.w("FuriganaDbg", "RAW OCR: pipeline null (OCR failed on patched frame)")
                 }
             } finally {
                 if (!patched.isRecycled) patched.recycle()
