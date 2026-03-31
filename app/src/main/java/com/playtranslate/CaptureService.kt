@@ -453,7 +453,9 @@ class CaptureService : Service() {
                     startLiveOverlay()
                 }
             }
-            AutoTranslationMode.IN_APP_ONLY -> startLiveInApp()
+            AutoTranslationMode.IN_APP_ONLY -> {
+                liveMode = InAppOnlyMode(this).also { it.start() }
+            }
         }
     }
 
@@ -2078,7 +2080,7 @@ class CaptureService : Service() {
     // ── Capture cycle ─────────────────────────────────────────────────────
 
     /** Full output from the shared capture pipeline, including overlay-ready data. */
-    private class PipelineResult(
+    internal class PipelineResult(
         val result: TranslationResult,
         val groupBounds: List<android.graphics.Rect>,
         val groupTranslations: List<String>,
@@ -2091,7 +2093,7 @@ class CaptureService : Service() {
      * Core capture → crop → OCR → translate pipeline shared by one-shot
      * and all live modes. Returns a [PipelineResult] or null if no text.
      */
-    private suspend fun runCaptureOcrTranslate(onScreenshotTaken: (() -> Unit)? = null): PipelineResult? {
+    internal suspend fun runCaptureOcrTranslate(onScreenshotTaken: (() -> Unit)? = null): PipelineResult? {
         val raw: Bitmap = captureScreen(gameDisplayId) ?: run {
             onError?.invoke("Screenshot failed for display $gameDisplayId. Try a different display in Settings.")
             return null
