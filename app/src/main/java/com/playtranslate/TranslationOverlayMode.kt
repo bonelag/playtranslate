@@ -644,9 +644,9 @@ class TranslationOverlayMode(private val service: CaptureService) : LiveMode {
 
                 val newOverlayBoxes = if (newGroupBounds.size == perGroup.size) {
                     val colors = OverlayToolkit.sampleGroupColors(cRef, newGroupBounds, left, top, colorScale)
-                    perGroup.zip(newGroupBounds).mapIndexed { idx, (tr, bounds) ->
-                        val (bg, tc) = colors[idx]
-                        TranslationOverlayView.TextBox(tr.first, bounds, bg, tc)
+                    perGroup.indices.map { idx ->
+                        val (bg, tc) = colors.getOrElse(idx) { Pair(android.graphics.Color.argb(200,0,0,0), android.graphics.Color.WHITE) }
+                        TranslationOverlayView.TextBox(perGroup[idx].first, newGroupBounds[idx], bg, tc)
                     }
                 } else emptyList()
 

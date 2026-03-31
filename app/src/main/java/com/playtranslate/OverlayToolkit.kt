@@ -195,6 +195,8 @@ object OverlayToolkit {
             FloatArray(elem.text.length).also { furiganaPaint.getTextWidths(elem.text, it) }
         }
 
+        if (charMap.isEmpty()) return { _, _ -> 0 to 0 }
+
         return { startOffset: Int, endOffset: Int ->
             val safeStart = startOffset.coerceIn(0, charMap.size - 1)
             val safeEnd = (endOffset - 1).coerceIn(0, charMap.size - 1)
@@ -254,11 +256,15 @@ object OverlayToolkit {
             Bitmap.createBitmap(raw, left, top, (right - left).coerceAtLeast(1), (bottom - top).coerceAtLeast(1))
         else raw
 
-        val ocrBitmap = blackoutFloatingIcon(bitmap, left, top, iconRect, compactIcon)
-        val ocrResult = ocrManager.recognise(ocrBitmap, sourceLang, screenshotWidth = raw.width)
-        // Clean up intermediate bitmaps (NOT raw — caller manages that)
-        if (ocrBitmap !== raw && ocrBitmap !== bitmap) ocrBitmap.recycle()
-        if (bitmap !== raw && !bitmap.isRecycled) bitmap.recycle()
+        val ocrResult: OcrManager.OcrResult?
+        try {
+            val ocrBitmap = blackoutFloatingIcon(bitmap, left, top, iconRect, compactIcon)
+            ocrResult = ocrManager.recognise(ocrBitmap, sourceLang, screenshotWidth = raw.width)
+            if (ocrBitmap !== raw && ocrBitmap !== bitmap) ocrBitmap.recycle()
+        } finally {
+            // Always clean up the crop (NOT raw — caller manages that)
+            if (bitmap !== raw && !bitmap.isRecycled) bitmap.recycle()
+        }
 
         if (ocrResult == null) return null
 
