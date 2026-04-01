@@ -142,42 +142,69 @@ object OverlayToolkit {
                 if (line.text.isEmpty()) continue
                 val furiganaTokens = dictionary.tokenizeForFurigana(line.text)
 
-                val positionMapper: (Int, Int) -> Pair<Int, Int> = if (line.elements.isNotEmpty()) {
-                    buildCharToElementMapper(line.elements, furiganaPaint)
-                } else {
-                    val lineW = line.bounds.width().toFloat()
-                    val lineLeft = line.bounds.left
-                    val charWidths = FloatArray(line.text.length).also {
-                        furiganaPaint.getTextWidths(line.text, it)
-                    }
-                    val totalWeight = charWidths.sum()
-                    fun(s: Int, e: Int): Pair<Int, Int> {
-                        if (totalWeight <= 0f) return lineLeft to lineLeft
-                        val lWeight = (0 until s.coerceIn(0, charWidths.size))
-                            .sumOf { charWidths[it].toDouble() }.toFloat()
-                        val rWeight = (0 until e.coerceIn(0, charWidths.size))
-                            .sumOf { charWidths[it].toDouble() }.toFloat()
-                        val l = lineLeft + (lWeight / totalWeight * lineW).toInt()
-                        val r = lineLeft + (rWeight / totalWeight * lineW).toInt()
-                        return l to r
-                    }
-                }
+                if (line.symbols.isNotEmpty()) {
+                    // Symbol-based positioning: use exact ML Kit character bounds
+                    var searchFrom = 0
+                    for (ft in furiganaTokens) {
+                        val matchStart = findConsecutiveSymbols(line.symbols, ft.kanjiSurface, searchFrom)
+                        if (matchStart != null) {
+                            val first = line.symbols[matchStart]
+                            val last = line.symbols[matchStart + ft.kanjiSurface.length - 1]
+                            searchFrom = matchStart + ft.kanjiSurface.length
 
-                for (ft in furiganaTokens) {
-                    val (left, right) = positionMapper(ft.startOffset, ft.endOffset)
-                    val furiganaHeight = (line.bounds.height() * 0.75f).toInt().coerceAtLeast(1)
-                    val furiganaBounds = Rect(
-                        left,
-                        (line.bounds.top - furiganaHeight).coerceAtLeast(0),
-                        right,
-                        line.bounds.top
-                    )
-                    groupBoxes += TranslationOverlayView.TextBox(
-                        translatedText = ft.reading,
-                        bounds = furiganaBounds,
-                        lineCount = 1,
-                        isFurigana = true
-                    )
+                            val furiganaHeight = (first.bounds.height() * 0.75f).toInt().coerceAtLeast(1)
+                            groupBoxes += TranslationOverlayView.TextBox(
+                                translatedText = ft.reading,
+                                bounds = Rect(
+                                    first.bounds.left,
+                                    (first.bounds.top - furiganaHeight).coerceAtLeast(0),
+                                    last.bounds.right,
+                                    first.bounds.top
+                                ),
+                                lineCount = 1,
+                                isFurigana = true
+                            )
+                        }
+                    }
+                } else {
+                    // Fallback: TextPaint estimation (no symbols available)
+                    val positionMapper: (Int, Int) -> Pair<Int, Int> = if (line.elements.isNotEmpty()) {
+                        buildCharToElementMapper(line.elements, furiganaPaint)
+                    } else {
+                        val lineW = line.bounds.width().toFloat()
+                        val lineLeft = line.bounds.left
+                        val charWidths = FloatArray(line.text.length).also {
+                            furiganaPaint.getTextWidths(line.text, it)
+                        }
+                        val totalWeight = charWidths.sum()
+                        fun(s: Int, e: Int): Pair<Int, Int> {
+                            if (totalWeight <= 0f) return lineLeft to lineLeft
+                            val lWeight = (0 until s.coerceIn(0, charWidths.size))
+                                .sumOf { charWidths[it].toDouble() }.toFloat()
+                            val rWeight = (0 until e.coerceIn(0, charWidths.size))
+                                .sumOf { charWidths[it].toDouble() }.toFloat()
+                            val l = lineLeft + (lWeight / totalWeight * lineW).toInt()
+                            val r = lineLeft + (rWeight / totalWeight * lineW).toInt()
+                            return l to r
+                        }
+                    }
+
+                    for (ft in furiganaTokens) {
+                        val (left, right) = positionMapper(ft.startOffset, ft.endOffset)
+                        val furiganaHeight = (line.bounds.height() * 0.75f).toInt().coerceAtLeast(1)
+                        val furiganaBounds = Rect(
+                            left,
+                            (line.bounds.top - furiganaHeight).coerceAtLeast(0),
+                            right,
+                            line.bounds.top
+                        )
+                        groupBoxes += TranslationOverlayView.TextBox(
+                            translatedText = ft.reading,
+                            bounds = furiganaBounds,
+                            lineCount = 1,
+                            isFurigana = true
+                        )
+                    }
                 }
             }
 
@@ -216,8 +243,28 @@ object OverlayToolkit {
     }
 
     /**
+     * Find the starting index where [text] appears as consecutive symbols in [symbols],
+     * searching from index [from]. Returns null if not found.
+     */
+    private fun findConsecutiveSymbols(
+        symbols: List<OcrManager.SymbolBox>, text: String, from: Int
+    ): Int? {
+        outer@ for (start in from..symbols.size - text.length) {
+            for ((i, ch) in text.withIndex()) {
+                if (symbols[start + i].text != ch.toString()) continue@outer
+            }
+            return start
+        }
+        return null
+    }
+
+    /**
      * Build a mapper from (startCharOffset, endCharOffset) → (left, right) pixel positions,
-     * using TextPaint-weighted character widths within OCR element bounds.
+     * using TextPaint relative proportions scaled to actual OCR element widths.
+     *
+     * TextPaint provides correct relative ratios (kanji wider than punctuation).
+     * ML Kit provides the actual rendered width of each element on screen.
+     * Scaling one by the other gives the best of both.
      */
     private fun buildCharToElementMapper(
         elements: List<OcrManager.ElementBox>,
@@ -231,8 +278,16 @@ object OverlayToolkit {
             }
         }
 
+        // Scale TextPaint relative widths to match each element's actual rendered width
         val elemWidths = elements.map { elem ->
-            FloatArray(elem.text.length).also { furiganaPaint.getTextWidths(elem.text, it) }
+            val paintWidths = FloatArray(elem.text.length).also { furiganaPaint.getTextWidths(elem.text, it) }
+            val paintTotal = paintWidths.sum()
+            val actualTotal = elem.bounds.width().toFloat()
+            if (paintTotal > 0f) {
+                FloatArray(paintWidths.size) { i -> paintWidths[i] / paintTotal * actualTotal }
+            } else {
+                FloatArray(elem.text.length) { actualTotal / elem.text.length.coerceAtLeast(1) }
+            }
         }
 
         if (charMap.isEmpty()) return { _, _ -> 0 to 0 }

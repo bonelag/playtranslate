@@ -59,6 +59,12 @@ class OcrManager private constructor() {
         val bounds: Rect
     )
 
+    /** A single character (ML Kit Symbol) with its exact bounding box. */
+    data class SymbolBox(
+        val text: String,
+        val bounds: Rect
+    )
+
     /** A per-line bounding box with its processed text and group association. */
     data class LineBox(
         /** Processed text of this line (decorations stripped, pipes trimmed). */
@@ -68,7 +74,9 @@ class OcrManager private constructor() {
         /** Index of the group this line belongs to. */
         val groupIndex: Int,
         /** Per-element bounding boxes within this line (for precise character positioning). */
-        val elements: List<ElementBox> = emptyList()
+        val elements: List<ElementBox> = emptyList(),
+        /** Per-character symbols with exact bounds from ML Kit. Empty if unavailable. */
+        val symbols: List<SymbolBox> = emptyList()
     )
 
     data class OcrResult(
@@ -138,6 +146,7 @@ class OcrManager private constructor() {
                 }
                 val lineBuilder = StringBuilder()
                 val lineElements = mutableListOf<ElementBox>()
+                val lineSymbols = mutableListOf<SymbolBox>()
                 line.elements.forEachIndexed { ei, element ->
                     if (!isUiDecoration(element.text)) {
                         var text = element.text
@@ -161,6 +170,29 @@ class OcrManager private constructor() {
                                     )
                                 )
                             }
+                            // Collect per-character symbols with exact bounds
+                            val rawSymbols = element.symbols
+                            var symIdx = 0
+                            for (ch in text) {
+                                while (symIdx < rawSymbols.size) {
+                                    val sym = rawSymbols[symIdx]
+                                    symIdx++
+                                    if (sym.text == ch.toString()) {
+                                        sym.boundingBox?.let { sbb ->
+                                            lineSymbols += SymbolBox(
+                                                text = sym.text,
+                                                bounds = Rect(
+                                                    (sbb.left / scaleFactor).toInt(),
+                                                    (sbb.top / scaleFactor).toInt(),
+                                                    (sbb.right / scaleFactor).toInt(),
+                                                    (sbb.bottom / scaleFactor).toInt()
+                                                )
+                                            )
+                                        }
+                                        break
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -177,7 +209,8 @@ class OcrManager private constructor() {
                                 (bb.bottom / scaleFactor).toInt()
                             ),
                             groupIndex = gi,
-                            elements = lineElements
+                            elements = lineElements,
+                            symbols = lineSymbols
                         )
                     }
                 }
