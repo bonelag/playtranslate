@@ -160,8 +160,7 @@ class TranslationOverlayMode(private val service: CaptureService) : LiveMode {
                 DetectionLog.log("processClean: OCR returned null/empty")
                 lastOcrText = null
                 cachedOverlayBoxes = null
-                PlayTranslateAccessibilityService.instance?.hideTranslationOverlay()
-                service.onLiveNoText?.invoke()
+                service.handleNoTextDetected()
                 setupDetection(raw, emptyList(), emptyList())
                 return
             }

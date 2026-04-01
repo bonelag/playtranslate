@@ -526,6 +526,12 @@ class CaptureService : Service() {
         return perGroup
     }
 
+    /** Called when OCR finds no source-language text: hides overlays and notifies the UI. */
+    internal fun handleNoTextDetected() {
+        PlayTranslateAccessibilityService.instance?.hideTranslationOverlay()
+        onLiveNoText?.invoke()
+    }
+
     /** Remove specific overlay boxes without rebuilding the entire view. */
     internal fun removeOverlayBoxes(toRemove: List<TranslationOverlayView.TextBox>) {
         PlayTranslateAccessibilityService.instance?.removeOverlayBoxes(toRemove)

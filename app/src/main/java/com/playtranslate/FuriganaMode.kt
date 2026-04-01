@@ -40,6 +40,15 @@ class FuriganaMode(private val service: CaptureService) : LiveMode {
     private var screenshotH = 0
     private var showRegionFlash = true
 
+    /** Reset all mode-owned state. Does NOT hide overlays or notify UI. */
+    private fun clearState() {
+        furiganaGroups = emptyList()
+        cachedFuriganaBoxes = null
+        lastOcrText = null
+        cleanRefBitmap?.recycle()
+        cleanRefBitmap = null
+    }
+
     // ── LiveMode interface ────────────────────────────────────────────────
 
     override fun start() {
@@ -58,20 +67,15 @@ class FuriganaMode(private val service: CaptureService) : LiveMode {
 
     override fun stop() {
         cleanProcessingJob?.cancel()
-        cleanRefBitmap?.recycle()
-        cleanRefBitmap = null
+        clearState()
         scope.cancel()
         PlayTranslateAccessibilityService.instance?.screenshotManager?.stopLoop()
         PlayTranslateAccessibilityService.instance?.hideTranslationOverlay()
     }
 
     override fun refresh() {
-        furiganaGroups = emptyList()
-        cachedFuriganaBoxes = null
-        cleanRefBitmap?.recycle()
-        cleanRefBitmap = null
-        lastOcrText = null
         cleanProcessingJob?.cancel()
+        clearState()
         PlayTranslateAccessibilityService.instance?.screenshotManager?.requestCleanCapture()
     }
 
@@ -112,8 +116,7 @@ class FuriganaMode(private val service: CaptureService) : LiveMode {
 
             if (pipeline == null) {
                 cachedFuriganaBoxes = null
-                PlayTranslateAccessibilityService.instance?.hideTranslationOverlay()
-                service.onLiveNoText?.invoke()
+                service.handleNoTextDetected()
                 return
             }
 
@@ -260,13 +263,8 @@ class FuriganaMode(private val service: CaptureService) : LiveMode {
                 } else {
                     // No text detected — scene changed to non-text screen
                     android.util.Log.d("FuriganaDbg", "RAW OCR: no text, clearing overlays")
-                    furiganaGroups = emptyList()
-                    cachedFuriganaBoxes = null
-                    lastOcrText = null
-                    cleanRefBitmap?.recycle()
-                    cleanRefBitmap = null
-                    PlayTranslateAccessibilityService.instance?.hideTranslationOverlay()
-                    service.onLiveNoText?.invoke()
+                    clearState()
+                    service.handleNoTextDetected()
                 }
             } finally {
                 if (!patched.isRecycled) patched.recycle()
