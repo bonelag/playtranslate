@@ -15,6 +15,7 @@ import android.view.View
 import android.view.animation.LinearInterpolator
 import android.widget.FrameLayout
 import android.widget.TextView
+import androidx.core.view.doOnLayout
 import androidx.core.widget.TextViewCompat
 
 /**
@@ -70,6 +71,10 @@ class TranslationOverlayView(context: Context) : FrameLayout(context) {
         cropLeft: Int, cropTop: Int,
         screenshotW: Int, screenshotH: Int
     ) {
+        // Skip rebuild if content is identical (avoids flash on false-positive recaptures)
+        if (this.boxes == boxes && cropOffsetX == cropLeft && cropOffsetY == cropTop
+            && this.screenshotW == screenshotW && this.screenshotH == screenshotH) return
+
         this.boxes = boxes
         cropOffsetX = cropLeft
         cropOffsetY = cropTop
@@ -184,8 +189,8 @@ class TranslationOverlayView(context: Context) : FrameLayout(context) {
                 addView(child, LayoutParams(
                     LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT
                 ))
-                // Position after measurement, offset by stroke padding to keep text aligned
-                child.post {
+                // Position after measurement but before draw — no (0,0) flash
+                child.doOnLayout {
                     child.translationX = rect.left - strokePad
                     child.translationY = rect.bottom - child.measuredHeight
                 }
