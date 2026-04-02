@@ -692,7 +692,15 @@ class PlayTranslateAccessibilityService : AccessibilityService() {
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {}
     override fun onInterrupt() {}
 
+    /** Temporary listener for key event capture (e.g., hotkey setup dialog). Takes priority over normal handling. */
+    var onKeyEventListener: ((KeyEvent) -> Boolean)? = null
+
     override fun onKeyEvent(event: KeyEvent): Boolean {
+        // If a key event listener is active (e.g., hotkey setup), let it handle first
+        onKeyEventListener?.let { listener ->
+            if (listener(event)) return true
+        }
+
         val src = event.source
         val isGameInput = src and InputDevice.SOURCE_GAMEPAD == InputDevice.SOURCE_GAMEPAD
             || src and InputDevice.SOURCE_DPAD == InputDevice.SOURCE_DPAD

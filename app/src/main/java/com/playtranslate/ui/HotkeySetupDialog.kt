@@ -6,6 +6,8 @@ import android.graphics.Color
 import android.graphics.drawable.ColorDrawable
 import android.os.Bundle
 import android.os.CountDownTimer
+import android.os.Handler
+import android.os.Looper
 import android.view.KeyEvent
 import android.view.LayoutInflater
 import android.view.View
@@ -13,11 +15,15 @@ import android.view.ViewGroup
 import android.view.Window
 import android.widget.TextView
 import androidx.fragment.app.DialogFragment
+import com.playtranslate.PlayTranslateAccessibilityService
 import com.playtranslate.R
 
 /**
  * Reusable dialog for capturing a hotkey combo. Shows a timed hold prompt —
  * the user holds down key(s) for [HOLD_DURATION_MS] to confirm the combo.
+ *
+ * Receives key events via [PlayTranslateAccessibilityService.onKeyEventListener]
+ * since gamepad input is routed to the game display, not the app's dialog window.
  *
  * Used for both "hold to show translations" and "hold to show furigana" hotkeys.
  */
@@ -43,6 +49,7 @@ class HotkeySetupDialog : DialogFragment() {
     private val heldKeys = mutableSetOf<Int>()
     private var countdownTimer: CountDownTimer? = null
     private var resultDelivered = false
+    private val mainHandler = Handler(Looper.getMainLooper())
 
     private lateinit var tvInstruction: TextView
     private lateinit var tvTimer: TextView
@@ -69,19 +76,39 @@ class HotkeySetupDialog : DialogFragment() {
 
     override fun onResume() {
         super.onResume()
-        dialog?.setOnKeyListener { _, keyCode, event ->
-            if (keyCode in SYSTEM_KEYS) return@setOnKeyListener false
+        PlayTranslateAccessibilityService.instance?.onKeyEventListener = { event ->
+            handleKeyEvent(event)
+        }
+    }
 
+    override fun onPause() {
+        PlayTranslateAccessibilityService.instance?.onKeyEventListener = null
+        super.onPause()
+    }
+
+    override fun onDismiss(dialog: DialogInterface) {
+        PlayTranslateAccessibilityService.instance?.onKeyEventListener = null
+        countdownTimer?.cancel()
+        if (!resultDelivered) {
+            onCancelled?.invoke()
+        }
+        super.onDismiss(dialog)
+    }
+
+    private fun handleKeyEvent(event: KeyEvent): Boolean {
+        if (event.keyCode in SYSTEM_KEYS) return false
+
+        // Post to main thread since onKeyEvent may be called from the a11y service thread
+        mainHandler.post {
             when (event.action) {
                 KeyEvent.ACTION_DOWN -> {
-                    if (heldKeys.add(keyCode)) {
+                    if (heldKeys.add(event.keyCode)) {
                         restartTimer()
                         updateKeyDisplay()
                     }
-                    true
                 }
                 KeyEvent.ACTION_UP -> {
-                    heldKeys.remove(keyCode)
+                    heldKeys.remove(event.keyCode)
                     if (heldKeys.isEmpty()) {
                         cancelTimer()
                         showInstruction()
@@ -89,19 +116,10 @@ class HotkeySetupDialog : DialogFragment() {
                         restartTimer()
                         updateKeyDisplay()
                     }
-                    true
                 }
-                else -> false
             }
         }
-    }
-
-    override fun onDismiss(dialog: DialogInterface) {
-        countdownTimer?.cancel()
-        if (!resultDelivered) {
-            onCancelled?.invoke()
-        }
-        super.onDismiss(dialog)
+        return true // consume the event so it doesn't reach the game
     }
 
     private fun cancelAndDismiss() {
