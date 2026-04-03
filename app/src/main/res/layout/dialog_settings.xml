@@ -276,6 +276,14 @@
                     android:text="Overlays" />
 
                 <com.google.android.material.button.MaterialButton
+                    android:id="@+id/btnModeSimple"
+                    style="@style/Widget.PlayTranslate.SegmentedButton"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="Simple" />
+
+                <com.google.android.material.button.MaterialButton
                     android:id="@+id/btnModeInApp"
                     style="@style/Widget.PlayTranslate.SegmentedButton"
                     android:layout_width="0dp"

@@ -384,6 +384,9 @@ class CaptureService : Service() {
                 }
                 liveMode?.start()
             }
+            AutoTranslationMode.SIMPLE -> {
+                liveMode = SimpleTranslationMode(this).also { it.start() }
+            }
             AutoTranslationMode.IN_APP_ONLY -> {
                 liveMode = InAppOnlyMode(this).also { it.start() }
             }
@@ -892,8 +895,8 @@ class CaptureService : Service() {
             val shouldStop = when (Prefs(this).autoTranslationMode) {
                 // In-App Only: results only visible while app is in foreground
                 AutoTranslationMode.IN_APP_ONLY -> !MainActivity.isInForeground
-                // Overlays: stop if no control surface at all (no icon, no app)
-                AutoTranslationMode.OVERLAYS -> !iconShowing && !MainActivity.isInForeground
+                // Overlays/Simple: stop if no control surface at all (no icon, no app)
+                AutoTranslationMode.OVERLAYS, AutoTranslationMode.SIMPLE -> !iconShowing && !MainActivity.isInForeground
             }
             if (shouldStop) {
                 stopLive()

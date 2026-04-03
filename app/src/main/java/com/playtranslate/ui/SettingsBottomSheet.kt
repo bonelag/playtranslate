@@ -327,19 +327,23 @@ class SettingsBottomSheet : DialogFragment() {
         val toggleAutoMode = view.findViewById<com.google.android.material.button.MaterialButtonToggleGroup>(R.id.toggleAutoMode)
         val tvAutoModeHint = view.findViewById<TextView>(R.id.tvAutoModeHint)
         val btnModeOverlays = view.findViewById<com.google.android.material.button.MaterialButton>(R.id.btnModeOverlays)
+        val btnModeSimple = view.findViewById<com.google.android.material.button.MaterialButton>(R.id.btnModeSimple)
         val btnModeInApp = view.findViewById<com.google.android.material.button.MaterialButton>(R.id.btnModeInApp)
         btnModeOverlays.text = AutoTranslationMode.OVERLAYS.displayName
+        btnModeSimple.text = AutoTranslationMode.SIMPLE.displayName
         btnModeInApp.text = AutoTranslationMode.IN_APP_ONLY.displayName
 
         fun updateAutoModeHint() {
             tvAutoModeHint.text = when (prefs.autoTranslationMode) {
                 AutoTranslationMode.OVERLAYS -> "Auto translations appear as overlays on the game screen"
+                AutoTranslationMode.SIMPLE -> "Poll and translate — no change detection"
                 AutoTranslationMode.IN_APP_ONLY -> "DUAL-SCREEN ONLY: Only show auto translations in app, not over game screen"
             }
         }
 
         toggleAutoMode.check(when (prefs.autoTranslationMode) {
             AutoTranslationMode.OVERLAYS -> R.id.btnModeOverlays
+            AutoTranslationMode.SIMPLE -> R.id.btnModeSimple
             AutoTranslationMode.IN_APP_ONLY -> R.id.btnModeInApp
         })
         updateAutoModeHint()
@@ -347,6 +351,7 @@ class SettingsBottomSheet : DialogFragment() {
         toggleAutoMode.addOnButtonCheckedListener { _, checkedId, isChecked ->
             if (!isChecked) return@addOnButtonCheckedListener
             prefs.autoTranslationMode = when (checkedId) {
+                R.id.btnModeSimple -> AutoTranslationMode.SIMPLE
                 R.id.btnModeInApp -> AutoTranslationMode.IN_APP_ONLY
                 else -> AutoTranslationMode.OVERLAYS
             }
@@ -524,6 +529,7 @@ class SettingsBottomSheet : DialogFragment() {
         val toggle = v.findViewById<com.google.android.material.button.MaterialButtonToggleGroup>(R.id.toggleAutoMode) ?: return
         val checkedId = when (Prefs(ctx).autoTranslationMode) {
             AutoTranslationMode.OVERLAYS -> R.id.btnModeOverlays
+            AutoTranslationMode.SIMPLE -> R.id.btnModeSimple
             AutoTranslationMode.IN_APP_ONLY -> R.id.btnModeInApp
         }
         if (toggle.checkedButtonId != checkedId) toggle.check(checkedId)

@@ -458,7 +458,7 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
                 selectTab(Tab.TRANSLATE)
                 doStartLive()
             }
-            AutoTranslationMode.OVERLAYS -> doStartLive()
+            AutoTranslationMode.OVERLAYS, AutoTranslationMode.SIMPLE -> doStartLive()
         }
     }
 

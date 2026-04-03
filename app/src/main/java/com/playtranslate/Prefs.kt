@@ -10,6 +10,7 @@ import org.json.JSONObject
 
 enum class AutoTranslationMode(val displayName: String) {
     OVERLAYS("Overlays"),
+    SIMPLE("Simple"),
     IN_APP_ONLY("In-App Only");
 
     companion object {
