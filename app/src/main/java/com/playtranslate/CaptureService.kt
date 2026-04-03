@@ -480,6 +480,7 @@ class CaptureService : Service() {
 
     /** Begin a hotkey hold-to-preview with a forced overlay mode. */
     fun hotkeyHoldStart(mode: OverlayMode) {
+        DetectionLog.log("Hotkey START: $mode (live=$liveActive)")
         Log.d("HotkeyDbg", "hotkeyHoldStart: mode=$mode isConfigured=$isConfigured liveActive=$liveActive")
         if (hotkeyActive) return
         hotkeyActive = true
@@ -498,6 +499,7 @@ class CaptureService : Service() {
     fun hotkeyHoldEnd() {
         if (!hotkeyActive) return
         hotkeyActive = false
+        DetectionLog.log("Hotkey END (live=$liveActive)")
 
         oneShotManager.cancel()
 

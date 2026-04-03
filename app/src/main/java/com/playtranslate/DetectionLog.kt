@@ -21,6 +21,7 @@ object DetectionLog {
     var onUpdate: ((String) -> Unit)? = null
 
     fun log(message: String) {
+        android.util.Log.d("DetectionLog", message)
         if (!enabled) return
         val ts = timeFormat.format(Date())
         val entry = "$ts  $message"

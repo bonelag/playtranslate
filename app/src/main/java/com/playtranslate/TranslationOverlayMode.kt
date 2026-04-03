@@ -41,7 +41,7 @@ class TranslationOverlayMode(private val service: CaptureService) : LiveMode {
     private val SCENE_CHANGE_THRESHOLD = 0.40f
     private val OVERLAY_CHANGE_THRESHOLD = 0.10f
     private val PIXEL_DIFF_THRESHOLD = 30
-    private val OVERLAY_PIXEL_DIFF_THRESHOLD = 6
+    private val OVERLAY_PIXEL_DIFF_THRESHOLD = 20
     private val MAX_STABILIZATION_FRAMES = 10
 
     // ── Mode-owned state ──────────────────────────────────────────────────
@@ -122,18 +122,16 @@ class TranslationOverlayMode(private val service: CaptureService) : LiveMode {
     // ── Clean frame handling ──────────────────────────────────────────────
 
     private fun handleCleanFrame(raw: Bitmap) {
+        if (cleanProcessingJob?.isActive == true) {
+            // Never cancel in-progress processing for a new frame.
+            // Detection will trigger a recapture if the result is stale.
+            DetectionLog.log("Clean frame DROPPED — processing in progress")
+            raw.recycle()
+            return
+        }
         DetectionLog.log("Clean frame received")
-        cleanProcessingJob?.cancel()
         cleanProcessingJob = scope.launch {
-            try {
-                processCleanFrame(raw)
-            } catch (e: kotlinx.coroutines.CancellationException) {
-                DetectionLog.log("processClean: cancelled, requesting fresh capture")
-                if (service.liveActive) {
-                    PlayTranslateAccessibilityService.instance?.screenshotManager?.requestCleanCapture()
-                }
-                throw e
-            }
+            processCleanFrame(raw)
         }
     }
 
@@ -285,7 +283,8 @@ class TranslationOverlayMode(private val service: CaptureService) : LiveMode {
             detectionRefOverlay = ovrRef
             detectionOverlayActive = ovrActive
             val activeCount = ovrActive.count { it }
-            DetectionLog.log("Overlay ref set: ${overlaySamples.size} ovr ($activeCount active)")
+            val activePct = if (overlaySamples.isNotEmpty()) activeCount * 100 / overlaySamples.size else 0
+            DetectionLog.log("Overlay ref set: ${overlaySamples.size} ovr ($activeCount active, $activePct%) — ${if (activePct == 100) "WARNING: no text pixels found, view may not be rendered yet" else "OK"}")
             bitmap.recycle()
             return
         }
@@ -477,7 +476,7 @@ class TranslationOverlayMode(private val service: CaptureService) : LiveMode {
 
     private fun onUserInteraction() {
         if (!service.liveActive) return
-        Log.d(TAG, "onUserInteraction")
+        DetectionLog.log("USER INTERACTION — cancelling processing")
         cleanProcessingJob?.cancel()
         cachedOverlayBoxes = null
         lastOcrText = null
@@ -613,53 +612,61 @@ class TranslationOverlayMode(private val service: CaptureService) : LiveMode {
             val prevText = lastOcrText
             if (prevText != null && !OverlayToolkit.hasSignificantAdditions(prevText, newDedupKey)) return false
 
-            val anyClose = ocrResult.groupBounds.any { newRect ->
-                overlays.any { existing ->
-                    areRectsNearby(
-                        Rect(existing.bounds.left + cropLeft, existing.bounds.top + cropTop,
-                            existing.bounds.right + cropLeft, existing.bounds.bottom + cropTop),
-                        Rect(newRect.left + left, newRect.top + top,
-                            newRect.right + left, newRect.bottom + top)
-                    )
+            // Find which existing overlays are near any new text and remove them
+            val nearbyIndices = mutableSetOf<Int>()
+            for (newRect in ocrResult.groupBounds) {
+                val newFullRect = Rect(newRect.left + left, newRect.top + top,
+                    newRect.right + left, newRect.bottom + top)
+                for ((idx, existing) in overlays.withIndex()) {
+                    val existingFullRect = Rect(
+                        existing.bounds.left + cropLeft, existing.bounds.top + cropTop,
+                        existing.bounds.right + cropLeft, existing.bounds.bottom + cropTop)
+                    if (areRectsNearby(existingFullRect, newFullRect)) {
+                        nearbyIndices.add(idx)
+                    }
                 }
             }
+            val surviving = if (nearbyIndices.isNotEmpty()) {
+                DetectionLog.log("D: Removing ${nearbyIndices.size}/${overlays.size} nearby overlays, merging new text")
+                overlays.filterIndexed { i, _ -> i !in nearbyIndices }
+            } else overlays
 
-            if (anyClose) {
-                lastOcrText = null
-                cachedOverlayBoxes = null
-                clearDetectionState()
-                PlayTranslateAccessibilityService.instance?.hideTranslationOverlay()
-                PlayTranslateAccessibilityService.instance?.screenshotManager?.requestCleanCapture()
-                return true
-            } else {
-                val newGroupTexts = ocrResult.groupTexts.filter { text ->
-                    text.any { c -> OcrManager.isSourceLangChar(c, service.sourceLang) }
+            // Translate new groups and merge with surviving overlays
+            val newGroupTexts = ocrResult.groupTexts.filter { text ->
+                text.any { c -> OcrManager.isSourceLangChar(c, service.sourceLang) }
+            }
+            if (newGroupTexts.isEmpty()) return false
+
+            val newGroupBounds = ocrResult.groupBounds.filterIndexed { i, _ ->
+                i < ocrResult.groupTexts.size &&
+                    ocrResult.groupTexts[i].any { c -> OcrManager.isSourceLangChar(c, service.sourceLang) }
+            }
+
+            val perGroup = service.translateGroupsSeparately(newGroupTexts)
+            val cRef = colorRef ?: return false
+
+            val newOverlayBoxes = if (newGroupBounds.size == perGroup.size) {
+                val colors = OverlayToolkit.sampleGroupColors(cRef, newGroupBounds, left, top, colorScale)
+                perGroup.indices.map { idx ->
+                    val (bg, tc) = colors.getOrElse(idx) { Pair(android.graphics.Color.argb(200,0,0,0), android.graphics.Color.WHITE) }
+                    TranslationOverlayView.TextBox(perGroup[idx].first, newGroupBounds[idx], bg, tc)
                 }
-                if (newGroupTexts.isEmpty()) return false
+            } else emptyList()
 
-                val newGroupBounds = ocrResult.groupBounds.filterIndexed { i, _ ->
-                    i < ocrResult.groupTexts.size &&
-                        ocrResult.groupTexts[i].any { c -> OcrManager.isSourceLangChar(c, service.sourceLang) }
-                }
-
-                val perGroup = service.translateGroupsSeparately(newGroupTexts)
-                val cRef = colorRef ?: return false
-
-                val newOverlayBoxes = if (newGroupBounds.size == perGroup.size) {
-                    val colors = OverlayToolkit.sampleGroupColors(cRef, newGroupBounds, left, top, colorScale)
-                    perGroup.indices.map { idx ->
-                        val (bg, tc) = colors.getOrElse(idx) { Pair(android.graphics.Color.argb(200,0,0,0), android.graphics.Color.WHITE) }
-                        TranslationOverlayView.TextBox(perGroup[idx].first, newGroupBounds[idx], bg, tc)
-                    }
-                } else emptyList()
-
-                if (newOverlayBoxes.isNotEmpty()) {
-                    val merged = overlays + newOverlayBoxes
-                    cachedOverlayBoxes = merged
-                    lastOcrText = (prevText ?: "") + newDedupKey
+            if (newOverlayBoxes.isNotEmpty() || nearbyIndices.isNotEmpty()) {
+                val merged = surviving + newOverlayBoxes
+                cachedOverlayBoxes = merged.ifEmpty { null }
+                lastOcrText = (prevText ?: "") + newDedupKey
+                if (merged.isNotEmpty()) {
                     service.showLiveOverlay(merged, cropLeft, cropTop, screenshotW, screenshotH)
-                    return true
+                } else {
+                    PlayTranslateAccessibilityService.instance?.hideTranslationOverlay()
                 }
+                // Reset detection for the new overlay layout
+                forceCheckC = true
+                detectionRefOverlay = null
+                detectionOverlayActive = null
+                return true
             }
             return false
         } catch (e: kotlinx.coroutines.CancellationException) {

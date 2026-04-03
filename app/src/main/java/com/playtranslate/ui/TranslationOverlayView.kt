@@ -130,6 +130,13 @@ class TranslationOverlayView(context: Context) : FrameLayout(context) {
         skeletonBars.clear()
         removeAllViews()
         if (boxes.isEmpty()) return
+        val rebuildStart = System.currentTimeMillis()
+        val textBoxCount = boxes.count { !it.isFurigana && it.translatedText.isNotEmpty() }
+        if (textBoxCount > 0) {
+            doOnLayout {
+                android.util.Log.d("DetectionLog", "LAYOUT COMPLETE: ${System.currentTimeMillis() - rebuildStart}ms after rebuildChildren ($textBoxCount text boxes)")
+            }
+        }
 
         val displayW = width.toFloat()
         val displayH = height.toFloat()
