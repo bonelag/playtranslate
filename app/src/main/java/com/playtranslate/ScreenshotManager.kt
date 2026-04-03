@@ -67,21 +67,27 @@ class ScreenshotManager(private val a11y: PlayTranslateAccessibilityService) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return null
         awaitScreenshotInterval()
 
+        val hideStart = System.currentTimeMillis()
         val state = a11y.prepareForCleanCapture()
         // Wait 2 vsync frames for the compositor to flush the overlay-free frame.
         waitVsync(2)
 
-        var bitmap = doTakeScreenshot(displayId)
+        var bitmap = doTakeScreenshot(displayId) {
+            a11y.restoreAfterCapture(state)
+            android.util.Log.d("DetectionLog", "OVERLAY HIDDEN for ${System.currentTimeMillis() - hideStart}ms (requestClean)")
+        }
 
         // Retry once on failure (e.g. transient OS error)
         if (bitmap == null) {
             DetectionLog.log("Clean capture failed, retrying...")
             awaitScreenshotInterval()
-            bitmap = doTakeScreenshot(displayId)
+            val retryState = a11y.prepareForCleanCapture()
+            waitVsync(2)
+            bitmap = doTakeScreenshot(displayId) {
+                a11y.restoreAfterCapture(retryState)
+            }
             if (bitmap == null) DetectionLog.log("Clean capture retry also failed")
         }
-
-        a11y.restoreAfterCapture(state)
         return bitmap
     }
 
@@ -152,10 +158,13 @@ class ScreenshotManager(private val a11y: PlayTranslateAccessibilityService) {
                 if (isClean) {
                     cleanRequested = false
                     DetectionLog.log("Loop: taking clean screenshot...")
+                    val hideStart = System.currentTimeMillis()
                     val state = a11y.prepareForCleanCapture()
                     waitVsync(2)
-                    val bitmap = doTakeScreenshot(displayId)
-                    a11y.restoreAfterCapture(state)
+                    val bitmap = doTakeScreenshot(displayId) {
+                        a11y.restoreAfterCapture(state)
+                        android.util.Log.d("DetectionLog", "OVERLAY HIDDEN for ${System.currentTimeMillis() - hideStart}ms (loop)")
+                    }
                     if (bitmap != null) {
                         DetectionLog.log("Loop: clean frame captured (${bitmap.width}x${bitmap.height})")
                         onCleanFrame(bitmap)
@@ -208,8 +217,12 @@ class ScreenshotManager(private val a11y: PlayTranslateAccessibilityService) {
     /**
      * Bridge `takeScreenshot` to a suspend function. Copies the
      * HardwareBuffer to a software ARGB_8888 bitmap on [bitmapExecutor].
+     *
+     * @param onCaptured Optional callback invoked on the main thread the instant
+     *   the screenshot buffer is captured, BEFORE the bitmap copy. Use this to
+     *   restore overlays as early as possible — the copy runs in the background.
      */
-    private suspend fun doTakeScreenshot(displayId: Int): Bitmap? {
+    private suspend fun doTakeScreenshot(displayId: Int, onCaptured: (() -> Unit)? = null): Bitmap? {
         lastCaptureTimeMs = System.currentTimeMillis()
         return withTimeoutOrNull(3000L) {
             suspendCancellableCoroutine { cont ->
@@ -218,6 +231,8 @@ class ScreenshotManager(private val a11y: PlayTranslateAccessibilityService) {
                 a11y.mainExecutor,
                 object : AccessibilityService.TakeScreenshotCallback {
                     override fun onSuccess(screenshot: AccessibilityService.ScreenshotResult) {
+                        // Restore overlays immediately — buffer is captured, copy can happen with overlay visible
+                        onCaptured?.invoke()
                         bitmapExecutor.execute {
                             val hwBitmap = Bitmap
                                 .wrapHardwareBuffer(screenshot.hardwareBuffer, screenshot.colorSpace)
@@ -231,6 +246,7 @@ class ScreenshotManager(private val a11y: PlayTranslateAccessibilityService) {
 
                     override fun onFailure(errorCode: Int) {
                         Log.w(TAG, "takeScreenshot failed on display $displayId, code=$errorCode")
+                        onCaptured?.invoke()
                         if (cont.isActive) cont.resume(null)
                     }
                 }
