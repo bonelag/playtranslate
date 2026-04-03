@@ -107,8 +107,8 @@ object OverlayToolkit {
                 count++
             }
         }
-        if (count == 0) return Color.argb(230, 0, 0, 0)
-        return Color.argb(230,
+        if (count == 0) return Color.argb(224, 0, 0, 0)
+        return Color.argb(224,
             (rSum / count).toInt(), (gSum / count).toInt(), (bSum / count).toInt())
     }
 
