@@ -8,6 +8,9 @@ import android.graphics.Paint
 import android.graphics.Rect
 import android.graphics.RectF
 import android.graphics.Typeface
+import android.graphics.Bitmap
+import android.graphics.Shader
+import android.graphics.drawable.BitmapDrawable
 import android.graphics.drawable.GradientDrawable
 import android.util.TypedValue
 import android.view.Gravity
@@ -17,6 +20,7 @@ import android.widget.FrameLayout
 import android.widget.TextView
 import androidx.core.view.doOnLayout
 import androidx.core.widget.TextViewCompat
+import com.playtranslate.R
 
 /**
  * Transparent overlay that positions auto-sizing TextViews inside bounding
@@ -215,6 +219,7 @@ class TranslationOverlayView(context: Context) : FrameLayout(context) {
                         gravity = Gravity.CENTER_VERTICAL
                         setPadding(textMargin, textMargin, textMargin, textMargin)
                         setBackgroundColor(box.bgColor)
+                        setTag(R.id.tag_bg_color, box.bgColor)
                         TextViewCompat.setAutoSizeTextTypeUniformWithConfiguration(
                             this, minTextSizeSp, maxTextSizeSp, 1, TypedValue.COMPLEX_UNIT_SP
                         )
@@ -267,6 +272,89 @@ class TranslationOverlayView(context: Context) : FrameLayout(context) {
     }
 
     private val skeletonBars = mutableListOf<View>()
+
+    /** Create a tiled background with 1px transparent pinholes at [PINHOLE_SPACING]-px staggered intervals. */
+    private fun createPinholeBackground(bgColor: Int): BitmapDrawable {
+        val spacing = PINHOLE_SPACING
+        val tileSize = spacing * 2
+        val tile = Bitmap.createBitmap(tileSize, tileSize, Bitmap.Config.ARGB_8888)
+        tile.eraseColor(bgColor)
+        for (y in 0 until tileSize step spacing) {
+            val xOffset = if ((y / spacing) % 2 == 0) 0 else spacing / 2
+            for (x in xOffset until tileSize step spacing) {
+                tile.setPixel(x, y, Color.TRANSPARENT)
+            }
+        }
+        return BitmapDrawable(context.resources, tile).apply {
+            tileModeX = Shader.TileMode.REPEAT
+            tileModeY = Shader.TileMode.REPEAT
+            setTargetDensity(context.resources.displayMetrics)
+            isFilterBitmap = false
+        }
+    }
+
+    /** Switch all text box backgrounds to pinhole pattern (for shadow mask capture). */
+    fun switchToPinhole() {
+        for (i in 0 until childCount) {
+            val child = getChildAt(i)
+            val bgColor = child.getTag(R.id.tag_bg_color) as? Int ?: continue
+            child.background = createPinholeBackground(bgColor)
+        }
+    }
+
+    /** Restore all text box backgrounds to solid (after capture). */
+    fun switchToSolid() {
+        for (i in 0 until childCount) {
+            val child = getChildAt(i)
+            val bgColor = child.getTag(R.id.tag_bg_color) as? Int ?: continue
+            child.setBackgroundColor(bgColor)
+        }
+    }
+
+    /**
+     * Generate a full-view shadow mask showing which pixels contain rendered text.
+     * Returns an ALPHA_8 bitmap the same size as this view. Non-zero pixels = text.
+     * Call after layout completes (doOnLayout).
+     */
+    fun generateShadowMask(): Bitmap? {
+        if (width <= 0 || height <= 0) return null
+        val mask = Bitmap.createBitmap(width, height, Bitmap.Config.ALPHA_8)
+        val canvas = Canvas(mask)
+
+        // Strip backgrounds so only text glyphs are drawn
+        val savedBackgrounds = mutableListOf<android.graphics.drawable.Drawable?>()
+        val savedColors = mutableListOf<android.content.res.ColorStateList?>()
+        for (i in 0 until childCount) {
+            val child = getChildAt(i)
+            savedBackgrounds += child.background
+            child.background = null
+            if (child is TextView) {
+                savedColors += child.textColors
+                child.setTextColor(Color.WHITE)
+            } else {
+                savedColors += null
+            }
+        }
+
+        // Draw the entire view — children render at their layout positions
+        draw(canvas)
+
+        // Restore
+        for (i in 0 until childCount) {
+            val child = getChildAt(i)
+            child.background = savedBackgrounds.getOrNull(i)
+            val colors = savedColors.getOrNull(i)
+            if (child is TextView && colors != null) {
+                child.setTextColor(colors)
+            }
+        }
+
+        return mask
+    }
+
+    companion object {
+        const val PINHOLE_SPACING = 2
+    }
 
     private fun startShimmer() {
         shimmerAnimator = ValueAnimator.ofFloat(0.8f, 0.3f).apply {

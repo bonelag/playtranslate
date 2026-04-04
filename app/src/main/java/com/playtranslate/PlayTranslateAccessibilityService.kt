@@ -75,7 +75,7 @@ class PlayTranslateAccessibilityService : AccessibilityService() {
     private var floatingMenuWm: WindowManager? = null
     private var debugOverlayView: OcrDebugOverlayView? = null
     private var debugOverlayWm: WindowManager? = null
-    private var translationOverlayView: TranslationOverlayView? = null
+    internal var translationOverlayView: TranslationOverlayView? = null
     private var translationOverlayWm: WindowManager? = null
     private var translationOverlayDisplayId: Int = -1
     private var touchSentinelView: View? = null
