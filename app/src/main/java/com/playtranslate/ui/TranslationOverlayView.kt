@@ -273,22 +273,25 @@ class TranslationOverlayView(context: Context) : FrameLayout(context) {
 
     private val skeletonBars = mutableListOf<View>()
 
-    /** Create a tiled background with 1px transparent pinholes at [PINHOLE_SPACING]-px staggered intervals. */
-    private fun createPinholeBackground(bgColor: Int): BitmapDrawable {
+    /**
+     * Build a full-size pinhole background bitmap manually, pixel by pixel.
+     * Bypasses BitmapShader/GPU tiling entirely — guarantees isPinholePosition
+     * matches the actual transparent pixels exactly.
+     */
+    private fun createPinholeBackground(width: Int, height: Int, bgColor: Int): BitmapDrawable {
         val spacing = PINHOLE_SPACING
-        val tileSize = spacing * 2
-        val tile = Bitmap.createBitmap(tileSize, tileSize, Bitmap.Config.ARGB_8888)
-        tile.eraseColor(bgColor)
-        for (y in 0 until tileSize step spacing) {
-            val xOffset = if ((y / spacing) % 2 == 0) 0 else spacing / 2
-            for (x in xOffset until tileSize step spacing) {
-                tile.setPixel(x, y, Color.TRANSPARENT)
+        val pixels = IntArray(width * height)
+        for (y in 0 until height) {
+            val rowGroup = (y / spacing) % 2
+            val xOffset = if (rowGroup == 0) 0 else spacing / 2
+            for (x in 0 until width) {
+                val isPinhole = (y % spacing == 0) && ((x - xOffset) % spacing == 0) && (x >= xOffset)
+                pixels[y * width + x] = if (isPinhole) Color.TRANSPARENT else bgColor
             }
         }
-        return BitmapDrawable(context.resources, tile).apply {
-            tileModeX = Shader.TileMode.REPEAT
-            tileModeY = Shader.TileMode.REPEAT
-            setTargetDensity(context.resources.displayMetrics)
+        val bitmap = Bitmap.createBitmap(pixels, width, height, Bitmap.Config.ARGB_8888)
+        bitmap.density = android.util.DisplayMetrics.DENSITY_DEVICE_STABLE
+        return BitmapDrawable(context.resources, bitmap).apply {
             isFilterBitmap = false
         }
     }
@@ -298,7 +301,9 @@ class TranslationOverlayView(context: Context) : FrameLayout(context) {
         for (i in 0 until childCount) {
             val child = getChildAt(i)
             val bgColor = child.getTag(R.id.tag_bg_color) as? Int ?: continue
-            child.background = createPinholeBackground(bgColor)
+            if (child.width > 0 && child.height > 0) {
+                child.background = createPinholeBackground(child.width, child.height, bgColor)
+            }
         }
     }
 
@@ -309,6 +314,23 @@ class TranslationOverlayView(context: Context) : FrameLayout(context) {
             val bgColor = child.getTag(R.id.tag_bg_color) as? Int ?: continue
             child.setBackgroundColor(bgColor)
         }
+    }
+
+    /**
+     * Get the actual screen rects of all text box children.
+     * Uses getLocationOnScreen for pixel-perfect positioning — no computed approximations.
+     * Call after layout completes (doOnLayout).
+     */
+    fun getChildScreenRects(): List<Rect> {
+        val rects = mutableListOf<Rect>()
+        val location = IntArray(2)
+        for (i in 0 until childCount) {
+            val child = getChildAt(i)
+            if (child.getTag(R.id.tag_bg_color) == null) continue
+            child.getLocationOnScreen(location)
+            rects += Rect(location[0], location[1], location[0] + child.width, location[1] + child.height)
+        }
+        return rects
     }
 
     /**

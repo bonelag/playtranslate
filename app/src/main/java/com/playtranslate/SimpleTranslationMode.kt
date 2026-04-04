@@ -104,21 +104,15 @@ class SimpleTranslationMode(private val service: CaptureService) : LiveMode {
         val hasOverlays = cachedBoxes != null
 
         // Pinhole overlays if present, otherwise screenshot is naturally clean
-        val pinholeStart = if (hasOverlays) System.currentTimeMillis() else 0L
         if (hasOverlays) {
             a11y.translationOverlayView?.switchToPinhole()
-            val switchTime = System.currentTimeMillis() - pinholeStart
-            waitVsync(2)
-            val vsyncTime = System.currentTimeMillis() - pinholeStart
-            DetectionLog.log("PINHOLE TIMING: switch=${switchTime}ms vsync=${vsyncTime}ms")
+            waitVsync(3)
         }
 
         // Capture — restore solid in the onCaptured callback (before bitmap copy)
         val raw = mgr.requestRaw(service.gameDisplayId) {
             if (hasOverlays) {
                 a11y.translationOverlayView?.switchToSolid()
-                val totalTime = System.currentTimeMillis() - pinholeStart
-                DetectionLog.log("PINHOLE TIMING: total=${totalTime}ms (pinholes visible)")
             }
         }
 
@@ -189,22 +183,13 @@ class SimpleTranslationMode(private val service: CaptureService) : LiveMode {
                 waitForOverlayLayout()
                 shadowMask?.recycle()
                 shadowMask = a11y.translationOverlayView?.generateShadowMask()
-                overlayScreenRects = buildOverlayScreenRects(boxes, left, top, sw, sh)
+                overlayScreenRects = a11y.translationOverlayView?.getChildScreenRects() ?: emptyList()
 
                 // Send to in-app panel
                 mgr.saveToCache(raw)
                 service.translateAndSendToPanel(ocrResult, mgr.lastCleanPath)
             } else {
                 // Had overlays — compare composite OCR against displayed text
-                DetectionLog.log("Composite OCR: ${ocrResult.groupTexts.size} groups")
-                for ((i, t) in ocrResult.groupTexts.withIndex()) {
-                    DetectionLog.log("  OCR[$i]: \"${t.take(50)}\"")
-                }
-                DetectionLog.log("Displayed: ${displayedGroupTexts.size} groups")
-                for ((i, t) in displayedGroupTexts.withIndex()) {
-                    DetectionLog.log("  DISP[$i]: \"${t.take(50)}\"")
-                }
-
                 val matchResult = matchOcrToDisplayed(ocrResult)
 
                 if (matchResult.removedIndices.isNotEmpty()) {
@@ -222,7 +207,7 @@ class SimpleTranslationMode(private val service: CaptureService) : LiveMode {
                         waitForOverlayLayout()
                         shadowMask?.recycle()
                         shadowMask = a11y.translationOverlayView?.generateShadowMask()
-                        overlayScreenRects = buildOverlayScreenRects(remaining, cropLeft, cropTop, screenshotW, screenshotH)
+                        overlayScreenRects = a11y.translationOverlayView?.getChildScreenRects() ?: emptyList()
                     } else {
                         a11y.hideTranslationOverlay()
                         cleanRefBitmap?.recycle()
@@ -244,7 +229,7 @@ class SimpleTranslationMode(private val service: CaptureService) : LiveMode {
                         waitForOverlayLayout()
                         shadowMask?.recycle()
                         shadowMask = a11y.translationOverlayView?.generateShadowMask()
-                        overlayScreenRects = buildOverlayScreenRects(merged, cropLeft, cropTop, screenshotW, screenshotH)
+                        overlayScreenRects = a11y.translationOverlayView?.getChildScreenRects() ?: emptyList()
                     }
                 }
             }
@@ -259,12 +244,8 @@ class SimpleTranslationMode(private val service: CaptureService) : LiveMode {
 
     private fun buildComposite(raw: Bitmap, cleanRef: Bitmap): Bitmap {
         val composite = raw.copy(raw.config ?: Bitmap.Config.ARGB_8888, true)
-        val rects = overlayScreenRects ?: run {
-            DetectionLog.log("buildComposite: no overlay rects, returning raw")
-            return composite
-        }
+        val rects = overlayScreenRects ?: return composite
         val mask = shadowMask
-        DetectionLog.log("buildComposite: ${rects.size} rects, mask=${mask?.width}x${mask?.height}")
 
         val spacing = TranslationOverlayView.PINHOLE_SPACING
         val w = composite.width
@@ -520,24 +501,6 @@ class SimpleTranslationMode(private val service: CaptureService) : LiveMode {
 
     // ── Utility ─────────────────────────────────────────────────────────
 
-    private fun buildOverlayScreenRects(
-        boxes: List<TranslationOverlayView.TextBox>,
-        left: Int, top: Int, sw: Int, sh: Int
-    ): List<Rect> {
-        val a11y = PlayTranslateAccessibilityService.instance ?: return emptyList()
-        val view = a11y.translationOverlayView ?: return emptyList()
-        val scaleX = view.width.toFloat() / sw
-        val scaleY = view.height.toFloat() / sh
-        val padding = (6f * view.context.resources.displayMetrics.density).toInt()
-
-        return boxes.map { box ->
-            val sl = ((box.bounds.left + left) * scaleX - padding).toInt().coerceAtLeast(0)
-            val st = ((box.bounds.top + top) * scaleY - padding).toInt().coerceAtLeast(0)
-            val sr = ((box.bounds.right + left) * scaleX + padding).toInt().coerceAtMost(view.width)
-            val sb = ((box.bounds.bottom + top) * scaleY + padding).toInt().coerceAtMost(view.height)
-            Rect(sl, st, sr, sb)
-        }
-    }
 
     private suspend fun waitForOverlayLayout() {
         // Wait 2 vsync frames for the overlay to be laid out and rendered
