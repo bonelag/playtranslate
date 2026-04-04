@@ -104,17 +104,22 @@ class SimpleTranslationMode(private val service: CaptureService) : LiveMode {
         val hasOverlays = cachedBoxes != null
 
         // Pinhole overlays if present, otherwise screenshot is naturally clean
+        val pinholeStart = if (hasOverlays) System.currentTimeMillis() else 0L
         if (hasOverlays) {
             a11y.translationOverlayView?.switchToPinhole()
+            val switchTime = System.currentTimeMillis() - pinholeStart
             waitVsync(2)
+            val vsyncTime = System.currentTimeMillis() - pinholeStart
+            DetectionLog.log("PINHOLE TIMING: switch=${switchTime}ms vsync=${vsyncTime}ms")
         }
 
-        // Capture
-        val raw = mgr.requestRaw(service.gameDisplayId)
-
-        // Restore solid backgrounds immediately
-        if (hasOverlays) {
-            a11y.translationOverlayView?.switchToSolid()
+        // Capture — restore solid in the onCaptured callback (before bitmap copy)
+        val raw = mgr.requestRaw(service.gameDisplayId) {
+            if (hasOverlays) {
+                a11y.translationOverlayView?.switchToSolid()
+                val totalTime = System.currentTimeMillis() - pinholeStart
+                DetectionLog.log("PINHOLE TIMING: total=${totalTime}ms (pinholes visible)")
+            }
         }
 
         if (raw == null) {

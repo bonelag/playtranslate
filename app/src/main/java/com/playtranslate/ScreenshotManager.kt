@@ -98,10 +98,10 @@ class ScreenshotManager(private val a11y: PlayTranslateAccessibilityService) {
      * Suspends until the rate limit clears. No overlay management.
      * The caller owns the returned [Bitmap] and must recycle it.
      */
-    suspend fun requestRaw(displayId: Int): Bitmap? {
+    suspend fun requestRaw(displayId: Int, onCaptured: (() -> Unit)? = null): Bitmap? {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return null
         awaitScreenshotInterval()
-        return doTakeScreenshot(displayId) ?: run {
+        return doTakeScreenshot(displayId, onCaptured) ?: run {
             DetectionLog.log("Raw capture failed, retrying...")
             awaitScreenshotInterval()
             val retry = doTakeScreenshot(displayId)
