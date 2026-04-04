@@ -139,6 +139,12 @@ class SimpleTranslationMode(private val service: CaptureService) : LiveMode {
                 buildComposite(raw, ref)
             } else null
 
+            // Update clean ref: raw frame has fresh game content in non-overlay areas.
+            // Patch overlay areas from old ref into a mutable copy of raw → new clean ref.
+            if (hasOverlays && ref != null) {
+                updateCleanRef(raw, ref)
+            }
+
             val pipeline = service.runOcr(imageForOcr ?: raw)
             imageForOcr?.recycle()
 
@@ -173,9 +179,9 @@ class SimpleTranslationMode(private val service: CaptureService) : LiveMode {
                 cropLeft = left; cropTop = top; screenshotW = sw; screenshotH = sh
                 displayedGroupTexts = ocrResult.groupTexts.toList()
 
-                // Store clean reference
+                // Store clean reference (mutable so we can update it from pinhole cycles)
                 cleanRefBitmap?.recycle()
-                cleanRefBitmap = raw.copy(raw.config ?: Bitmap.Config.ARGB_8888, false)
+                cleanRefBitmap = raw.copy(raw.config ?: Bitmap.Config.ARGB_8888, true)
 
                 service.showLiveOverlay(boxes, left, top, sw, sh)
 
@@ -304,6 +310,35 @@ class SimpleTranslationMode(private val service: CaptureService) : LiveMode {
         }
 
         return composite
+    }
+
+    /**
+     * Update clean ref from the raw frame. Makes a mutable copy of raw, then
+     * patches overlay areas from the old ref (since those areas have pinhole
+     * artifacts in raw). Non-overlay areas get fresh game content from raw.
+     */
+    private fun updateCleanRef(raw: Bitmap, oldRef: Bitmap) {
+        val rects = overlayScreenRects ?: return
+        val newRef = raw.copy(raw.config ?: Bitmap.Config.ARGB_8888, true)
+        val w = newRef.width
+        val h = newRef.height
+
+        for (rect in rects) {
+            val left = rect.left.coerceIn(0, w)
+            val top = rect.top.coerceIn(0, h)
+            val right = rect.right.coerceIn(0, w)
+            val bottom = rect.bottom.coerceIn(0, h)
+            val regionW = right - left
+            val regionH = bottom - top
+            if (regionW <= 0 || regionH <= 0) continue
+
+            val refPixels = IntArray(regionW * regionH)
+            oldRef.getPixels(refPixels, 0, regionW, left, top, regionW, regionH)
+            newRef.setPixels(refPixels, 0, regionW, left, top, regionW, regionH)
+        }
+
+        cleanRefBitmap?.recycle()
+        cleanRefBitmap = newRef
     }
 
     private fun isPinholePosition(localX: Int, localY: Int, spacing: Int): Boolean {
