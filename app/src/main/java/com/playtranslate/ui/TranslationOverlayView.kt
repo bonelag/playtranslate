@@ -212,13 +212,17 @@ class TranslationOverlayView(context: Context) : FrameLayout(context) {
                 val child: View = if (box.translatedText.isEmpty()) {
                     buildSkeletonView(rectW, rectH, box.lineCount, box.bgColor, box.textColor)
                 } else {
-                    TextView(context).apply {
+                    OutlinedTextView(context).apply {
                         text = box.translatedText
                         setTextColor(box.textColor)
+                        outlineColor = box.bgColor or (0xFF shl 24)
+                        outlineWidth = 3f * dp
                         typeface = Typeface.DEFAULT_BOLD
                         gravity = Gravity.CENTER_VERTICAL
-                        setPadding(textMargin, textMargin, textMargin, textMargin)
-                        setBackgroundColor(box.bgColor)
+                        val strokePad = (outlineWidth / 2f + 0.5f).toInt()
+                        setPadding(maxOf(textMargin, strokePad), maxOf(textMargin, strokePad),
+                            maxOf(textMargin, strokePad), maxOf(textMargin, strokePad))
+                        background = createPinholeBackground(rectW, rectH, box.bgColor)
                         setTag(R.id.tag_bg_color, box.bgColor)
                         TextViewCompat.setAutoSizeTextTypeUniformWithConfiguration(
                             this, minTextSizeSp, maxTextSizeSp, 1, TypedValue.COMPLEX_UNIT_SP
@@ -375,7 +379,7 @@ class TranslationOverlayView(context: Context) : FrameLayout(context) {
     }
 
     companion object {
-        const val PINHOLE_SPACING = 2
+        const val PINHOLE_SPACING = 4
     }
 
     private fun startShimmer() {

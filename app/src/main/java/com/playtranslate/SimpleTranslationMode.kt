@@ -107,18 +107,8 @@ class SimpleTranslationMode(private val service: CaptureService) : LiveMode {
         val a11y = PlayTranslateAccessibilityService.instance ?: return
         val hasOverlays = cachedBoxes != null
 
-        // Pinhole overlays if present, otherwise screenshot is naturally clean
-        if (hasOverlays) {
-            a11y.translationOverlayView?.switchToPinhole()
-            waitVsync(5)
-        }
-
-        // Capture — restore solid in the onCaptured callback (before bitmap copy)
-        val raw = mgr.requestRaw(service.gameDisplayId) {
-            if (hasOverlays) {
-                a11y.translationOverlayView?.switchToSolid()
-            }
-        }
+        // Capture — pinholes are always on, no switching needed
+        val raw = mgr.requestRaw(service.gameDisplayId)
 
         if (raw == null) {
             delay(Prefs(service).captureIntervalMs)
@@ -419,26 +409,38 @@ class SimpleTranslationMode(private val service: CaptureService) : LiveMode {
             }
         }
 
-        // New OCR groups: not matched to any displayed overlay AND not overlapping existing OCR boxes
+        // Determine which displayed overlays are unmatched (candidates for removal)
+        val unmatchedDisplay = displayedGroupTexts.indices.filter { it !in matchedDisplayIndices }.toSet()
+
+        // Get the bounds of unmatched displayed overlays (for filtering splatter artifacts)
+        val removedOverlayBounds = unmatchedDisplay.mapNotNull { idx ->
+            boxes.getOrNull(idx)?.bounds
+        }
+
+        // New OCR groups: not matched to any displayed overlay,
+        // not overlapping matched OCR boxes, and not overlapping removed overlay bounds
+        // (the latter filters out splatter artifacts from the composite)
         val newGroups = mutableListOf<Pair<String, Rect>>()
         for ((ocrIdx, ocrText) in ocrTexts.withIndex()) {
             if (ocrIdx in matchedOcrIndices) continue
             if (ocrIdx >= ocrBounds.size) continue
 
             val newBounds = ocrBounds[ocrIdx]
-            val overlapsExisting = matchedOcrIndices.any { matchedIdx ->
+            val overlapsMatched = matchedOcrIndices.any { matchedIdx ->
                 matchedIdx < ocrBounds.size && Rect.intersects(newBounds, ocrBounds[matchedIdx])
             }
-            if (!overlapsExisting) {
+            val overlapsSplatter = removedOverlayBounds.any { removedBounds ->
+                Rect.intersects(newBounds, removedBounds)
+            }
+            if (!overlapsMatched && !overlapsSplatter) {
                 newGroups.add(ocrText to newBounds)
             }
         }
 
-        // Displayed overlays with no match → only flag as removed if there are also
-        // new unmatched groups (real text change). If OCR just missed some groups
-        // (all OCR results match existing texts), don't remove anything.
-        val unmatchedDisplay = displayedGroupTexts.indices.filter { it !in matchedDisplayIndices }.toSet()
-        val removedIndices = if (newGroups.isNotEmpty()) {
+        // Displayed overlays with no match → flag as removed if:
+        // - there are new groups (genuine new text appeared), OR
+        // - no displayed texts matched at all (everything changed)
+        val removedIndices = if (newGroups.isNotEmpty() || matchedDisplayIndices.isEmpty()) {
             unmatchedDisplay
         } else {
             emptySet()
