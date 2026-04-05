@@ -53,8 +53,9 @@ class SimpleTranslationMode(private val service: CaptureService) : LiveMode {
     private var displayedGroupTexts: List<String> = emptyList()
 
     override fun start() {
-        PlayTranslateAccessibilityService.instance
-            ?.startInputMonitoring(service.gameDisplayId) { onButtonDown() }
+        // TODO: temporarily disabled for change detection testing
+        // PlayTranslateAccessibilityService.instance
+        //     ?.startInputMonitoring(service.gameDisplayId) { onButtonDown() }
 
         mainJob = scope.launch {
             while (isActive) {
@@ -146,6 +147,12 @@ class SimpleTranslationMode(private val service: CaptureService) : LiveMode {
                 val f = java.io.File("/sdcard/Download/ocr_raw.png")
                 java.io.FileOutputStream(f).use { raw.compress(Bitmap.CompressFormat.PNG, 100, it) }
             } catch (_: Exception) {}
+            cleanRefBitmap?.let { cr ->
+                try {
+                    val f = java.io.File("/sdcard/Download/ocr_cleanref.png")
+                    java.io.FileOutputStream(f).use { cr.compress(Bitmap.CompressFormat.PNG, 100, it) }
+                } catch (_: Exception) {}
+            }
             val ocrImage = imageForOcr ?: raw
             try {
                 val f = java.io.File("/sdcard/Download/ocr_input.png")
@@ -222,8 +229,6 @@ class SimpleTranslationMode(private val service: CaptureService) : LiveMode {
                         overlayScreenRects = a11y.translationOverlayView?.getChildScreenRects() ?: emptyList()
                     } else {
                         a11y.hideTranslationOverlay()
-                        cleanRefBitmap?.recycle()
-                        cleanRefBitmap = null
                         shadowMask?.recycle()
                         shadowMask = null
                     }
@@ -318,8 +323,8 @@ class SimpleTranslationMode(private val service: CaptureService) : LiveMode {
                     val dg = kotlin.math.abs(Color.green(rawPx) - Color.green(refPx))
                     val db = kotlin.math.abs(Color.blue(rawPx) - Color.blue(refPx))
                     if (dr > SPLATTER_THRESHOLD || dg > SPLATTER_THRESHOLD || db > SPLATTER_THRESHOLD) {
-                        for (sy in -1..1) {
-                            for (sx in -1..1) {
+                        for (sy in -2..2) {
+                            for (sx in -2..2) {
                                 val tx = px + sx
                                 val ty = py + sy
                                 if (tx in 0 until regionW && ty in 0 until regionH) {
@@ -390,17 +395,27 @@ class SimpleTranslationMode(private val service: CaptureService) : LiveMode {
         val matchedDisplayIndices = mutableSetOf<Int>()
         val matchedOcrIndices = mutableSetOf<Int>()
 
-        // For each displayed source text, find a matching OCR text by content.
-        // Use lenient matching — pinholes cause minor OCR noise (dropped characters,
-        // punctuation changes). Only flag as changed when >20% of characters differ.
+        // For each displayed source text, find a matching OCR text by content AND position.
+        // Text must match within 20% char tolerance AND bounds must be in roughly the same
+        // location — prevents matching a speaker name label against an NPC floating label
+        // with the same text at a different position.
+        val boxes = cachedBoxes ?: emptyList()
         for ((displayIdx, displayText) in displayedGroupTexts.withIndex()) {
+            val displayBounds = boxes.getOrNull(displayIdx)?.bounds
             for ((ocrIdx, ocrText) in ocrTexts.withIndex()) {
                 if (ocrIdx in matchedOcrIndices) continue
-                if (isPinholeMatch(displayText, ocrText)) {
-                    matchedDisplayIndices.add(displayIdx)
-                    matchedOcrIndices.add(ocrIdx)
-                    break
+                if (!isPinholeMatch(displayText, ocrText)) continue
+                // Text matches — check spatial proximity
+                val ocrBound = ocrBounds.getOrNull(ocrIdx)
+                if (displayBounds != null && ocrBound != null) {
+                    val tolerance = maxOf(displayBounds.height(), ocrBound.height(), 50)
+                    val dx = kotlin.math.abs(displayBounds.centerX() - ocrBound.centerX())
+                    val dy = kotlin.math.abs(displayBounds.centerY() - ocrBound.centerY())
+                    if (dx > tolerance || dy > tolerance) continue // same text, different location
                 }
+                matchedDisplayIndices.add(displayIdx)
+                matchedOcrIndices.add(ocrIdx)
+                break
             }
         }
 
@@ -422,10 +437,21 @@ class SimpleTranslationMode(private val service: CaptureService) : LiveMode {
         // Displayed overlays with no match → only flag as removed if there are also
         // new unmatched groups (real text change). If OCR just missed some groups
         // (all OCR results match existing texts), don't remove anything.
+        val unmatchedDisplay = displayedGroupTexts.indices.filter { it !in matchedDisplayIndices }.toSet()
         val removedIndices = if (newGroups.isNotEmpty()) {
-            displayedGroupTexts.indices.filter { it !in matchedDisplayIndices }.toSet()
+            unmatchedDisplay
         } else {
             emptySet()
+        }
+
+        DetectionLog.log("MATCH: displayed=${displayedGroupTexts.size} ocrGroups=${ocrTexts.size} matched=${matchedDisplayIndices.size} unmatched=${unmatchedDisplay.size} newGroups=${newGroups.size} removed=${removedIndices.size}")
+        for ((i, t) in displayedGroupTexts.withIndex()) {
+            val matched = i in matchedDisplayIndices
+            DetectionLog.log("  DISP[$i] ${if (matched) "✓" else "✗"}: \"${t.take(40)}\"")
+        }
+        for ((i, t) in ocrTexts.withIndex()) {
+            val matched = i in matchedOcrIndices
+            DetectionLog.log("  OCR[$i] ${if (matched) "✓" else "✗"}: \"${t.take(40)}\"")
         }
 
         return MatchResult(removedIndices, newGroups)

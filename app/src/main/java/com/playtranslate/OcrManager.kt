@@ -220,6 +220,10 @@ class OcrManager private constructor() {
         }
 
         val fullText = fullTextBuilder.toString().trim()
+        android.util.Log.d("DetectionLog", "OCR raw: ${groupTexts.size} groups")
+        for ((i, gt) in groupTexts.withIndex()) {
+            android.util.Log.d("DetectionLog", "  group[$i]: \"${gt.take(50)}\"")
+        }
         if (fullText.isBlank()) return null
 
         // Compute group bounding boxes (union of lines per group) in original bitmap coords.
