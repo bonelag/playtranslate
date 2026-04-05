@@ -46,6 +46,9 @@ class SimpleTranslationMode(private val service: CaptureService) : LiveMode {
     // Translation cache: source text → translated text
     private val translationCache = mutableMapOf<String, String>()
 
+    /** Per-channel delta threshold for morphological splatter. */
+    private val SPLATTER_THRESHOLD = 80
+
     // OCR text per displayed group for change detection
     private var displayedGroupTexts: List<String> = emptyList()
 
@@ -282,6 +285,7 @@ class SimpleTranslationMode(private val service: CaptureService) : LiveMode {
             val refPixels = IntArray(regionW * regionH)
             cleanRef.getPixels(refPixels, 0, regionW, left, top, regionW, regionH)
 
+            // First pass: replace non-pinhole and text-covered pinhole pixels with clean ref
             for (py in 0 until regionH) {
                 for (px in 0 until regionW) {
                     val screenX = left + px
@@ -292,6 +296,37 @@ class SimpleTranslationMode(private val service: CaptureService) : LiveMode {
 
                     if (!isPinhole || isText) {
                         compositePixels[py * regionW + px] = refPixels[py * regionW + px]
+                    }
+                }
+            }
+
+            // Second pass: splatter — if a background pinhole pixel differs significantly
+            // from the clean ref, draw a 4x4 block of the new color to structurally
+            // damage old text for OCR detection.
+            for (py in 0 until regionH) {
+                for (px in 0 until regionW) {
+                    if (!isPinholePosition(px, py, spacing)) continue
+                    val screenX = left + px
+                    val screenY = top + py
+                    val isText = maskBytes != null && screenX < maskW && screenY < (mask?.height ?: 0)
+                        && maskBytes[screenY * maskW + screenX].toInt() != 0
+                    if (isText) continue
+
+                    val rawPx = compositePixels[py * regionW + px]
+                    val refPx = refPixels[py * regionW + px]
+                    val dr = kotlin.math.abs(Color.red(rawPx) - Color.red(refPx))
+                    val dg = kotlin.math.abs(Color.green(rawPx) - Color.green(refPx))
+                    val db = kotlin.math.abs(Color.blue(rawPx) - Color.blue(refPx))
+                    if (dr > SPLATTER_THRESHOLD || dg > SPLATTER_THRESHOLD || db > SPLATTER_THRESHOLD) {
+                        for (sy in -1..1) {
+                            for (sx in -1..1) {
+                                val tx = px + sx
+                                val ty = py + sy
+                                if (tx in 0 until regionW && ty in 0 until regionH) {
+                                    compositePixels[ty * regionW + tx] = rawPx
+                                }
+                            }
+                        }
                     }
                 }
             }
