@@ -121,13 +121,9 @@ class SimpleTranslationMode(private val service: CaptureService) : LiveMode {
                 service.flashRegionIndicator()
             }
 
-            // 2. Update clean ref: copy non-overlay pixels from raw
-            val ref = cleanRefBitmap
-            if (!hasOverlays() || ref == null) {
-                cleanRefBitmap?.recycle()
-                cleanRefBitmap = raw.copy(raw.config ?: Bitmap.Config.ARGB_8888, true)
-            } else {
-                updateCleanRef(raw, ref)
+            // 2. Update clean ref: patch non-overlay pixels from raw
+            if (hasOverlays()) {
+                cleanRefBitmap?.let { updateCleanRef(raw, it) }
             }
 
             // 3. Prepare OCR image: fill overlay regions with bgColor
