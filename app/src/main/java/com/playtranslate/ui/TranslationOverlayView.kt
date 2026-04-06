@@ -46,7 +46,9 @@ class TranslationOverlayView(context: Context) : FrameLayout(context) {
         /** Number of OCR lines in this group (for skeleton placeholders). */
         val lineCount: Int = 1,
         /** True for furigana readings (smaller text, pill background). */
-        val isFurigana: Boolean = false
+        val isFurigana: Boolean = false,
+        /** Marked when pinhole detection finds a minor change under this overlay. */
+        val dirty: Boolean = true
     )
 
     private val dp = context.resources.displayMetrics.density
@@ -121,7 +123,6 @@ class TranslationOverlayView(context: Context) : FrameLayout(context) {
         updateScales()
         pinholeMaskBitmap?.recycle()
         pinholeMaskBitmap = if (w > 0 && h > 0) createPinholeMask(w, h) else null
-        android.util.Log.d("DetectionLog", "onSizeChanged: ${w}x${h} mask=${pinholeMaskBitmap != null} maskSize=${pinholeMaskBitmap?.width}x${pinholeMaskBitmap?.height}")
         post { rebuildChildren() }
     }
 
@@ -133,21 +134,11 @@ class TranslationOverlayView(context: Context) : FrameLayout(context) {
         pinholeMaskBitmap = null
     }
 
-    private var dispatchDrawLogCount = 0
-
     override fun dispatchDraw(canvas: Canvas) {
         val mask = pinholeMaskBitmap
         if (!pinholeEnabled || mask == null) {
-            if (dispatchDrawLogCount < 5) {
-                android.util.Log.d("DetectionLog", "dispatchDraw: SKIP pinholeEnabled=$pinholeEnabled mask=${mask != null} children=$childCount")
-                dispatchDrawLogCount++
-            }
             super.dispatchDraw(canvas)
             return
-        }
-        if (dispatchDrawLogCount < 5) {
-            android.util.Log.d("DetectionLog", "dispatchDraw: PINHOLE mask=${mask.width}x${mask.height} view=${width}x${height} children=$childCount canvas=${canvas.width}x${canvas.height} hwAccel=${canvas.isHardwareAccelerated}")
-            dispatchDrawLogCount++
         }
         val layer = canvas.saveLayer(0f, 0f, width.toFloat(), height.toFloat(), null)
         super.dispatchDraw(canvas)
@@ -264,6 +255,7 @@ class TranslationOverlayView(context: Context) : FrameLayout(context) {
                         // Without pinholes, use native alpha (~224 = 88% opaque).
                         setBackgroundColor(if (pinholeEnabled) box.bgColor or 0xFF000000.toInt() else box.bgColor)
                         setTag(R.id.tag_bg_color, box.bgColor)
+                        setTag(R.id.tag_dirty, box.dirty)
                         TextViewCompat.setAutoSizeTextTypeUniformWithConfiguration(
                             this, minTextSizeSp, maxTextSizeSp, 1, TypedValue.COMPLEX_UNIT_SP
                         )
@@ -353,6 +345,69 @@ class TranslationOverlayView(context: Context) : FrameLayout(context) {
             rects += Rect(location[0], location[1], location[0] + child.width, location[1] + child.height)
         }
         return rects
+    }
+
+    // ── Dirty overlay management ──────────────────────────────────────
+
+    /** Mark a text-box child as dirty by its index among tagged children. */
+    fun markChildDirty(index: Int) {
+        var taggedIdx = 0
+        for (i in 0 until childCount) {
+            val child = getChildAt(i)
+            if (child.getTag(R.id.tag_bg_color) == null) continue
+            if (taggedIdx == index) {
+                child.setTag(R.id.tag_dirty, true)
+                return
+            }
+            taggedIdx++
+        }
+    }
+
+    /** Hide dirty children (INVISIBLE). Returns true if any were hidden. */
+    fun hideDirtyChildren(): Boolean {
+        var anyHidden = false
+        for (i in 0 until childCount) {
+            val child = getChildAt(i)
+            if (child.getTag(R.id.tag_dirty) == true) {
+                child.visibility = View.INVISIBLE
+                anyHidden = true
+            }
+        }
+        return anyHidden
+    }
+
+    /** Restore dirty children to VISIBLE. */
+    fun restoreDirtyChildren() {
+        for (i in 0 until childCount) {
+            val child = getChildAt(i)
+            if (child.getTag(R.id.tag_dirty) == true) {
+                child.visibility = View.VISIBLE
+            }
+        }
+    }
+
+    /** Remove dirty children from the view and boxes list. Returns remaining boxes. */
+    fun removeDirtyChildren(): List<TextBox> {
+        val dirtyViewIndices = mutableListOf<Int>()
+        val dirtyTaggedIndices = mutableSetOf<Int>()
+        var taggedIdx = 0
+        for (i in 0 until childCount) {
+            val child = getChildAt(i)
+            if (child.getTag(R.id.tag_bg_color) == null) continue
+            if (child.getTag(R.id.tag_dirty) == true) {
+                dirtyViewIndices.add(i)
+                dirtyTaggedIndices.add(taggedIdx)
+            }
+            taggedIdx++
+        }
+        if (dirtyViewIndices.isEmpty()) return boxes
+
+        // Remove views in reverse order to preserve indices
+        for (i in dirtyViewIndices.reversed()) {
+            removeViewAt(i)
+        }
+        boxes = boxes.filterIndexed { idx, _ -> idx !in dirtyTaggedIndices }
+        return boxes
     }
 
     /**
