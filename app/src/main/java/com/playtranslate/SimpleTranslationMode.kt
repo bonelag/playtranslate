@@ -392,17 +392,37 @@ class SimpleTranslationMode(private val service: CaptureService) : LiveMode {
     }
 
     /**
-     * Update clean ref from the raw frame. Makes a mutable copy of raw, then
-     * patches overlay areas from the old ref (since those areas have pinhole
-     * artifacts in raw). Non-overlay areas get fresh game content from raw.
+     * Update clean ref in-place: copy non-overlay pixels from raw into the
+     * existing cleanRef. Overlay areas are preserved (they contain clean game
+     * content from before overlays were shown, not pinhole-contaminated pixels).
      */
-    private fun updateCleanRef(raw: Bitmap, oldRef: Bitmap) {
+    private fun updateCleanRef(raw: Bitmap, ref: Bitmap) {
         val rects = overlayScreenRects ?: return
-        val newRef = raw.copy(raw.config ?: Bitmap.Config.ARGB_8888, true)
-        val w = newRef.width
-        val h = newRef.height
+        val w = ref.width
+        val h = ref.height
 
-        for (rect in rects) {
+        // Save overlay region pixels from ref (clean game content)
+        val savedRegions = rects.map { rect ->
+            val left = rect.left.coerceIn(0, w)
+            val top = rect.top.coerceIn(0, h)
+            val right = rect.right.coerceIn(0, w)
+            val bottom = rect.bottom.coerceIn(0, h)
+            val regionW = right - left
+            val regionH = bottom - top
+            if (regionW <= 0 || regionH <= 0) return@map null
+            val pixels = IntArray(regionW * regionH)
+            ref.getPixels(pixels, 0, regionW, left, top, regionW, regionH)
+            pixels
+        }
+
+        // Overwrite entire ref with raw (fresh non-overlay game content)
+        val allPixels = IntArray(w * h)
+        raw.getPixels(allPixels, 0, w, 0, 0, w, h)
+        ref.setPixels(allPixels, 0, w, 0, 0, w, h)
+
+        // Restore overlay regions from saved pixels
+        for ((i, rect) in rects.withIndex()) {
+            val pixels = savedRegions[i] ?: continue
             val left = rect.left.coerceIn(0, w)
             val top = rect.top.coerceIn(0, h)
             val right = rect.right.coerceIn(0, w)
@@ -410,14 +430,8 @@ class SimpleTranslationMode(private val service: CaptureService) : LiveMode {
             val regionW = right - left
             val regionH = bottom - top
             if (regionW <= 0 || regionH <= 0) continue
-
-            val refPixels = IntArray(regionW * regionH)
-            oldRef.getPixels(refPixels, 0, regionW, left, top, regionW, regionH)
-            newRef.setPixels(refPixels, 0, regionW, left, top, regionW, regionH)
+            ref.setPixels(pixels, 0, regionW, left, top, regionW, regionH)
         }
-
-        cleanRefBitmap?.recycle()
-        cleanRefBitmap = newRef
     }
 
     private fun isPinholePosition(x: Int, y: Int, spacing: Int): Boolean {
