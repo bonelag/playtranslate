@@ -121,6 +121,7 @@ class TranslationOverlayView(context: Context) : FrameLayout(context) {
         updateScales()
         pinholeMaskBitmap?.recycle()
         pinholeMaskBitmap = if (w > 0 && h > 0) createPinholeMask(w, h) else null
+        android.util.Log.d("DetectionLog", "onSizeChanged: ${w}x${h} mask=${pinholeMaskBitmap != null} maskSize=${pinholeMaskBitmap?.width}x${pinholeMaskBitmap?.height}")
         post { rebuildChildren() }
     }
 
@@ -132,11 +133,21 @@ class TranslationOverlayView(context: Context) : FrameLayout(context) {
         pinholeMaskBitmap = null
     }
 
+    private var dispatchDrawLogCount = 0
+
     override fun dispatchDraw(canvas: Canvas) {
         val mask = pinholeMaskBitmap
         if (!pinholeEnabled || mask == null) {
+            if (dispatchDrawLogCount < 5) {
+                android.util.Log.d("DetectionLog", "dispatchDraw: SKIP pinholeEnabled=$pinholeEnabled mask=${mask != null} children=$childCount")
+                dispatchDrawLogCount++
+            }
             super.dispatchDraw(canvas)
             return
+        }
+        if (dispatchDrawLogCount < 5) {
+            android.util.Log.d("DetectionLog", "dispatchDraw: PINHOLE mask=${mask.width}x${mask.height} view=${width}x${height} children=$childCount canvas=${canvas.width}x${canvas.height} hwAccel=${canvas.isHardwareAccelerated}")
+            dispatchDrawLogCount++
         }
         val layer = canvas.saveLayer(0f, 0f, width.toFloat(), height.toFloat(), null)
         super.dispatchDraw(canvas)
@@ -318,7 +329,7 @@ class TranslationOverlayView(context: Context) : FrameLayout(context) {
             if (y % spacing != 0) continue
             var x = xOffset
             while (x < w) {
-                pixels[y * w + x] = 0x80000000.toInt() // alpha=128, RGB=0
+                pixels[y * w + x] = 0xFF000000.toInt() // alpha=255, fully transparent pinhole
                 x += spacing
             }
         }

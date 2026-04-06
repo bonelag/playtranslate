@@ -229,6 +229,7 @@ class SimpleTranslationMode(private val service: CaptureService) : LiveMode {
 
                     if (remaining.isNotEmpty()) {
                         service.showLiveOverlay(remaining, cropLeft, cropTop, screenshotW, screenshotH)
+                        a11y.translationOverlayView?.pinholeEnabled = true
                         waitVsync(2)
                         overlayScreenRects = a11y.translationOverlayView?.getChildScreenRects() ?: emptyList()
                     } else {
@@ -245,6 +246,7 @@ class SimpleTranslationMode(private val service: CaptureService) : LiveMode {
                         val merged = (cachedBoxes ?: emptyList()) + newBoxes
                         cachedBoxes = merged
                         service.showLiveOverlay(merged, cropLeft, cropTop, screenshotW, screenshotH)
+                        a11y.translationOverlayView?.pinholeEnabled = true
                         waitVsync(2)
                         overlayScreenRects = a11y.translationOverlayView?.getChildScreenRects() ?: emptyList()
                     }
@@ -322,9 +324,10 @@ class SimpleTranslationMode(private val service: CaptureService) : LiveMode {
                 totalPinholes++
 
                 val refPx = refPixels[py * regionW + px]
-                val predR = ((Color.red(refPx) * 0.5f + bgR * 0.5f).toInt()).coerceIn(0, 255)
-                val predG = ((Color.green(refPx) * 0.5f + bgG * 0.5f).toInt()).coerceIn(0, 255)
-                val predB = ((Color.blue(refPx) * 0.5f + bgB * 0.5f).toInt()).coerceIn(0, 255)
+                // Pinholes are fully transparent — raw pixel = pure game content = clean ref
+                val predR = Color.red(refPx)
+                val predG = Color.green(refPx)
+                val predB = Color.blue(refPx)
 
                 val rawPx = rawPixels[py * regionW + px]
                 val dr = kotlin.math.abs(Color.red(rawPx) - predR)
