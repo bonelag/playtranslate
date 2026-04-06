@@ -93,11 +93,13 @@ class SimpleTranslationMode(private val service: CaptureService) : LiveMode {
 
     // ── Unified Cycle ───────────────────────────────────────────────────
 
+    private fun hasOverlays(): Boolean = cachedBoxes != null
+
     private suspend fun runCycle() {
         val mgr = PlayTranslateAccessibilityService.instance?.screenshotManager ?: return
         val a11y = PlayTranslateAccessibilityService.instance ?: return
-        val hasOverlays = cachedBoxes != null
         val prefs = Prefs(service)
+        DetectionLog.log("CYCLE: start hasOverlays=${hasOverlays()} cachedBoxes=${cachedBoxes?.size}")
 
         // 1. Capture raw screenshot (overlays visible with parent-level pinholes)
         val raw = mgr.requestRaw(service.gameDisplayId)
@@ -114,7 +116,7 @@ class SimpleTranslationMode(private val service: CaptureService) : LiveMode {
 
             // 2. Update clean ref: copy non-overlay pixels from raw
             val ref = cleanRefBitmap
-            if (!hasOverlays || ref == null) {
+            if (!hasOverlays() || ref == null) {
                 cleanRefBitmap?.recycle()
                 cleanRefBitmap = raw.copy(raw.config ?: Bitmap.Config.ARGB_8888, true)
             } else {
@@ -123,7 +125,7 @@ class SimpleTranslationMode(private val service: CaptureService) : LiveMode {
 
             // 3. Prepare OCR image: fill overlay regions with bgColor
             val ocrImage: Bitmap
-            if (hasOverlays) {
+            if (hasOverlays()) {
                 ocrImage = raw.copy(raw.config ?: Bitmap.Config.ARGB_8888, true)
                 fillOverlayRegions(ocrImage)
             } else {
@@ -134,24 +136,18 @@ class SimpleTranslationMode(private val service: CaptureService) : LiveMode {
             val pipeline = service.runOcr(ocrImage)
             if (ocrImage !== raw && !ocrImage.isRecycled) ocrImage.recycle()
 
-            if (pipeline == null) {
-                if (hasOverlays) {
-                    service.handleNoTextDetected()
-                    cachedBoxes = null
-                    cleanRefBitmap?.recycle()
-                    cleanRefBitmap = null
-                } else {
-                    service.handleNoTextDetected()
-                }
+            // No text on screen and no overlays → nothing to do
+            if (pipeline == null && !hasOverlays()) {
+                service.handleNoTextDetected()
                 delay(prefs.captureIntervalMs)
                 return
             }
 
-            val (ocrResult, _, left, top, sw, sh) = pipeline
             var anyRemoved = false
 
-            if (!hasOverlays) {
+            if (!hasOverlays()) {
                 // 5a. No overlays: translate everything, show overlays
+                val (ocrResult, _, left, top, sw, sh) = pipeline!!
                 val boxes = translateAndBuildBoxes(ocrResult, raw, left, top)
                 if (boxes.isEmpty()) {
                     delay(prefs.captureIntervalMs)
@@ -159,6 +155,7 @@ class SimpleTranslationMode(private val service: CaptureService) : LiveMode {
                 }
 
                 cachedBoxes = boxes
+                DetectionLog.log("CYCLE: set cachedBoxes=${boxes.size}")
                 cropLeft = left; cropTop = top; screenshotW = sw; screenshotH = sh
 
                 cleanRefBitmap?.recycle()
@@ -171,32 +168,42 @@ class SimpleTranslationMode(private val service: CaptureService) : LiveMode {
 
                 mgr.saveToCache(raw)
                 service.translateAndSendToPanel(ocrResult, mgr.lastCleanPath)
+                DetectionLog.log("CYCLE: end of !hasOverlays branch, cachedBoxes=${cachedBoxes?.size}")
             } else {
                 val boxes = cachedBoxes ?: emptyList()
                 val rects = overlayScreenRects ?: emptyList()
 
-                // 5b. Process OCR results: check spatial proximity to existing overlays
+                // 5b. Process OCR results (if any) for new/stale text detection
                 val staleOverlayIndices = mutableSetOf<Int>()
                 val farOcrGroups = mutableListOf<Pair<String, Rect>>()
 
-                for (ocrIdx in ocrResult.groupTexts.indices) {
-                    if (ocrIdx >= ocrResult.groupBounds.size) continue
-                    val ocrBound = ocrResult.groupBounds[ocrIdx]
-                    val ocrFullRect = Rect(
-                        ocrBound.left + left, ocrBound.top + top,
-                        ocrBound.right + left, ocrBound.bottom + top
-                    )
-                    var nearExisting = false
-                    for (boxIdx in boxes.indices) {
-                        if (boxIdx >= rects.size) continue
-                        if (areRectsNearby(rects[boxIdx], ocrFullRect)) {
-                            nearExisting = true
-                            staleOverlayIndices.add(boxIdx)
+                if (pipeline != null) {
+                    val (ocrResult, _, left, top, _, _) = pipeline
+                    DetectionLog.log("OCR found ${ocrResult.groupTexts.size} groups with ${boxes.size} overlays filled")
+                    for (ocrIdx in ocrResult.groupTexts.indices) {
+                        if (ocrIdx >= ocrResult.groupBounds.size) continue
+                        val ocrBound = ocrResult.groupBounds[ocrIdx]
+                        val ocrFullRect = Rect(
+                            ocrBound.left + left, ocrBound.top + top,
+                            ocrBound.right + left, ocrBound.bottom + top
+                        )
+                        DetectionLog.log("  OCR[$ocrIdx] \"${ocrResult.groupTexts[ocrIdx].take(40)}\" bounds=$ocrFullRect")
+                        var nearExisting = false
+                        for (boxIdx in boxes.indices) {
+                            if (boxIdx >= rects.size) continue
+                            if (areRectsNearby(rects[boxIdx], ocrFullRect)) {
+                                nearExisting = true
+                                staleOverlayIndices.add(boxIdx)
+                                DetectionLog.log("    NEAR overlay[$boxIdx] rect=${rects[boxIdx]} → marking stale")
+                            }
+                        }
+                        if (!nearExisting) {
+                            farOcrGroups.add(ocrResult.groupTexts[ocrIdx] to ocrBound)
+                            DetectionLog.log("    NOT near any overlay → new text")
                         }
                     }
-                    if (!nearExisting) {
-                        farOcrGroups.add(ocrResult.groupTexts[ocrIdx] to ocrBound)
-                    }
+                } else {
+                    DetectionLog.log("OCR returned null (fill covered all text) — skipping to pinhole detection")
                 }
 
                 // 6. Pinhole change detection for existing overlays
@@ -245,6 +252,7 @@ class SimpleTranslationMode(private val service: CaptureService) : LiveMode {
             }
 
             // 9. Timing
+            DetectionLog.log("CYCLE: before delay, cachedBoxes=${cachedBoxes?.size} anyRemoved=$anyRemoved")
             if (anyRemoved) {
                 delay(mgr.MIN_SCREENSHOT_INTERVAL_MS)
             } else {
@@ -325,12 +333,19 @@ class SimpleTranslationMode(private val service: CaptureService) : LiveMode {
 
                 if (dr > SPLATTER_THRESHOLD || dg > SPLATTER_THRESHOLD || db > SPLATTER_THRESHOLD) {
                     changedPinholes++
+                    // H1: log first 3 changed pinholes per overlay for diagnosis
+                    if (changedPinholes <= 3) {
+                        DetectionLog.log("  H1: changed pinhole@(${left+px},${top+py}) raw=(${Color.red(rawPx)},${Color.green(rawPx)},${Color.blue(rawPx)}) pred=($predR,$predG,$predB) ref=(${Color.red(refPx)},${Color.green(refPx)},${Color.blue(refPx)}) bg=($bgR,$bgG,$bgB) delta=($dr,$dg,$db)")
+                    }
                 }
             }
         }
 
         if (totalPinholes == 0) return false
-        return changedPinholes.toFloat() / totalPinholes >= PINHOLE_CHANGE_PCT
+        val pct = changedPinholes.toFloat() / totalPinholes
+        val triggered = pct >= PINHOLE_CHANGE_PCT
+        DetectionLog.log("H1: pinhole rect=$screenRect total=$totalPinholes changed=$changedPinholes (${(pct * 100).toInt()}%) threshold=${(PINHOLE_CHANGE_PCT * 100).toInt()}% → ${if (triggered) "REMOVE" else "keep"}")
+        return triggered
     }
 
     /**
