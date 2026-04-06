@@ -769,7 +769,7 @@ class CaptureService : Service() {
             uncached.map { it.value }.zip(translations).toMap()
         } else emptyMap()
 
-        return groupTexts.map { translationCache[it] ?: freshTranslations[it]!! }
+        return groupTexts.map { translationCache[it] ?: freshTranslations[it] ?: Pair("", null) }
     }
 
     private suspend fun translateGroups(groupTexts: List<String>): Pair<String, String?> {
