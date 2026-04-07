@@ -86,7 +86,7 @@ class SimpleTranslationMode(private val service: CaptureService) : LiveMode {
         cleanRefBitmap = null
         overlayBitmap?.recycle()
         overlayBitmap = null
-
+        translationCache.clear()
     }
 
     override fun getCachedState(): CachedOverlayState? {
