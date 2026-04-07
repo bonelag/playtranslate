@@ -48,7 +48,9 @@ class TranslationOverlayView(context: Context) : FrameLayout(context) {
         /** True for furigana readings (smaller text, pill background). */
         val isFurigana: Boolean = false,
         /** Marked when pinhole detection finds a minor change under this overlay. */
-        val dirty: Boolean = false
+        val dirty: Boolean = false,
+        /** Original OCR source text this overlay translates. Used for content-based matching. */
+        val sourceText: String = ""
     )
 
     private val dp = context.resources.displayMetrics.density

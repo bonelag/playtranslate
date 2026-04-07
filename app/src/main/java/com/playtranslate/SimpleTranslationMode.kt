@@ -181,8 +181,9 @@ class SimpleTranslationMode(private val service: CaptureService) : LiveMode {
             // detection fundamentally assumes 1:1 pixel correspondence.
             val rects = a11y.translationOverlayView?.getChildScreenRects() ?: emptyList()
 
-            // 7. Classify OCR results: near existing overlay (stale) or far (new text)
+            // 7. Classify OCR results: content match, stale, or far (new text)
             val staleOverlayIndices = mutableSetOf<Int>()
+            val contentMatchRemovals = mutableSetOf<Int>()
             data class FarGroup(val text: String, val bounds: Rect, val lineCount: Int)
             val farOcrGroups = mutableListOf<FarGroup>()
 
@@ -190,7 +191,30 @@ class SimpleTranslationMode(private val service: CaptureService) : LiveMode {
                 val (ocrResult, _, left, top, _, _) = pipeline
                 for (ocrIdx in ocrResult.groupTexts.indices) {
                     if (ocrIdx >= ocrResult.groupBounds.size) continue
+                    val ocrText = ocrResult.groupTexts[ocrIdx]
                     val ocrBound = ocrResult.groupBounds[ocrIdx]
+                    val ocrH = ocrBound.height()
+
+                    // 7a. Content match: same source text + similar size → position update
+                    var contentMatched = false
+                    for ((boxIdx, box) in boxes.withIndex()) {
+                        if (box.dirty) continue
+                        if (boxIdx in contentMatchRemovals) continue
+                        if (box.sourceText.isNotEmpty() && !OverlayToolkit.isSignificantChange(ocrText, box.sourceText)) {
+                            val boxH = box.bounds.height()
+                            val maxH = maxOf(ocrH, boxH)
+                            if (maxH > 0 && kotlin.math.abs(ocrH - boxH) < maxH * 0.5) {
+                                contentMatchRemovals.add(boxIdx)
+                                val lc = ocrResult.groupLineCounts.getOrElse(ocrIdx) { 1 }
+                                farOcrGroups.add(FarGroup(ocrText, ocrBound, lc))
+                                contentMatched = true
+                                break
+                            }
+                        }
+                    }
+                    if (contentMatched) continue
+
+                    // 7b. Proximity check: near existing overlay → stale
                     val ocrFullRect = Rect(
                         ocrBound.left + left, ocrBound.top + top,
                         ocrBound.right + left, ocrBound.bottom + top
@@ -199,6 +223,7 @@ class SimpleTranslationMode(private val service: CaptureService) : LiveMode {
                     for (boxIdx in boxes.indices) {
                         if (boxIdx >= rects.size) continue
                         if (boxes[boxIdx].dirty) continue
+                        if (boxIdx in contentMatchRemovals) continue
                         if (areRectsNearby(rects[boxIdx], ocrFullRect)) {
                             nearExisting = true
                             staleOverlayIndices.add(boxIdx)
@@ -206,7 +231,7 @@ class SimpleTranslationMode(private val service: CaptureService) : LiveMode {
                     }
                     if (!nearExisting) {
                         val lc = ocrResult.groupLineCounts.getOrElse(ocrIdx) { 1 }
-                        farOcrGroups.add(FarGroup(ocrResult.groupTexts[ocrIdx], ocrBound, lc))
+                        farOcrGroups.add(FarGroup(ocrText, ocrBound, lc))
                     }
                 }
             }
@@ -229,7 +254,7 @@ class SimpleTranslationMode(private val service: CaptureService) : LiveMode {
             }
 
             // 9. Resolve: compute final state from immutable snapshot in one pass
-            val allRemovals = staleOverlayIndices + pinholeRemovals
+            val allRemovals = staleOverlayIndices + pinholeRemovals + contentMatchRemovals
             val nextBoxes = boxes.mapIndexedNotNull { i, box ->
                 when {
                     i in allRemovals -> null
@@ -498,7 +523,8 @@ class SimpleTranslationMode(private val service: CaptureService) : LiveMode {
         }
         return bounds.mapIndexed { idx, rect ->
             val (bg, tc) = colors.getOrElse(idx) { Pair(Color.argb(224, 0, 0, 0), Color.WHITE) }
-            TranslationOverlayView.TextBox("", rect, bg, tc, lineCounts.getOrElse(idx) { 1 })
+            TranslationOverlayView.TextBox("", rect, bg, tc, lineCounts.getOrElse(idx) { 1 },
+                sourceText = texts.getOrElse(idx) { "" })
         }
     }
 
