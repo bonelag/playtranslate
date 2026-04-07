@@ -224,7 +224,7 @@ class SimpleTranslationMode(private val service: CaptureService) : LiveMode {
                         if (boxIdx >= rects.size) continue
                         if (boxes[boxIdx].dirty) continue
                         if (boxIdx in contentMatchRemovals) continue
-                        if (areRectsNearby(rects[boxIdx], ocrFullRect)) {
+                        if (OcrManager.wouldGroup(rects[boxIdx], ocrFullRect)) {
                             nearExisting = true
                             staleOverlayIndices.add(boxIdx)
                         }
@@ -264,7 +264,7 @@ class SimpleTranslationMode(private val service: CaptureService) : LiveMode {
                         if (i >= rects.size) continue
                         for (removeIdx in cascadedRemovals.toSet()) {
                             if (removeIdx >= rects.size) continue
-                            if (areRectsNearby(rects[removeIdx], rects[i])) {
+                            if (OcrManager.wouldGroup(rects[removeIdx], rects[i])) {
                                 cascadedRemovals.add(i)
                                 expanded = true
                                 break
@@ -392,15 +392,6 @@ class SimpleTranslationMode(private val service: CaptureService) : LiveMode {
             paint.color = box.bgColor or 0xFF000000.toInt()
             canvas.drawRect(l.toFloat(), t.toFloat(), r.toFloat(), b.toFloat(), paint)
         }
-    }
-
-    /** Check if two rects are spatially near each other. */
-    private fun areRectsNearby(a: Rect, b: Rect): Boolean {
-        val dx = maxOf(0, maxOf(a.left - b.right, b.left - a.right))
-        val dy = maxOf(0, maxOf(a.top - b.bottom, b.top - a.bottom))
-        val refHeight = maxOf(a.height(), b.height())
-        val threshold = maxOf((refHeight * 1.5f).toInt(), OverlayToolkit.FILL_PADDING + 15)
-        return dx < threshold && dy < threshold
     }
 
     /** Check pinhole pixels: KEEP (no change), DIRTY (minor), or REMOVE (major).

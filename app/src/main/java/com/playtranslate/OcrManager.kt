@@ -436,39 +436,14 @@ class OcrManager private constructor() {
 
             val lastGroup = groups.lastOrNull()
             if (lastGroup != null && lineH > 0) {
-                val prevLine = lastGroup.last()
-                val prevH = prevLine.boundingBox?.height() ?: 0
-                val prevBottom = prevLine.boundingBox?.bottom ?: 0
+                val prevBox = lastGroup.last().boundingBox
+                val groupLeft = lastGroup.mapNotNull { it.boundingBox?.left }.minOrNull() ?: 0
+                val groupRect = Rect(groupLeft, prevBox?.top ?: 0, prevBox?.right ?: 0, prevBox?.bottom ?: 0)
 
-                val gap = lineTop - prevBottom
-                val refH = maxOf(lineH, prevH)
-
-                val sizeMatch = prevH > 0 && run {
-                    val lo = minOf(lineH, prevH)
-                    val hi = maxOf(lineH, prevH)
-                    (hi - lo).toDouble() / lo <= 0.20
-                }
-                val closeEnough = refH > 0 && gap <= (refH * 1.4f).toInt()
-
-                // Horizontal alignment: left edges within 1.5× line height
-                val alignTolerance = (refH * 1.5f).toInt()
-                val groupLeft  = lastGroup.mapNotNull { it.boundingBox?.left }.minOrNull() ?: 0
-                val leftAligned  = kotlin.math.abs(lineBox.left - groupLeft) <= alignTolerance
-                val aligned = leftAligned
-
-                if (sizeMatch && closeEnough && aligned) {
-                    val prevText = lastGroup.joinToString("") { it.text }.take(20)
-                    android.util.Log.d("OCR-GROUP", "GROUPED: '${line.text.take(20)}' with '$prevText' — gap=$gap leftDiff=${kotlin.math.abs(lineBox.left - groupLeft)}")
+                if (wouldGroup(groupRect, lineBox)) {
                     lastGroup += line
                     continue
                 }
-                // TEMP: log why line wasn't grouped
-                val prevText = lastGroup.joinToString("") { it.text }.take(20)
-                val reasons = mutableListOf<String>()
-                if (!sizeMatch) reasons += "size(${lineH}vs${prevLine.boundingBox?.height()})"
-                if (!closeEnough) reasons += "gap(${gap}>${(refH*1.4f).toInt()})"
-                if (!aligned) reasons += "align(L${kotlin.math.abs(lineBox.left - groupLeft)}>$alignTolerance)"
-                android.util.Log.d("OCR-GROUP", "NOT grouped: '${line.text.take(20)}' after '$prevText' — ${reasons.joinToString(", ")}")
             }
 
             groups += mutableListOf(line)
@@ -612,6 +587,48 @@ class OcrManager private constructor() {
     companion object {
         /** Process-scoped singleton. The TextRecognizer lives for the app's lifetime. */
         val instance: OcrManager by lazy { OcrManager() }
+
+        /**
+         * Would two rects be grouped as the same text block?
+         * Three checks: intersection (fill leak), inline (same line),
+         * block (next line in paragraph with left or center alignment).
+         */
+        fun wouldGroup(a: Rect, b: Rect): Boolean {
+            val refH = maxOf(a.height(), b.height())
+            if (refH <= 0) return false
+
+            // 1. Intersection: rects physically overlap
+            if (Rect.intersects(a, b)) return true
+
+            // 2. Inline: horizontal continuation on the same line
+            val aCenterY = (a.top + a.bottom) / 2
+            val bCenterY = (b.top + b.bottom) / 2
+            val aContainsB = bCenterY in a.top..a.bottom
+            val bContainsA = aCenterY in b.top..b.bottom
+            if (aContainsB || bContainsA) {
+                val dx = if (a.right <= b.left) b.left - a.right
+                         else if (b.right <= a.left) a.left - b.right
+                         else 0
+                if (dx < (refH * 1.5f).toInt()) return true
+            }
+
+            // 3. Block: vertical continuation (next line in same paragraph)
+            val dy = if (a.bottom <= b.top) b.top - a.bottom
+                     else if (b.bottom <= a.top) a.top - b.bottom
+                     else 0
+            if (dy < (refH * 0.8f).toInt()) {
+                val alignTolerance = (refH * 0.5f).toInt()
+                val leftAligned = kotlin.math.abs(a.left - b.left) <= alignTolerance
+                val centerAligned = kotlin.math.abs(a.centerX() - b.centerX()) <= alignTolerance
+                if (leftAligned || centerAligned) {
+                    val lo = minOf(a.height(), b.height())
+                    val hi = maxOf(a.height(), b.height())
+                    if (lo <= 0 || (hi - lo).toDouble() / lo <= 0.30) return true
+                }
+            }
+
+            return false
+        }
 
         /**
          * Minimum pixel count on the shorter side before we skip upscaling.
