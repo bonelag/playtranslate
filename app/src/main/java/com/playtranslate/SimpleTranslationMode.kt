@@ -138,10 +138,7 @@ class SimpleTranslationMode(private val service: CaptureService) : LiveMode {
                 service.flashRegionIndicator()
             }
 
-            // 3. After dirty capture, clear dirty view
-            if (hasDirty) {
-                dirtyView?.setBoxes(emptyList(), cropLeft, cropTop, screenshotW, screenshotH)
-            }
+            // 3. Dirty view stays visible until after OCR results
 
             // 4. Update clean ref: patch non-overlay pixels from raw
             if (hasOverlays()) {
@@ -160,6 +157,10 @@ class SimpleTranslationMode(private val service: CaptureService) : LiveMode {
             // 6. OCR
             val pipeline = service.runOcr(ocrImage)
             if (ocrImage !== raw && !ocrImage.isRecycled) ocrImage.recycle()
+
+            // After OCR, clear dirty state — dirty overlays have been captured and evaluated
+            cachedBoxes = cachedBoxes?.filter { !it.dirty }?.ifEmpty { null }
+            dirtyView?.setBoxes(emptyList(), cropLeft, cropTop, screenshotW, screenshotH)
 
             // No text on screen and no overlays → nothing to do
             if (pipeline == null && !hasOverlays()) {
@@ -273,12 +274,8 @@ class SimpleTranslationMode(private val service: CaptureService) : LiveMode {
                     }
                     val anyUncached = partial.any { it.translatedText.isEmpty() }
 
-                    // Strip dirty boxes, replace with new detections
-                    val cleanBoxes = (cachedBoxes ?: emptyList()).filter { !it.dirty }
-                    val merged = cleanBoxes + partial
+                    val merged = (cachedBoxes ?: emptyList()) + partial
                     cachedBoxes = merged
-                    dirtyView?.setBoxes(emptyList(), cropLeft, cropTop, screenshotW, screenshotH)
-            
                     showOverlayAndCapture(a11y, merged, cropLeft, cropTop, screenshotW, screenshotH)
 
                     if (anyUncached) {
