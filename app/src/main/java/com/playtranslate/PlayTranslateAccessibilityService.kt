@@ -588,7 +588,7 @@ class PlayTranslateAccessibilityService : AccessibilityService() {
                 WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
                 WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
             PixelFormat.TRANSLUCENT
-        )
+        ).apply { windowAnimations = 0 }
         wm.addView(view, params)
         translationOverlayWm = wm
         translationOverlayView = view
@@ -597,6 +597,7 @@ class PlayTranslateAccessibilityService : AccessibilityService() {
         // Create persistent dirty overlay window (always present, empty when not dirty)
         val dirtyView = TranslationOverlayView(themedCtx).apply {
             pinholeEnabled = false
+            setLayerType(View.LAYER_TYPE_HARDWARE, null)
         }
         val dirtyParams = WindowManager.LayoutParams(
             WindowManager.LayoutParams.MATCH_PARENT,
@@ -606,7 +607,7 @@ class PlayTranslateAccessibilityService : AccessibilityService() {
                 WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
                 WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
             PixelFormat.TRANSLUCENT
-        )
+        ).apply { windowAnimations = 0 }
         wm.addView(dirtyView, dirtyParams)
         dirtyOverlayWm = wm
         dirtyOverlayView = dirtyView

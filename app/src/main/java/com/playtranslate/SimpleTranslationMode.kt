@@ -4,6 +4,9 @@ import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Rect
+import android.os.Build
+import android.view.Choreographer
+import android.view.View
 import com.playtranslate.ui.TranslationOverlayView
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -14,7 +17,6 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
-import android.view.Choreographer
 import kotlin.coroutines.resume
 
 /**
@@ -103,15 +105,20 @@ class SimpleTranslationMode(private val service: CaptureService) : LiveMode {
         val dirtyView = a11y.dirtyOverlayView
         val hasDirty = cachedBoxes?.any { it.dirty } == true
 
-        // 1. Hide dirty overlay window before capture (window-level, fast + reliable)
-        if (hasDirty) {
-            dirtyView?.visibility = android.view.View.INVISIBLE
-            waitVsync(5)
+        // 1. Hide dirty overlay window before capture (hardware layer alpha + frame commit sync)
+        if (hasDirty && dirtyView != null) {
+            dirtyView.alpha = 0f
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                awaitFrameCommit(dirtyView)
+                waitVsync(2)
+            } else {
+                waitVsync(4) // fallback: no frame commit callback, extra vsyncs to compensate
+            }
         }
 
         // 2. Capture — restore dirty window in callback (before bitmap copy)
         val raw = mgr.requestRaw(service.gameDisplayId) {
-            if (hasDirty) dirtyView?.visibility = android.view.View.VISIBLE
+            if (hasDirty) dirtyView?.alpha = 1f
         }
 
         if (raw == null) {
@@ -298,9 +305,8 @@ class SimpleTranslationMode(private val service: CaptureService) : LiveMode {
                 }
             }
 
-            // 11. On first capture, set cleanRef before showing overlays
-            if (isFirstCapture) {
-                cleanRefBitmap?.recycle()
+            // 11. Set cleanRef if missing (first capture, or cleared by mid-cycle refresh)
+            if (cleanRefBitmap == null) {
                 cleanRefBitmap = raw.copy(raw.config ?: Bitmap.Config.ARGB_8888, true)
             }
 
@@ -564,6 +570,15 @@ class SimpleTranslationMode(private val service: CaptureService) : LiveMode {
 
     // ── Utility ─────────────────────────────────────────────────────────
 
+
+    /** Suspend until the RenderThread has committed the current frame to SurfaceFlinger. */
+    private suspend fun awaitFrameCommit(view: View) {
+        suspendCancellableCoroutine<Unit> { cont ->
+            view.viewTreeObserver.registerFrameCommitCallback {
+                if (cont.isActive) cont.resume(Unit)
+            }
+        }
+    }
 
     private suspend fun waitVsync(frames: Int) {
         repeat(frames) {
