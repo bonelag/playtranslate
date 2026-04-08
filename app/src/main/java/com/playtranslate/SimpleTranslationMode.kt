@@ -7,6 +7,8 @@ import android.graphics.Rect
 import android.os.Build
 import android.view.Choreographer
 import android.view.View
+import com.playtranslate.model.TextSegment
+import com.playtranslate.model.TranslationResult
 import com.playtranslate.ui.TranslationOverlayView
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -348,12 +350,10 @@ class SimpleTranslationMode(private val service: CaptureService) : LiveMode {
                 }
             }
 
-            // 13. First-capture post-processing
-            if (isFirstCapture && cachedBoxes != null) {
+            // 13. Update panel with ALL current text (cached + new)
+            if (farOcrGroups.isNotEmpty()) {
                 mgr.saveToCache(raw)
-                pipeline?.let { (ocrResult, _, _, _, _, _) ->
-                    service.translateAndSendToPanel(ocrResult, mgr.lastCleanPath)
-                }
+                sendFullStateToPanel(mgr.lastCleanPath)
             }
 
             // 14. Timing
@@ -520,6 +520,39 @@ class SimpleTranslationMode(private val service: CaptureService) : LiveMode {
         val rowGroup = (y / spacing) % 2
         val xOffset = if (rowGroup == 0) 0 else spacing / 2
         return (x - xOffset) % spacing == 0 && x >= xOffset
+    }
+
+    // ── Panel ────────────────────────────────────────────────────────────
+
+    /**
+     * Build a TranslationResult from ALL current cachedBoxes and send to the
+     * in-app panel. Unlike TranslationOverlayMode which re-OCRs the bare screen,
+     * we already have sourceText + translatedText on every box.
+     */
+    private fun sendFullStateToPanel(screenshotPath: String?) {
+        val boxes = cachedBoxes ?: return
+        val appPanelVisible = !Prefs.isSingleScreen(service) && MainActivity.isInForeground
+        if (!appPanelVisible) return
+
+        val originalText = boxes.filter { it.sourceText.isNotEmpty() }
+            .joinToString("\n") { it.sourceText }
+        val translatedText = boxes.filter { it.translatedText.isNotEmpty() }
+            .joinToString("\n\n") { it.translatedText }
+        val segments = boxes.filter { it.sourceText.isNotEmpty() }
+            .flatMap { box ->
+                box.sourceText.map { ch -> TextSegment(ch.toString()) } +
+                    TextSegment("\n", isSeparator = true)
+            }
+        val timestamp = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.getDefault())
+            .format(java.util.Date())
+
+        service.onResult?.invoke(TranslationResult(
+            originalText = originalText,
+            segments = segments,
+            translatedText = translatedText,
+            timestamp = timestamp,
+            screenshotPath = screenshotPath
+        ))
     }
 
     // ── Translation Helpers ─────────────────────────────────────────────
