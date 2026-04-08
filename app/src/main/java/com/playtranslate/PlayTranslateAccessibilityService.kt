@@ -1042,7 +1042,7 @@ class PlayTranslateAccessibilityService : AccessibilityService() {
                         .setTitle("Dual screen required")
                         .setMessage("In-App Only mode shows translations in the app, which requires a dual screen setup.\n\nYou can start with overlay mode instead.")
                         .addButton("Start with Overlays", android.graphics.Color.parseColor("#5DB2EB")) {
-                            prefs.autoTranslationMode = AutoTranslationMode.OVERLAYS
+                            prefs.autoTranslationMode = AutoTranslationMode.TRANSLATE
                             toggleLiveDirect(true)
                         }
                         .addCancelButton()

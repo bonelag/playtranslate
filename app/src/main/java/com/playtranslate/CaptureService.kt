@@ -375,22 +375,13 @@ class CaptureService : Service() {
         oneShotCaptureJob?.cancel()
 
         val prefs = Prefs(this)
-        when (prefs.autoTranslationMode) {
-            AutoTranslationMode.OVERLAYS -> {
-                liveMode = if (prefs.overlayMode == OverlayMode.FURIGANA) {
-                    FuriganaMode(this)
-                } else {
-                    TranslationOverlayMode(this)
-                }
-                liveMode?.start()
-            }
-            AutoTranslationMode.SIMPLE -> {
-                liveMode = PinholeOverlayMode(this).also { it.start() }
-            }
-            AutoTranslationMode.IN_APP_ONLY -> {
-                liveMode = InAppOnlyMode(this).also { it.start() }
-            }
+        liveMode = when (prefs.autoTranslationMode) {
+            AutoTranslationMode.TRANSLATE -> PinholeOverlayMode(this)
+            AutoTranslationMode.TRANSLATE_LEGACY -> TranslationOverlayMode(this)
+            AutoTranslationMode.FURIGANA -> FuriganaMode(this)
+            AutoTranslationMode.IN_APP_ONLY -> InAppOnlyMode(this)
         }
+        liveMode?.start()
     }
 
     fun stopLive() {
@@ -425,12 +416,12 @@ class CaptureService : Service() {
     fun holdStart() {
         if (liveActive) {
             holdActive = true
-            if (Prefs(this).autoTranslationMode == AutoTranslationMode.OVERLAYS) {
-                // Overlays already on screen — hide them so user sees clean game
-                PlayTranslateAccessibilityService.instance?.hideTranslationOverlay()
-            } else {
+            if (Prefs(this).autoTranslationMode == AutoTranslationMode.IN_APP_ONLY) {
                 // In-app only — show cached boxes as preview on game screen
                 liveMode?.getCachedState()?.let { showHoldOverlay(it) }
+            } else {
+                // Overlays already on screen — hide them so user sees clean game
+                PlayTranslateAccessibilityService.instance?.hideTranslationOverlay()
             }
         } else {
             onHoldLoadingChanged?.invoke(true)
@@ -454,14 +445,14 @@ class CaptureService : Service() {
         onHoldLoadingChanged?.invoke(false)
         if (liveActive) {
             holdActive = false
-            if (Prefs(this).autoTranslationMode == AutoTranslationMode.OVERLAYS) {
+            if (Prefs(this).autoTranslationMode == AutoTranslationMode.IN_APP_ONLY) {
+                // Remove in-app preview
+                PlayTranslateAccessibilityService.instance?.hideTranslationOverlay()
+            } else {
                 // Re-show cached boxes immediately (no visible gap)
                 liveMode?.getCachedState()?.let { showHoldOverlay(it) }
                 // Refresh in background to catch any scene changes during hold
                 refreshLiveOverlay()
-            } else {
-                // Remove in-app preview
-                PlayTranslateAccessibilityService.instance?.hideTranslationOverlay()
             }
         } else {
             oneShotManager.cancel()
@@ -899,8 +890,9 @@ class CaptureService : Service() {
             val shouldStop = when (Prefs(this).autoTranslationMode) {
                 // In-App Only: results only visible while app is in foreground
                 AutoTranslationMode.IN_APP_ONLY -> !MainActivity.isInForeground
-                // Overlays/Simple: stop if no control surface at all (no icon, no app)
-                AutoTranslationMode.OVERLAYS, AutoTranslationMode.SIMPLE -> !iconShowing && !MainActivity.isInForeground
+                // Overlay modes: stop if no control surface at all (no icon, no app)
+                AutoTranslationMode.TRANSLATE, AutoTranslationMode.TRANSLATE_LEGACY,
+                AutoTranslationMode.FURIGANA -> !iconShowing && !MainActivity.isInForeground
             }
             if (shouldStop) {
                 stopLive()

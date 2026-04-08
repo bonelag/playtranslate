@@ -424,7 +424,7 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
     private fun updateRegionButton() {
         val region = captureService?.activeRegion ?: prefs.getSelectedRegion()
         val label = region.label.ifEmpty { "Full screen" }
-        val overlayLive = isLiveMode && prefs.autoTranslationMode == AutoTranslationMode.OVERLAYS
+        val overlayLive = isLiveMode && prefs.autoTranslationMode != AutoTranslationMode.IN_APP_ONLY
         val prefix = if (overlayLive) "Reload " else "Translate "
         tvTranslateTitle.text = SpannableStringBuilder(prefix + label).apply {
             setSpan(StyleSpan(Typeface.BOLD), prefix.length, length, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
@@ -447,7 +447,7 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
                         .setTitle(R.string.inapp_dual_screen_title)
                         .setMessage(R.string.inapp_dual_screen_message)
                         .setPositiveButton(R.string.inapp_start_with_overlays) { _, _ ->
-                            prefs.autoTranslationMode = AutoTranslationMode.OVERLAYS
+                            prefs.autoTranslationMode = AutoTranslationMode.TRANSLATE
                             doStartLive()
                         }
                         .setNegativeButton(android.R.string.cancel, null)
@@ -458,7 +458,8 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
                 selectTab(Tab.TRANSLATE)
                 doStartLive()
             }
-            AutoTranslationMode.OVERLAYS, AutoTranslationMode.SIMPLE -> doStartLive()
+            AutoTranslationMode.TRANSLATE, AutoTranslationMode.TRANSLATE_LEGACY,
+            AutoTranslationMode.FURIGANA -> doStartLive()
         }
     }
 

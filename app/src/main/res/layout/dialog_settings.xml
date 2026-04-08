@@ -259,6 +259,16 @@
                 android:letterSpacing="0.15"
                 android:layout_marginBottom="8dp" />
 
+            <!-- Mode title -->
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Mode"
+                android:textColor="?attr/colorTextPrimary"
+                android:textSize="16sp"
+                android:textStyle="bold"
+                android:layout_marginBottom="6dp" />
+
             <!-- Mode toggle -->
             <com.google.android.material.button.MaterialButtonToggleGroup
                 android:id="@+id/toggleAutoMode"
@@ -268,20 +278,20 @@
                 app:selectionRequired="true">
 
                 <com.google.android.material.button.MaterialButton
-                    android:id="@+id/btnModeOverlays"
+                    android:id="@+id/btnModeTranslate"
                     style="@style/Widget.PlayTranslate.SegmentedButton"
                     android:layout_width="0dp"
                     android:layout_height="wrap_content"
                     android:layout_weight="1"
-                    android:text="Overlays" />
+                    android:text="Translate" />
 
                 <com.google.android.material.button.MaterialButton
-                    android:id="@+id/btnModeSimple"
+                    android:id="@+id/btnModeTranslateLegacy"
                     style="@style/Widget.PlayTranslate.SegmentedButton"
                     android:layout_width="0dp"
                     android:layout_height="wrap_content"
                     android:layout_weight="1"
-                    android:text="Simple" />
+                    android:text="Translate (Legacy)" />
 
                 <com.google.android.material.button.MaterialButton
                     android:id="@+id/btnModeInApp"
@@ -290,6 +300,14 @@
                     android:layout_height="wrap_content"
                     android:layout_weight="1"
                     android:text="In-App Only" />
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/btnModeFurigana"
+                    style="@style/Widget.PlayTranslate.SegmentedButton"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="Furigana" />
 
             </com.google.android.material.button.MaterialButtonToggleGroup>
 

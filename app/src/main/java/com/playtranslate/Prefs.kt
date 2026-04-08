@@ -9,12 +9,13 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 enum class AutoTranslationMode(val displayName: String) {
-    OVERLAYS("Overlays"),
-    SIMPLE("Simple"),
-    IN_APP_ONLY("In-App Only");
+    TRANSLATE("Translate"),
+    TRANSLATE_LEGACY("Translate (Legacy)"),
+    IN_APP_ONLY("In-App Only"),
+    FURIGANA("Furigana");
 
     companion object {
-        fun fromOrdinal(ordinal: Int) = entries.getOrElse(ordinal) { OVERLAYS }
+        fun fromOrdinal(ordinal: Int) = entries.getOrElse(ordinal) { TRANSLATE }
     }
 }
 
