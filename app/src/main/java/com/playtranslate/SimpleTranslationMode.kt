@@ -17,6 +17,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.coroutines.resume
 
 /**
@@ -107,12 +108,17 @@ class SimpleTranslationMode(private val service: CaptureService) : LiveMode {
 
         // 1. Hide dirty overlay window before capture (hardware layer alpha + frame commit sync)
         if (hasDirty && dirtyView != null) {
-            dirtyView.alpha = 0f
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                awaitFrameCommit(dirtyView)
+                val committed = hideAndAwaitCommit(dirtyView)
+                if (!committed) {
+                    // View detached or timed out — skip this capture
+                    delay(prefs.captureIntervalMs)
+                    return
+                }
                 waitVsync(2)
             } else {
-                waitVsync(4) // fallback: no frame commit callback, extra vsyncs to compensate
+                dirtyView.alpha = 0f
+                waitVsync(5)
             }
         }
 
@@ -286,7 +292,7 @@ class SimpleTranslationMode(private val service: CaptureService) : LiveMode {
             val cleanBoxes = nextBoxes.filter { !it.dirty }
             val dirtyBoxes = nextBoxes.filter { it.dirty }
             cachedBoxes = nextBoxes.ifEmpty { null }
-            val anyChanged = allRemovals.isNotEmpty() || pinholeDirty.isNotEmpty()
+            val anyChanged = allRemovals.isNotEmpty() || pinholeDirty.isNotEmpty() || dirtyBoxes.isNotEmpty()
 
             // 10. Apply to views — single commit point
             dirtyView?.setBoxes(dirtyBoxes, cropLeft, cropTop, screenshotW, screenshotH)
@@ -571,13 +577,33 @@ class SimpleTranslationMode(private val service: CaptureService) : LiveMode {
     // ── Utility ─────────────────────────────────────────────────────────
 
 
-    /** Suspend until the RenderThread has committed the current frame to SurfaceFlinger. */
-    private suspend fun awaitFrameCommit(view: View) {
-        suspendCancellableCoroutine<Unit> { cont ->
-            view.viewTreeObserver.registerFrameCommitCallback {
-                if (cont.isActive) cont.resume(Unit)
+    /**
+     * Hide the dirty overlay via alpha and wait for the RenderThread to commit
+     * the transparent frame to SurfaceFlinger.
+     *
+     * Forces a view invalidation after setting alpha=0 so the VTO callback
+     * actually fires (hardware layer alpha changes skip performTraversals,
+     * but registerFrameCommitCallback requires a full traversal pass).
+     *
+     * Returns true if the frame was committed, false on timeout or detach.
+     */
+    private suspend fun hideAndAwaitCommit(dirtyView: View): Boolean {
+        return withTimeoutOrNull(200L) {
+            suspendCancellableCoroutine { cont ->
+                dirtyView.alpha = 0f
+                dirtyView.invalidate() // Force traversal so VTO callback fires
+
+                val vto = dirtyView.viewTreeObserver
+                if (!vto.isAlive || !dirtyView.isAttachedToWindow) {
+                    cont.resume(false)
+                    return@suspendCancellableCoroutine
+                }
+
+                vto.registerFrameCommitCallback {
+                    if (cont.isActive) cont.resume(true)
+                }
             }
-        }
+        } ?: false
     }
 
     private suspend fun waitVsync(frames: Int) {
