@@ -228,29 +228,28 @@ class TranslationResultFragment : Fragment() {
             if (active) accentColor else secondaryColor
         )
 
-        if (active && wordSpans.isNotEmpty()) {
-            val plainText = tvOriginal.text.toString()
+        val plainText = tvOriginal.text.toString()
+        if (active && plainText.isNotEmpty()) {
+            val dict = DictionaryManager.get(ctx.applicationContext)
+            val tokens = dict.tokenizeForFurigana(plainText)
+            if (tokens.isEmpty()) {
+                tvOriginal.text = plainText
+                return
+            }
             val spannable = android.text.SpannableString(plainText)
-            for ((range, _, reading) in wordSpans) {
-                if (reading.isEmpty()) continue
-                if (range.last >= plainText.length) continue
-                val surface = plainText.substring(range)
-                if (!containsKanji(surface)) continue
-                if (reading == surface) continue
+            for (ft in tokens) {
+                if (ft.endOffset > plainText.length) continue
                 spannable.setSpan(
-                    FuriganaSpan(reading),
-                    range.first, range.last + 1,
+                    FuriganaSpan(ft.reading),
+                    ft.startOffset, ft.endOffset,
                     android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
                 )
             }
             tvOriginal.text = spannable
         } else {
-            tvOriginal.text = tvOriginal.text.toString()
+            tvOriginal.text = plainText
         }
     }
-
-    private fun containsKanji(text: String): Boolean =
-        text.any { it in '\u4E00'..'\u9FFF' || it in '\u3400'..'\u4DBF' }
 
     // ── Public API ────────────────────────────────────────────────────────
 
