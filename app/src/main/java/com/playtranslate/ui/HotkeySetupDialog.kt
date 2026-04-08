@@ -40,7 +40,11 @@ class HotkeySetupDialog : DialogFragment() {
             KeyEvent.KEYCODE_POWER
         )
 
-        fun newInstance(): HotkeySetupDialog = HotkeySetupDialog()
+        private const val ARG_TITLE = "title"
+
+        fun newInstance(title: String? = null): HotkeySetupDialog = HotkeySetupDialog().apply {
+            if (title != null) arguments = android.os.Bundle().apply { putString(ARG_TITLE, title) }
+        }
     }
 
     var onHotkeySet: ((keyCodes: List<Int>) -> Unit)? = null
@@ -53,6 +57,7 @@ class HotkeySetupDialog : DialogFragment() {
 
     private lateinit var tvInstruction: TextView
     private lateinit var tvTimer: TextView
+    private lateinit var btnCancel: View
 
     override fun onCreateDialog(savedInstanceState: Bundle?): Dialog {
         val dialog = Dialog(requireContext())
@@ -74,8 +79,12 @@ class HotkeySetupDialog : DialogFragment() {
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         tvInstruction = view.findViewById(R.id.tvInstruction)
         tvTimer = view.findViewById(R.id.tvTimer)
+        arguments?.getString(ARG_TITLE)?.let {
+            view.findViewById<TextView>(R.id.tvTitle).text = it
+        }
 
-        view.findViewById<View>(R.id.btnCancel).setOnClickListener {
+        btnCancel = view.findViewById(R.id.btnCancel)
+        btnCancel.setOnClickListener {
             cancelAndDismiss()
         }
     }
@@ -139,11 +148,13 @@ class HotkeySetupDialog : DialogFragment() {
                 KeyEvent.keyCodeToString(it).removePrefix("KEYCODE_")
             }
         tvTimer.visibility = View.VISIBLE
+        btnCancel.visibility = View.GONE
     }
 
     private fun showInstruction() {
         tvInstruction.text = "Hold down key(s) for 2 seconds"
         tvTimer.visibility = View.GONE
+        btnCancel.visibility = View.VISIBLE
     }
 
     private fun restartTimer() {
@@ -151,7 +162,7 @@ class HotkeySetupDialog : DialogFragment() {
         tvTimer.visibility = View.VISIBLE
         countdownTimer = object : CountDownTimer(HOLD_DURATION_MS, 100) {
             override fun onTick(remaining: Long) {
-                tvTimer.text = "%.1f".format(remaining / 1000f)
+                tvTimer.text = "Hold %.1f".format(remaining / 1000f)
             }
             override fun onFinish() {
                 resultDelivered = true

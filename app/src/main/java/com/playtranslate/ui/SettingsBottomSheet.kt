@@ -388,10 +388,12 @@ class SettingsBottomSheet : DialogFragment() {
         // ── Hotkey rows ─────────────────────────────────────────────────────
         setupHotkeyRow(view,
             R.id.rowHotkeyTranslation, R.id.switchHotkeyTranslation, R.id.tvHotkeyTranslationHint,
-            { prefs.hotkeyTranslation }, { prefs.hotkeyTranslation = it })
+            { prefs.hotkeyTranslation }, { prefs.hotkeyTranslation = it },
+            "Show Translations")
         setupHotkeyRow(view,
             R.id.rowHotkeyFurigana, R.id.switchHotkeyFurigana, R.id.tvHotkeyFuriganaHint,
-            { prefs.hotkeyFurigana }, { prefs.hotkeyFurigana = it })
+            { prefs.hotkeyFurigana }, { prefs.hotkeyFurigana = it },
+            "Show Furigana")
 
         // ── Capture interval (auto-save on text change) ───────────────────
         val minSec = Prefs.MIN_CAPTURE_INTERVAL_SEC
@@ -971,7 +973,8 @@ class SettingsBottomSheet : DialogFragment() {
         view: android.view.View,
         rowId: Int, switchId: Int, hintId: Int,
         getHotkey: () -> String,
-        setHotkey: (String) -> Unit
+        setHotkey: (String) -> Unit,
+        dialogTitle: String? = null
     ) {
         val switch = view.findViewById<com.google.android.material.materialswitch.MaterialSwitch>(switchId)
         val hint = view.findViewById<TextView>(hintId)
@@ -982,7 +985,7 @@ class SettingsBottomSheet : DialogFragment() {
 
         switch.setOnCheckedChangeListener { _, checked ->
             if (checked) {
-                val dialog = HotkeySetupDialog.newInstance()
+                val dialog = HotkeySetupDialog.newInstance(dialogTitle)
                 dialog.onHotkeySet = { keyCodes ->
                     val combo = keyCodes.joinToString("+")
                     setHotkey(combo)
