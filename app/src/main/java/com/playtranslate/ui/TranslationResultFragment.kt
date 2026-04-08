@@ -74,6 +74,7 @@ class TranslationResultFragment : Fragment() {
     private lateinit var btnEditOriginal: ImageButton
     private lateinit var btnToggleTranslation: ImageButton
     private lateinit var btnToggleOriginal: ImageButton
+    private lateinit var btnToggleFurigana: ImageButton
     private lateinit var btnToggleWords: ImageButton
     private lateinit var translationContent: LinearLayout
     private lateinit var originalContent: LinearLayout
@@ -143,6 +144,7 @@ class TranslationResultFragment : Fragment() {
         btnEditOriginal      = view.findViewById(R.id.btnEditOriginal)
         btnToggleTranslation = view.findViewById(R.id.btnToggleTranslation)
         btnToggleOriginal    = view.findViewById(R.id.btnToggleOriginal)
+        btnToggleFurigana    = view.findViewById(R.id.btnToggleFurigana)
         btnToggleWords       = view.findViewById(R.id.btnToggleWords)
         translationContent   = view.findViewById(R.id.translationContent)
         originalContent      = view.findViewById(R.id.originalContent)
@@ -179,6 +181,10 @@ class TranslationResultFragment : Fragment() {
             prefs.hideOriginalSection = !prefs.hideOriginalSection
             applyOriginalVisibility()
         }
+        btnToggleFurigana.setOnClickListener {
+            prefs.showFuriganaInline = !prefs.showFuriganaInline
+            applyFurigana()
+        }
         btnToggleWords.setOnClickListener {
             prefs.hideWordsSection = !prefs.hideWordsSection
             applyWordsVisibility()
@@ -203,6 +209,7 @@ class TranslationResultFragment : Fragment() {
         originalContent.visibility = if (hidden) View.GONE else View.VISIBLE
         btnCopyOriginal.visibility = if (hidden) View.INVISIBLE else View.VISIBLE
         btnEditOriginal.visibility = if (hidden) View.INVISIBLE else View.VISIBLE
+        btnToggleFurigana.visibility = if (hidden) View.INVISIBLE else View.VISIBLE
         btnToggleOriginal.setImageResource(if (hidden) R.drawable.ic_visibility_off else R.drawable.ic_visibility)
     }
 
@@ -211,6 +218,39 @@ class TranslationResultFragment : Fragment() {
         wordsContent.visibility = if (hidden) View.GONE else View.VISIBLE
         btnToggleWords.setImageResource(if (hidden) R.drawable.ic_visibility_off else R.drawable.ic_visibility)
     }
+
+    private fun applyFurigana() {
+        val active = prefs.showFuriganaInline
+        val ctx = context ?: return
+        val accentColor = ctx.themeColor(R.attr.colorAccentPrimary)
+        val secondaryColor = ctx.themeColor(R.attr.colorTextSecondary)
+        btnToggleFurigana.imageTintList = android.content.res.ColorStateList.valueOf(
+            if (active) accentColor else secondaryColor
+        )
+
+        if (active && wordSpans.isNotEmpty()) {
+            val plainText = tvOriginal.text.toString()
+            val spannable = android.text.SpannableString(plainText)
+            for ((range, _, reading) in wordSpans) {
+                if (reading.isEmpty()) continue
+                if (range.last >= plainText.length) continue
+                val surface = plainText.substring(range)
+                if (!containsKanji(surface)) continue
+                if (reading == surface) continue
+                spannable.setSpan(
+                    FuriganaSpan(reading),
+                    range.first, range.last + 1,
+                    android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+                )
+            }
+            tvOriginal.text = spannable
+        } else {
+            tvOriginal.text = tvOriginal.text.toString()
+        }
+    }
+
+    private fun containsKanji(text: String): Boolean =
+        text.any { it in '\u4E00'..'\u9FFF' || it in '\u3400'..'\u4DBF' }
 
     // ── Public API ────────────────────────────────────────────────────────
 
@@ -698,6 +738,8 @@ class TranslationResultFragment : Fragment() {
                     ?: lookupToReading[surface] ?: ""
                 wordSpans.add(Triple(range, lookupForm, reading))
             }
+
+            applyFurigana()
 
             tvMainWordsLoading.visibility = View.GONE
             tvNoWords.visibility = if (mainWordResults.isEmpty()) View.VISIBLE else View.GONE

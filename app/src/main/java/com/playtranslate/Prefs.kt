@@ -104,6 +104,10 @@ class Prefs(context: Context) {
         get() = sp.getBoolean(KEY_HIDE_WORDS_SECTION, false)
         set(v) = sp.edit().putBoolean(KEY_HIDE_WORDS_SECTION, v).apply()
 
+    var showFuriganaInline: Boolean
+        get() = sp.getBoolean(KEY_SHOW_FURIGANA_INLINE, false)
+        set(v) = sp.edit().putBoolean(KEY_SHOW_FURIGANA_INLINE, v).apply()
+
     /** Capture method chosen during onboarding: "" = not set, "accessibility", "media_projection" */
     var captureMethod: String
         get() = sp.getString(KEY_CAPTURE_METHOD, "") ?: ""
@@ -246,6 +250,7 @@ class Prefs(context: Context) {
         private const val KEY_HIDE_TRANSLATION_SECTION       = "hide_translation_section"
         private const val KEY_HIDE_ORIGINAL_SECTION          = "hide_original_section"
         private const val KEY_HIDE_WORDS_SECTION             = "hide_words_section"
+        private const val KEY_SHOW_FURIGANA_INLINE          = "show_furigana_inline"
         private const val KEY_DEBUG_FORCE_SINGLE_SCREEN      = "debug_force_single_screen"
         private const val KEY_DEBUG_SHOW_OCR_BOXES           = "debug_show_ocr_boxes"
         private const val KEY_DEBUG_SHOW_DETECTION_LOG      = "debug_show_detection_log"
