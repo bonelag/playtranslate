@@ -72,7 +72,8 @@ class WordLookupPopup(
         freqScore: Int,
         isCommon: Boolean = false,
         screenX: Int, screenY: Int,
-        screenW: Int, screenH: Int
+        screenW: Int, screenH: Int,
+        anchorHeight: Int = 0
     ) {
         // Skip full redraw if same word is already showing
         if (word == currentWord && popupView != null) return
@@ -98,12 +99,12 @@ class WordLookupPopup(
 
         val totalH = cardH + arrowSizePx
 
-        // Decide if popup goes above or below finger
+        // Decide if popup goes above or below anchor
         val aboveFinger = screenY - totalH - margin >= 0
         val yRaw = if (aboveFinger) {
             screenY - totalH - margin
         } else {
-            screenY + margin
+            screenY + anchorHeight + margin
         }
         val x = (screenX - popupW / 2).coerceIn(0, screenW - popupW)
         val y = yRaw.coerceIn(0, screenH - totalH)

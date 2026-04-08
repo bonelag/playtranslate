@@ -339,6 +339,7 @@ class TranslationResultFragment : Fragment() {
                 val xEnd = layout.getPrimaryHorizontal(span.first.last + 1)
                 val wordCenterX = ((xStart + xEnd) / 2).toInt() + tvOriginal.paddingLeft
                 val lineTop = layout.getLineTop(lineStart) - tvOriginal.scrollY + tvOriginal.paddingTop
+                val lineH = layout.getLineBottom(lineStart) - layout.getLineTop(lineStart)
 
                 val loc = IntArray(2)
                 tvOriginal.getLocationOnScreen(loc)
@@ -365,7 +366,8 @@ class TranslationResultFragment : Fragment() {
                     }
                 }
                 wordPopup?.show(word, lookupReading, senses, entry.freqScore,
-                    entry.isCommon == true, screenX, screenY, dm.widthPixels, dm.heightPixels)
+                    entry.isCommon == true, screenX, screenY, dm.widthPixels, dm.heightPixels,
+                    anchorHeight = lineH)
             } catch (_: Exception) {}
         }
     }
