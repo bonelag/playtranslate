@@ -326,13 +326,14 @@ class SettingsBottomSheet : DialogFragment() {
         // ── Auto translation mode toggle ─────────────────────────────────
         val toggleAutoMode = view.findViewById<com.google.android.material.button.MaterialButtonToggleGroup>(R.id.toggleAutoMode)
         val tvAutoModeHint = view.findViewById<TextView>(R.id.tvAutoModeHint)
+        view.findViewById<View>(R.id.btnModeTranslateLegacy)?.visibility = View.GONE
         if (Prefs.isSingleScreen(requireContext())) {
             view.findViewById<View>(R.id.btnModeInApp)?.visibility = View.GONE
         }
 
         fun updateAutoModeHint() {
             tvAutoModeHint.text = when (prefs.autoTranslationMode) {
-                AutoTranslationMode.TRANSLATE -> "Overlay translations with pinhole change detection"
+                AutoTranslationMode.TRANSLATE -> "Overlay translations automatically on the game screen"
                 AutoTranslationMode.TRANSLATE_LEGACY -> "Overlay translations with pixel-diff change detection"
                 AutoTranslationMode.IN_APP_ONLY -> "DUAL-SCREEN ONLY: Only show auto translations in app, not over game screen"
                 AutoTranslationMode.FURIGANA -> "Show hiragana readings above kanji"
