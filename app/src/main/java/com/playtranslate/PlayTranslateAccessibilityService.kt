@@ -1132,25 +1132,43 @@ class PlayTranslateAccessibilityService : AccessibilityService() {
         val displayCtx = createDisplayContext(display)
         val overlayWm = displayCtx.getSystemService(WindowManager::class.java) ?: return
         val appName = getString(R.string.app_name)
+        val prefs = Prefs(this)
+        val alreadyCompact = prefs.compactOverlayIcon
 
         val builder = OverlayAlert.Builder(displayCtx, overlayWm)
 
         if (Prefs.isSingleScreen(this)) {
             builder.setTitle("Disable $appName?")
                 .setMessage("Re-enable in $appName app")
-                .addButton("Turn Off", android.graphics.Color.parseColor("#E04040")) {
-                    Prefs(this).showOverlayIcon = false
+            if (!alreadyCompact) {
+                builder.addButton("Minimize Icon", android.graphics.Color.parseColor("#5DB2EB")) {
+                    prefs.compactOverlayIcon = true
+                    hideFloatingIcon()
+                    ensureFloatingIcon()
+                }
+            }
+            builder.addButton("Turn Off", android.graphics.Color.parseColor("#E04040")) {
+                    prefs.showOverlayIcon = false
                     hideFloatingIcon()
                 }
                 .addCancelButton()
         } else {
             builder.setTitle("Hide $appName game screen controls?")
-                .setMessage("\u201CHide for Now\u201D brings it back next time you open $appName. \u201CTurn Off\u201D disables it until re-enabled in settings.")
-                .addButton("Hide for Now", android.graphics.Color.parseColor("#5DB2EB")) {
-                    hideFloatingIcon()
-                }
-                .addButton("Turn Off", android.graphics.Color.parseColor("#E04040")) {
-                    Prefs(this).showOverlayIcon = false
+            if (!alreadyCompact) {
+                builder.setMessage("\u201CMinimize Icon\u201D shrinks the floating icon. \u201CTurn Off\u201D disables it until re-enabled in settings.")
+                    .addButton("Minimize Icon", android.graphics.Color.parseColor("#5DB2EB")) {
+                        prefs.compactOverlayIcon = true
+                        hideFloatingIcon()
+                        ensureFloatingIcon()
+                    }
+            } else {
+                builder.setMessage("\u201CHide for Now\u201D brings it back next time you open $appName. \u201CTurn Off\u201D disables it until re-enabled in settings.")
+                    .addButton("Hide for Now", android.graphics.Color.parseColor("#5DB2EB")) {
+                        hideFloatingIcon()
+                    }
+            }
+            builder.addButton("Turn Off", android.graphics.Color.parseColor("#E04040")) {
+                    prefs.showOverlayIcon = false
                     hideFloatingIcon()
                 }
                 .addCancelButton()

@@ -502,6 +502,7 @@ class SettingsBottomSheet : DialogFragment() {
         val sp = ctx.getSharedPreferences("playtranslate_prefs", Context.MODE_PRIVATE)
         prefsListener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
             if (key == "show_overlay_icon") refreshOverlayIconSwitch()
+            if (key == "compact_overlay_icon") refreshCompactIconSwitch()
             if (key == "auto_translation_mode") refreshAutoModeToggle()
         }
         sp.registerOnSharedPreferenceChangeListener(prefsListener)
@@ -521,6 +522,15 @@ class SettingsBottomSheet : DialogFragment() {
         val prefs = Prefs(ctx)
         val sw = v.findViewById<MaterialSwitch>(R.id.switchOverlayIcon) ?: return
         sw.isChecked = prefs.showOverlayIcon && PlayTranslateAccessibilityService.isEnabled
+    }
+
+    private fun refreshCompactIconSwitch() {
+        val v = view ?: return
+        val ctx = context ?: return
+        val prefs = Prefs(ctx)
+        val sw = v.findViewById<MaterialSwitch>(R.id.switchCompactIcon) ?: return
+        sw.isChecked = prefs.compactOverlayIcon
+        ivIconPreview?.setImageBitmap(createFloatingIconPreview(prefs.compactOverlayIcon))
     }
 
     private fun refreshAutoModeToggle() {
