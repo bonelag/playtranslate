@@ -35,6 +35,11 @@ import com.playtranslate.R
  */
 class TranslationOverlayView(context: Context) : FrameLayout(context) {
 
+    init {
+        clipChildren = false
+        clipToPadding = false
+    }
+
     data class TextBox(
         val translatedText: String,
         /** Bounding box in original bitmap pixel coordinates. */
@@ -260,7 +265,7 @@ class TranslationOverlayView(context: Context) : FrameLayout(context) {
                 // Position after measurement but before draw — no (0,0) flash
                 child.doOnLayout {
                     child.translationX = rect.left - strokePad
-                    child.translationY = rect.bottom - child.measuredHeight
+                    child.translationY = (rect.bottom - child.measuredHeight).coerceAtLeast(0f)
                 }
             } else {
                 val rectW = rect.width().toInt().coerceAtLeast(1)
