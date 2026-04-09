@@ -257,6 +257,7 @@ class TranslationOverlayView(context: Context) : FrameLayout(context) {
                     typeface = Typeface.DEFAULT_BOLD
                     includeFontPadding = false
                     setPadding(strokePad, strokePad, strokePad, strokePad)
+                    setShadowLayer(strokeW, 0f, 0f, Color.TRANSPARENT)
                     setTextSize(TypedValue.COMPLEX_UNIT_PX, textSizePx)
                 }
                 addView(child, LayoutParams(
