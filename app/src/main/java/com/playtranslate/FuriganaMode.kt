@@ -10,6 +10,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 private const val TAG = "FuriganaMode"
@@ -27,6 +28,8 @@ class FuriganaMode(private val service: CaptureService) : LiveMode {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private var cleanProcessingJob: Job? = null
+    private var rawOcrJob: Job? = null
+    private var restartJob: Job? = null
 
     // ── Mode-owned state ──────────────────────────────────────────────────
 
@@ -57,7 +60,31 @@ class FuriganaMode(private val service: CaptureService) : LiveMode {
             DetectionLog.log("ERROR: screenshotManager is null, can't start furigana loop")
             return
         }
+        PlayTranslateAccessibilityService.instance
+            ?.startInputMonitoring(service.gameDisplayId) { onButtonDown() }
         DetectionLog.log("Starting furigana loop on display ${service.gameDisplayId}")
+        startLoop(mgr)
+    }
+
+    override fun stop() {
+        cleanProcessingJob?.cancel()
+        rawOcrJob?.cancel()
+        restartJob?.cancel()
+        clearState()
+        scope.cancel()
+        PlayTranslateAccessibilityService.instance?.stopInputMonitoring()
+        PlayTranslateAccessibilityService.instance?.screenshotManager?.stopLoop()
+        PlayTranslateAccessibilityService.instance?.hideTranslationOverlay()
+    }
+
+    override fun refresh() {
+        cleanProcessingJob?.cancel()
+        rawOcrJob?.cancel()
+        clearState()
+        PlayTranslateAccessibilityService.instance?.screenshotManager?.requestCleanCapture()
+    }
+
+    private fun startLoop(mgr: ScreenshotManager) {
         mgr.requestCleanCapture()
         mgr.startLoop(service.gameDisplayId, service.serviceScope,
             onCleanFrame = ::handleCleanFrame,
@@ -65,18 +92,18 @@ class FuriganaMode(private val service: CaptureService) : LiveMode {
         )
     }
 
-    override fun stop() {
+    private fun onButtonDown() {
+        val mgr = PlayTranslateAccessibilityService.instance?.screenshotManager ?: return
         cleanProcessingJob?.cancel()
-        clearState()
-        scope.cancel()
-        PlayTranslateAccessibilityService.instance?.screenshotManager?.stopLoop()
+        rawOcrJob?.cancel()
+        mgr.stopLoop()
         PlayTranslateAccessibilityService.instance?.hideTranslationOverlay()
-    }
-
-    override fun refresh() {
-        cleanProcessingJob?.cancel()
         clearState()
-        PlayTranslateAccessibilityService.instance?.screenshotManager?.requestCleanCapture()
+        restartJob?.cancel()
+        restartJob = scope.launch {
+            delay(Prefs(service).captureIntervalMs)
+            startLoop(mgr)
+        }
     }
 
     override fun getCachedState(): CachedOverlayState? {
@@ -177,10 +204,10 @@ class FuriganaMode(private val service: CaptureService) : LiveMode {
     private var rawFrameOcrCount = 0
 
     private fun handleRawFrame(bitmap: Bitmap) {
-        if (cleanProcessingJob?.isActive == true) {
+        if (cleanProcessingJob?.isActive == true || rawOcrJob?.isActive == true) {
             rawFrameSkipCount++
             if (rawFrameSkipCount % 10 == 1) {
-                android.util.Log.w("FuriganaDbg", "RAW SKIP: cleanJob active ($rawFrameSkipCount skipped)")
+                android.util.Log.w("FuriganaDbg", "RAW SKIP: job active ($rawFrameSkipCount skipped)")
             }
             bitmap.recycle()
             return
@@ -221,7 +248,7 @@ class FuriganaMode(private val service: CaptureService) : LiveMode {
 
         // OCR the patched frame asynchronously (ownership transferred to coroutine)
         rawFrameOcrCount++
-        scope.launch {
+        rawOcrJob = scope.launch {
             try {
                 val pipeline = service.runOcr(patched)
                 if (pipeline != null) {
