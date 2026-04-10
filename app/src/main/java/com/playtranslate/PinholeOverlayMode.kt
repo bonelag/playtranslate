@@ -193,6 +193,11 @@ class PinholeOverlayMode(private val service: CaptureService) : LiveMode {
                 if (ocrImage !== raw && !ocrImage.isRecycled) ocrImage.recycle()
             }
 
+            // A hold may have started during OCR suspension. Bail now to
+            // avoid wasting CPU on classification/translation the blocked
+            // showLiveOverlay will never render.
+            if (service.holdActive) return 100L
+
             // After OCR, clear dirty state — dirty overlays have been captured and evaluated
             cachedBoxes = cachedBoxes?.filter { !it.dirty }?.ifEmpty { null }
             dirtyView?.setBoxes(emptyList(), cropLeft, cropTop, screenshotW, screenshotH)
