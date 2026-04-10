@@ -97,17 +97,19 @@ class ScreenshotManager(private val a11y: PlayTranslateAccessibilityService) {
      * Used for scene-change detection where we compare non-overlay pixels.
      * Suspends until the rate limit clears. No overlay management.
      * The caller owns the returned [Bitmap] and must recycle it.
+     *
+     * Does NOT retry on failure. The previous transparent-retry logic was
+     * unsafe when [onCaptured] mutates UI state (e.g. alpha restoration) —
+     * the callback fires once on first-attempt failure, so any retry would
+     * capture with the restored UI visible, contaminating the bitmap. Callers
+     * that need retry must re-prepare UI state and call again.
      */
     suspend fun requestRaw(displayId: Int, onCaptured: (() -> Unit)? = null): Bitmap? {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return null
         awaitScreenshotInterval()
-        return doTakeScreenshot(displayId, onCaptured) ?: run {
-            DetectionLog.log("Raw capture failed, retrying...")
-            awaitScreenshotInterval()
-            val retry = doTakeScreenshot(displayId)
-            if (retry == null) DetectionLog.log("Raw capture retry also failed")
-            retry
-        }
+        val bitmap = doTakeScreenshot(displayId, onCaptured)
+        if (bitmap == null) DetectionLog.log("Raw capture failed")
+        return bitmap
     }
 
     /**

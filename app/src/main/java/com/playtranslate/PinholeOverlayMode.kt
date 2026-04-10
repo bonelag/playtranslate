@@ -5,11 +5,13 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Rect
 import android.os.Build
+import android.util.Log
 import android.view.Choreographer
 import android.view.View
 import com.playtranslate.model.TextSegment
 import com.playtranslate.model.TranslationResult
 import com.playtranslate.ui.TranslationOverlayView
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -66,9 +68,21 @@ class PinholeOverlayMode(private val service: CaptureService) : LiveMode {
 
     private fun scheduleNextCycle(delayMs: Long = 0) {
         currentJob = scope.launch {
-            if (delayMs > 0) delay(delayMs)
-            val nextDelay = runCycle()
-            scheduleNextCycle(nextDelay)
+            try {
+                if (delayMs > 0) delay(delayMs)
+                val nextDelay = runCycle()
+                scheduleNextCycle(nextDelay)
+            } catch (e: CancellationException) {
+                // Normal cancellation (stop/refresh/onButtonDown) — propagate.
+                throw e
+            } catch (e: Exception) {
+                // Unexpected throw (display went away, WindowManager token
+                // invalidated, bitmap op on detached view, etc.). Log and
+                // reschedule so the cycle self-heals instead of silently
+                // going dormant.
+                Log.e("PinholeOverlayMode", "runCycle failed, rescheduling", e)
+                scheduleNextCycle(Prefs(service).captureIntervalMs)
+            }
         }
     }
 
@@ -485,11 +499,14 @@ class PinholeOverlayMode(private val service: CaptureService) : LiveMode {
     }
 
     /**
-     * Update clean ref in-place: copy non-overlay pixels from raw into the
-     * existing cleanRef. Overlay areas are preserved (they contain clean game
-     * content from before overlays were shown, not pinhole-contaminated pixels).
+     * Update clean ref in-place: copy non-clean-overlay pixels from raw into
+     * the existing cleanRef. Clean box positions stay frozen at their initial
+     * pre-overlay game content (pinhole detection relies on that invariant),
+     * while everything else — including dirty positions — is refreshed from
+     * raw. Raw is safe to copy because the dirty view was hidden before the
+     * capture, so dirty positions contain current clean game pixels.
+     * Uses screen rects as bitmap coordinates (see scale note above).
      */
-    /** Update clean ref in-place. Uses screen rects as bitmap coordinates (see scale note above). */
     private fun updateCleanRef(raw: Bitmap, ref: Bitmap) {
         val rects = PlayTranslateAccessibilityService.instance
             ?.translationOverlayView?.getChildScreenRects() ?: return
