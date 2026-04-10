@@ -19,6 +19,7 @@ import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.util.Log
+import android.widget.Toast
 import androidx.core.app.NotificationCompat
 import com.playtranslate.model.TranslationResult
 import com.google.mlkit.nl.translate.TranslateLanguage
@@ -369,6 +370,25 @@ class CaptureService : Service() {
     private val oneShotManager = OneShotManager(this)
     private var oneShotCaptureJob: Job? = null
 
+    /** Listens for the configured capture display vanishing mid-session
+     *  (external monitor unplugged, virtual display destroyed). Stops live
+     *  mode rather than letting the cycle spin on a dead display ID. */
+    private val displayListener = object : DisplayManager.DisplayListener {
+        override fun onDisplayAdded(displayId: Int) {}
+        override fun onDisplayChanged(displayId: Int) {}
+        override fun onDisplayRemoved(displayId: Int) {
+            if (liveActive && displayId == gameDisplayId) {
+                Log.w(TAG, "Capture display $displayId disconnected, stopping live mode")
+                Toast.makeText(
+                    this@CaptureService,
+                    "Capture display disconnected. Live mode stopped.",
+                    Toast.LENGTH_LONG
+                ).show()
+                stopLive()
+            }
+        }
+    }
+
     fun startLive() {
         liveActive = true
         liveMode?.stop()
@@ -382,6 +402,13 @@ class CaptureService : Service() {
             else -> PinholeOverlayMode(this)
         }
         liveMode?.start()
+
+        // Register after start() so stopLive's unregister is a matching pair.
+        // Unregister first defensively in case startLive was called while
+        // already live (idempotent double-register would double-fire callbacks).
+        val dm = getSystemService(DisplayManager::class.java)
+        dm?.unregisterDisplayListener(displayListener)
+        dm?.registerDisplayListener(displayListener, Handler(Looper.getMainLooper()))
     }
 
     /** True when the active live mode is In-App Only. */
@@ -389,6 +416,7 @@ class CaptureService : Service() {
         get() = liveActive && liveMode is InAppOnlyMode
 
     fun stopLive() {
+        getSystemService(DisplayManager::class.java)?.unregisterDisplayListener(displayListener)
         liveMode?.stop()
         liveMode = null
         liveActive = false
