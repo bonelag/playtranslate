@@ -281,10 +281,30 @@ class PinholeOverlayMode(
             var anyRemoved = false
             val isFirstCapture = !hasOverlays()
 
-            // On first capture, set crop/screenshot dimensions from pipeline
+            // On first capture, set crop/screenshot dimensions from pipeline.
+            // On subsequent cycles, verify the pipeline's crop still matches
+            // what we cached — drift without a dim change (e.g. statusBarHeight
+            // toggling mid-session) invalidates the cached box coordinates in
+            // the same way a dim change does, so handle it the same way.
             if (isFirstCapture && pipeline != null) {
                 val (_, _, left, top, sw, sh) = pipeline
                 cropLeft = left; cropTop = top; screenshotW = sw; screenshotH = sh
+            } else if (pipeline != null) {
+                val (_, _, pipeLeft, pipeTop, _, _) = pipeline
+                if (pipeLeft != cropLeft || pipeTop != cropTop) {
+                    Log.w(
+                        "PinholeOverlayMode",
+                        "Crop offsets changed ($cropLeft,$cropTop → " +
+                            "$pipeLeft,$pipeTop), clearing cached state"
+                    )
+                    cachedBoxes = null
+                    cleanRefBitmap?.recycle()
+                    cleanRefBitmap = null
+                    overlayBitmap?.recycle()
+                    overlayBitmap = null
+                    a11y.hideTranslationOverlay()
+                    return prefs.captureIntervalMs
+                }
             }
 
             val boxes = cachedBoxes ?: emptyList()
@@ -294,13 +314,6 @@ class PinholeOverlayMode(
             //    so it can be unit-tested without a live capture pipeline.
             val classification = if (pipeline != null) {
                 val (ocrResult, _, pipeCropLeft, pipeCropTop, _, _) = pipeline
-                // Classification uses the pipeline's crop offset (this frame's
-                // current values), not the instance fields which are only
-                // refreshed on first-capture and can drift if statusBarHeight
-                // toggles mid-session. Pre-refactor code used pipeline.left /
-                // pipeline.top directly for the ocrFullRect used in the
-                // proximity check; we preserve that by passing a classify-time
-                // FrameCoordinates whose cropLeft/cropTop come from the pipeline.
                 val classifyCoords = FrameCoordinates(
                     bitmapWidth = raw.width,
                     bitmapHeight = raw.height,
