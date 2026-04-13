@@ -419,10 +419,15 @@ class PinholeOverlayMode(
                 }
             }
 
-            // 13. Update panel with ALL current text (cached + new)
-            if (farOcrGroups.isNotEmpty()) {
-                mgr.saveToCache(raw)
-                sendFullStateToPanel(mgr.lastCleanPath)
+            // 13. Keep the panel in sync with cachedBoxes — fire on far
+            //     groups OR removals so removal-only cycles don't go stale.
+            if (farOcrGroups.isNotEmpty() || allRemovals.isNotEmpty()) {
+                if (cachedBoxes.isNullOrEmpty()) {
+                    service.handleNoTextDetected()
+                } else {
+                    mgr.saveToCache(raw)
+                    sendFullStateToPanel(mgr.lastCleanPath)
+                }
             }
 
             // 14. Timing
