@@ -41,8 +41,6 @@ class OcrDebugOverlayView(context: Context) : View(context) {
     private var debugBoxes: OcrManager.OcrDebugBoxes? = null
     private var cropOffsetX = 0
     private var cropOffsetY = 0
-    private var displayScaleX = 1f
-    private var displayScaleY = 1f
     private var screenshotW = 1
     private var screenshotH = 1
 
@@ -56,25 +54,26 @@ class OcrDebugOverlayView(context: Context) : View(context) {
         cropOffsetY = cropTop
         this.screenshotW = screenshotW
         this.screenshotH = screenshotH
-        if (width > 0 && height > 0) updateScales()
         invalidate()
     }
 
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
         super.onSizeChanged(w, h, oldw, oldh)
-        updateScales()
     }
 
-    private fun updateScales() {
-        displayScaleX = width.toFloat() / screenshotW
-        displayScaleY = height.toFloat() / screenshotH
-    }
+    private val locationOnScreen = IntArray(2)
 
     private fun mapRect(r: Rect, scaleFactor: Float): RectF {
-        val left   = (r.left   / scaleFactor + cropOffsetX) * displayScaleX
-        val top    = (r.top    / scaleFactor + cropOffsetY) * displayScaleY
-        val right  = (r.right  / scaleFactor + cropOffsetX) * displayScaleX
-        val bottom = (r.bottom / scaleFactor + cropOffsetY) * displayScaleY
+        getLocationOnScreen(locationOnScreen)
+        val physicalLeft   = (r.left   / scaleFactor + cropOffsetX)
+        val physicalTop    = (r.top    / scaleFactor + cropOffsetY)
+        val physicalRight  = (r.right  / scaleFactor + cropOffsetX)
+        val physicalBottom = (r.bottom / scaleFactor + cropOffsetY)
+
+        val left   = physicalLeft - locationOnScreen[0]
+        val top    = physicalTop - locationOnScreen[1]
+        val right  = physicalRight - locationOnScreen[0]
+        val bottom = physicalBottom - locationOnScreen[1]
         return RectF(left, top, right, bottom)
     }
 
