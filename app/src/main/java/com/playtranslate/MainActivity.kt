@@ -1,6 +1,7 @@
 package com.playtranslate
 
 import android.Manifest
+import com.playtranslate.selectedActivityTheme
 import com.playtranslate.themeColor
 import android.content.ComponentName
 import android.content.Context
@@ -27,6 +28,7 @@ import android.animation.ObjectAnimator
 import android.view.animation.AccelerateInterpolator
 import android.view.animation.DecelerateInterpolator
 import android.widget.Button
+import com.google.mlkit.nl.translate.TranslateLanguage
 import android.widget.FrameLayout
 import android.widget.ImageButton
 import android.widget.ImageView
@@ -42,8 +44,12 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
 import com.playtranslate.BuildConfig
 import com.playtranslate.diagnostics.LogExporter
-import com.playtranslate.dictionary.Deinflector
-import com.playtranslate.dictionary.DictionaryManager
+import com.playtranslate.language.LanguagePackCatalogLoader
+import com.playtranslate.language.LanguagePackStore
+import com.playtranslate.language.HintTextKind
+import com.playtranslate.language.PreloadResult
+import com.playtranslate.language.SourceLanguageEngines
+import com.playtranslate.language.SourceLanguageProfiles
 import com.playtranslate.model.TextSegment
 import com.playtranslate.model.TranslationResult
 import com.playtranslate.ui.ClickableTextView
@@ -51,7 +57,6 @@ import com.playtranslate.ui.DimController
 import com.playtranslate.ui.OverlayAlert
 import android.net.Uri
 import com.playtranslate.AnkiManager
-import com.playtranslate.TranslationManager
 import com.playtranslate.ui.AddCustomRegionSheet
 import com.playtranslate.ui.AnkiReviewBottomSheet
 import com.playtranslate.ui.RegionPickerSheet
@@ -59,7 +64,6 @@ import com.playtranslate.ui.SettingsBottomSheet
 import com.playtranslate.ui.LastSentenceCache
 import com.playtranslate.ui.TranslationResultFragment
 import com.playtranslate.ui.WordDetailBottomSheet
-import com.google.mlkit.nl.translate.TranslateLanguage
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
@@ -87,14 +91,23 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
     private lateinit var regionPickerContainer: View
     private lateinit var settingsContainer: View
     private lateinit var onboardingContainer: View
+    private lateinit var pageWelcome: View
     private lateinit var pageNotif: View
     private lateinit var pageA11y: View
     private lateinit var pageA11ySingle: View
+    private lateinit var rowWelcomeGameLang: View
+    private lateinit var rowWelcomeYourLang: View
+    private lateinit var btnWelcomeContinue: Button
+    // Shared across Continue taps so the installer's single-flight guard
+    // engages on rapid double-taps. Lazy so we construct after lifecycleScope
+    // is available.
+    private val welcomeTargetInstaller by lazy {
+        com.playtranslate.ui.TargetPackInstaller(this, lifecycleScope)
+    }
     private lateinit var editOverlay: android.widget.LinearLayout
     private lateinit var etEditOriginal: android.widget.EditText
 
     private var editTranslationJob: Job? = null
-    private var editTranslationManager: TranslationManager? = null
     private var wasKeyboardVisible = false
 
     // ── Fragment ───────────────────────────────────────────────────────────
@@ -274,10 +287,19 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
         startAndBindService()
         (getSystemService(Context.DISPLAY_SERVICE) as DisplayManager)
             .registerDisplayListener(displayListener, null)
-        lifecycleScope.launch(Dispatchers.IO) {
-            DictionaryManager.get(applicationContext).preload()
-            Deinflector.preload()
+        // Only preload when the source pack is actually present. Fresh-
+        // install and data-wiped users route through the welcome flow to
+        // download a pack first; preloading before that would just log a
+        // PackMissing and is pointless.
+        if (LanguagePackStore.isInstalled(applicationContext, prefs.sourceLangId)) {
+            lifecycleScope.launch(Dispatchers.IO) {
+                preloadEngineAndRecover(prefs.sourceLangId)
+            }
         }
+
+        // One-shot migration: if the user already has a non-English target but
+        // no target gloss pack installed, offer to download it.
+        checkTargetPackMigration()
 
         // Wire up the fragment's edit-original listener for edit overlay
         resultFragment?.setOnEditOriginalListener { showEditOverlay() }
@@ -383,8 +405,35 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
             .unregisterDisplayListener(displayListener)
         if (isLiveMode && !isChangingConfigurations) captureService?.stopLive()
         if (serviceConnected) unbindService(serviceConnection)
-        editTranslationManager?.close()
         super.onDestroy()
+    }
+
+    /**
+     * Preload the engine for [id]. Recovery behavior is tiered so we
+     * don't punish transient failures with destructive pack deletion:
+     *  - [PreloadResult.PackMissing]: shouldn't happen (caller gated on
+     *    isInstalled). Log as anomaly.
+     *  - [PreloadResult.PackCorrupt]: confirmed on-disk integrity failure
+     *    (e.g. SQLite can't open). Uninstall the pack so the user's next
+     *    deliberate language interaction routes through download/recovery
+     *    rather than a silent crash loop.
+     *  - [PreloadResult.TokenizerInitFailed]: tokenizer library threw
+     *    during warm-up but the pack on disk looks fine. Likely OOM or
+     *    transient; log and let the next user action retry instead of
+     *    destroying a valid offline install.
+     */
+    private suspend fun preloadEngineAndRecover(id: com.playtranslate.language.SourceLangId) {
+        when (val r = SourceLanguageEngines.get(applicationContext, id).preload()) {
+            is PreloadResult.Success -> { /* nothing to do */ }
+            is PreloadResult.PackMissing ->
+                android.util.Log.w("MainActivity", "preload($id) reported PackMissing after isInstalled() passed")
+            is PreloadResult.PackCorrupt -> {
+                android.util.Log.w("MainActivity", "preload($id) reported PackCorrupt: ${r.reason} — uninstalling")
+                LanguagePackStore.uninstall(applicationContext, id)
+            }
+            is PreloadResult.TokenizerInitFailed ->
+                android.util.Log.w("MainActivity", "preload($id) tokenizer warm-up failed: ${r.reason} — keeping pack, next call retries")
+        }
     }
 
     // ── Setup ─────────────────────────────────────────────────────────────
@@ -407,9 +456,13 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
         regionPickerContainer = findViewById(R.id.regionPickerContainer)
         settingsContainer    = findViewById(R.id.settingsContainer)
         onboardingContainer  = findViewById(R.id.onboardingContainer)
+        pageWelcome          = findViewById(R.id.pageWelcome)
         pageNotif            = findViewById(R.id.pageNotif)
         pageA11y             = findViewById(R.id.pageA11y)
         pageA11ySingle       = findViewById(R.id.pageA11ySingle)
+        rowWelcomeGameLang   = findViewById(R.id.rowWelcomeGameLang)
+        rowWelcomeYourLang   = findViewById(R.id.rowWelcomeYourLang)
+        btnWelcomeContinue   = findViewById(R.id.btnWelcomeContinue)
         editOverlay          = findViewById(R.id.editOverlay)
         etEditOriginal       = findViewById(R.id.etEditOriginal)
     }
@@ -494,13 +547,18 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
         tvTranslateTitle.text = SpannableStringBuilder(prefix + label).apply {
             setSpan(StyleSpan(Typeface.BOLD), prefix.length, length, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
         }
+        val hintLabel = when (SourceLanguageProfiles[prefs.sourceLangId].hintTextKind) {
+            HintTextKind.PINYIN -> "pinyin"
+            HintTextKind.FURIGANA -> "furigana"
+            else -> "furigana"
+        }
         tvTranslateSubtitle.text = when (captureService?.holdBehavior) {
             CaptureService.HoldBehavior.HIDE_TRANSLATIONS ->
                 "Hold to hide translations on game screen"
             CaptureService.HoldBehavior.SHOW_TRANSLATIONS_OVER_FURIGANA ->
-                "Hold to show translations instead of furigana"
+                "Hold to show translations instead of $hintLabel"
             CaptureService.HoldBehavior.SHOW_FURIGANA ->
-                "Hold to show furigana on game screen"
+                "Hold to show $hintLabel on game screen"
             else ->
                 "Hold to show translations on game screen"
         }
@@ -572,14 +630,14 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
         }
         btnTranslate.setOnLongClickListener {
             translateHoldActive = true
-            val holdColor = themeColor(R.attr.colorTextTranslation)
+            val holdColor = themeColor(R.attr.ptTextTranslation)
             val radius = 6f * resources.displayMetrics.density
             btnTranslate.background = android.graphics.drawable.GradientDrawable().apply {
                 cornerRadius = radius
                 setColor(holdColor)
             }
-            tvTranslateTitle.setTextColor(themeColor(R.attr.colorTextOnAccent))
-            tvTranslateSubtitle.setTextColor(themeColor(R.attr.colorTextOnAccent))
+            tvTranslateTitle.setTextColor(themeColor(R.attr.ptAccentOn))
+            tvTranslateSubtitle.setTextColor(themeColor(R.attr.ptAccentOn))
             if (isLiveMode) {
                 captureService?.holdStart()
             } else {
@@ -645,7 +703,7 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
         }
     }
 
-    private val liveRedColor = android.graphics.Color.parseColor("#C95050")
+    private val liveRedColor by lazy { themeColor(R.attr.ptDanger) }
 
     private fun updateMenuLiveItem() {
         if (isLiveMode) {
@@ -660,7 +718,7 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
             menuItemLiveLabel.text = "Auto Translate"
             ivLiveToggle.setImageResource(R.drawable.ic_play)
             tvLiveToggle.text = "Auto"
-            val normalColor = themeColor(R.attr.colorTextPrimary)
+            val normalColor = themeColor(R.attr.ptText)
             ivLiveToggle.imageTintList = android.content.res.ColorStateList.valueOf(normalColor)
             tvLiveToggle.setTextColor(normalColor)
         }
@@ -689,10 +747,10 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
         }
 
         // ── Button visuals (always re-applied) ──
-        val accentBg = themeColor(R.attr.colorAccentPrimary)
-        val accentText = themeColor(R.attr.colorTextOnAccent)
-        val normalText = themeColor(R.attr.colorTextPrimary)
-        val strokeColor = themeColor(R.attr.colorTextSecondary)
+        val accentBg = themeColor(R.attr.ptAccent)
+        val accentText = themeColor(R.attr.ptAccentOn)
+        val normalText = themeColor(R.attr.ptText)
+        val strokeColor = themeColor(R.attr.ptTextMuted)
         val radius = 6f * resources.displayMetrics.density
 
         fun tabBackground(selected: Boolean): android.graphics.drawable.Drawable {
@@ -735,14 +793,7 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
     }
 
     private fun applyTheme() {
-        val idx = getSharedPreferences("playtranslate_prefs", Context.MODE_PRIVATE)
-            .getInt("theme_index", 0)
-        setTheme(when (idx) {
-            1    -> R.style.Theme_PlayTranslate_White
-            2    -> R.style.Theme_PlayTranslate_Rainbow
-            3    -> R.style.Theme_PlayTranslate_Purple
-            else -> R.style.Theme_PlayTranslate
-        })
+        setTheme(selectedActivityTheme(this))
     }
 
     private fun openSettings() {
@@ -760,7 +811,8 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
             setShowsDialog(false)
             onDisplayChanged = {
                 val wasLive = captureService?.isLive == true
-                captureService?.resetConfiguration()
+                // configureService() writes display/region; language managers
+                // self-heal via ensureLanguageManagersFor.
                 configureService()
                 PlayTranslateAccessibilityService.instance?.ensureFloatingIcon()
                 if (wasLive) {
@@ -768,6 +820,7 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
                     withAccessibility { doStartLive() }
                 }
             }
+            onSourceLangChanged = { onSourceLanguageChanged() }
             onScreenModeChanged = {
                 checkOnboardingState()
             }
@@ -795,7 +848,8 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
         val sheet = SettingsBottomSheet.newInstance(hideDismiss = hideDismiss).apply {
             onDisplayChanged = {
                 val wasLive = captureService?.isLive == true
-                captureService?.resetConfiguration()
+                // configureService() writes display/region; language managers
+                // self-heal via ensureLanguageManagersFor.
                 configureService()
                 PlayTranslateAccessibilityService.instance?.ensureFloatingIcon()
                 if (wasLive) {
@@ -803,6 +857,7 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
                     withAccessibility { doStartLive() }
                 }
             }
+            onSourceLangChanged = { onSourceLanguageChanged() }
             onScreenModeChanged = {
                 checkOnboardingState()
             }
@@ -911,7 +966,10 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
         frag.showTranslatingPlaceholder(lineText, segments)
 
         val svc = captureService
-        if (svc != null && svc.isConfigured) {
+        if (svc != null) {
+            // translateOnce is a translation-only path — doesn't need
+            // display/region (i.e. isConfigured) to be true. translate()
+            // self-heals language managers on first call.
             lifecycleScope.launch {
                 try {
                     val (translated, note) = svc.translateOnce(lineText)
@@ -960,16 +1018,39 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
         }
     }
 
-    /** Applies all current prefs to the capture service. Clears any override. */
+    /** Applies display + region to the capture service. Language managers
+     *  self-heal on the next capture via [CaptureService.ensureLanguageManagersFor]
+     *  so we no longer pass sourceLang / targetLang here. */
     private fun configureService() {
         val svc = captureService ?: return
         val entry = prefs.getSelectedRegion()
-        svc.configureSaved(
-            displayId  = prefs.captureDisplayId,
-            sourceLang = selectedSourceLang(),
-            targetLang = selectedTargetLang(),
-            region     = entry
-        )
+        svc.configureSaved(displayId = prefs.captureDisplayId, region = entry)
+    }
+
+    private fun onSourceLanguageChanged() {
+        val wasLive = captureService?.isLive == true
+        // Reset overlay mode if new language has no hint text
+        if (SourceLanguageProfiles[prefs.sourceLangId].hintTextKind == HintTextKind.NONE
+            && prefs.overlayMode == OverlayMode.FURIGANA) {
+            prefs.overlayMode = OverlayMode.TRANSLATION
+        }
+        // Language managers self-heal in translate(), but configureSaved()
+        // also clears any temporary override region and refreshes the saved
+        // region — both of which should reset on a deliberate language
+        // change. The cache invalidation that used to live here is now a
+        // side effect of configureSaved → ensureLanguageManagersFor.
+        configureService()
+        updateRegionButton()
+        PlayTranslateAccessibilityService.instance?.ensureFloatingIcon()
+        if (LanguagePackStore.isInstalled(applicationContext, prefs.sourceLangId)) {
+            lifecycleScope.launch(Dispatchers.IO) {
+                preloadEngineAndRecover(prefs.sourceLangId)
+            }
+        }
+        if (wasLive) {
+            captureService?.stopLive()
+            withAccessibility { doStartLive() }
+        }
     }
 
     private fun showAccessibilityDialog() {
@@ -989,7 +1070,7 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
         OverlayAlert.Builder(this)
             .setTitle("PlayTranslate crashed previously")
             .setMessage("Send the crash report to the developer? It includes a stack trace, recent app logs, and any text PlayTranslate has recently OCR'd or looked up. No account info.")
-            .addButton("Send", android.graphics.Color.parseColor("#5DB2EB")) {
+            .addButton("Send", themeColor(R.attr.ptAccent)) {
                 lifecycleScope.launch {
                     val files = withContext(Dispatchers.IO) {
                         runCatching {
@@ -1009,18 +1090,18 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
                 }
             }
             .addButton(
-                "Later",
-                android.graphics.Color.TRANSPARENT,
-                android.graphics.Color.parseColor("#AAAAAA")
-            ) {
-                // No action — files remain, prompt re-fires next launch.
-            }
-            .addButton(
                 "Discard",
-                android.graphics.Color.TRANSPARENT,
-                android.graphics.Color.parseColor("#AAAAAA")
+                themeColor(R.attr.ptDivider),
+                themeColor(R.attr.ptDanger)
             ) {
                 LogExporter.deleteCrashFiles(this)
+            }
+            .addButton(
+                "Later",
+                themeColor(R.attr.ptDivider),
+                themeColor(R.attr.ptText)
+            ) {
+                // No action — files remain, prompt re-fires next launch.
             }
             .showInActivity(this)
     }
@@ -1039,7 +1120,7 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
         OverlayAlert.Builder(this)
             .setTitle("Update available")
             .setMessage("PlayTranslate ${release.tag} is available on GitHub.")
-            .addButton("View release", android.graphics.Color.parseColor("#5DB2EB")) {
+            .addButton("View release", themeColor(R.attr.ptAccent)) {
                 try {
                     startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(release.url)))
                 } catch (_: Exception) {
@@ -1047,19 +1128,19 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
                 }
             }
             .addButton(
+                "Skip this version",
+                themeColor(R.attr.ptDivider),
+                themeColor(R.attr.ptDanger)
+            ) {
+                prefs.updateCheckSkippedTag = release.tag
+            }
+            .addButton(
                 "Ask again later",
-                android.graphics.Color.TRANSPARENT,
-                android.graphics.Color.parseColor("#AAAAAA")
+                themeColor(R.attr.ptDivider),
+                themeColor(R.attr.ptText)
             ) {
                 // 24h debounce timestamp was already committed inside
                 // UpdateChecker.maybeCheck — no extra bookkeeping needed.
-            }
-            .addButton(
-                "Skip this version",
-                android.graphics.Color.TRANSPARENT,
-                android.graphics.Color.parseColor("#AAAAAA")
-            ) {
-                prefs.updateCheckSkippedTag = release.tag
             }
             .showInActivity(this)
     }
@@ -1070,7 +1151,7 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
             .setMessage(getString(R.string.restricted_settings_message))
             .addButton(
                 getString(R.string.btn_open_app_settings),
-                android.graphics.Color.parseColor("#5DB2EB")
+                themeColor(R.attr.ptAccent)
             ) {
                 val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
                     data = Uri.fromParts("package", packageName, null)
@@ -1084,6 +1165,22 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
     private fun isSingleScreen(): Boolean = Prefs.isSingleScreen(this)
 
     private fun checkOnboardingState() {
+        val prefs = Prefs(this)
+        val sourceInstalled = LanguagePackStore.isInstalled(this, prefs.sourceLangId)
+        val languageConfigured = sourceInstalled && prefs.hasTargetLangBeenSet
+
+        val existingSheet = supportFragmentManager.findFragmentByTag(SettingsBottomSheet.TAG) as? SettingsBottomSheet
+
+        // Welcome + language setup comes first: tap a language pair before
+        // being asked to grant permissions. Upgrade users who already have
+        // both satisfied skip this step entirely.
+        if (!languageConfigured) {
+            existingSheet?.dismissAllowingStateLoss()
+            showOnboardingPage(pageWelcome)
+            refreshWelcomeRowsAndButton()
+            return
+        }
+
         val notifGranted = Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
             ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) ==
             PackageManager.PERMISSION_GRANTED
@@ -1095,9 +1192,7 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
         // rationale doesn't apply in split-screen where the app half is
         // visible alongside the game.
         val singleScreen = Prefs.isSingleScreen(this)
-        val existingSheet = supportFragmentManager.findFragmentByTag(SettingsBottomSheet.TAG) as? SettingsBottomSheet
 
-        // Notification permission always comes first regardless of screen mode
         if (!notifGranted) {
             existingSheet?.dismissAllowingStateLoss()
             showOnboardingPage(pageNotif)
@@ -1131,14 +1226,104 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
         showOnboardingPage(pageA11y)
     }
 
+    /** Refreshes Game Language / Your Language row values and the Continue
+     *  button's label to match current source-installed / target-set state.
+     *  Called whenever [pageWelcome] is (re-)displayed. */
+    private fun refreshWelcomeRowsAndButton() {
+        val p = Prefs(this)
+        val srcInstalled = LanguagePackStore.isInstalled(this, p.sourceLangId)
+        val tgtSet = p.hasTargetLangBeenSet
+        // Effective target — explicit if set, else the computed default.
+        // Used both for the Your Language row display and for localizing the
+        // Game Language name.
+        val sourceCode = com.playtranslate.language.SourceLanguageProfiles[p.sourceLangId].translationCode
+        val effectiveTarget = if (tgtSet) p.targetLang
+            else com.playtranslate.ui.WelcomeDefaults.computeDefaultTarget(sourceCode)
+        val tgtLocale = java.util.Locale(effectiveTarget)
+
+        rowWelcomeGameLang.findViewById<TextView>(R.id.tvRowTitle).text =
+            getString(R.string.lang_translate_from)
+        val gameVal = rowWelcomeGameLang.findViewById<TextView>(R.id.tvRowValue)
+        if (srcInstalled) {
+            gameVal.text = p.sourceLangId.displayName(tgtLocale)
+            gameVal.setTextColor(themeColor(R.attr.ptTextMuted))
+        } else {
+            gameVal.text = getString(R.string.onboarding_welcome_row_placeholder)
+            gameVal.setTextColor(themeColor(R.attr.ptTextHint))
+        }
+
+        rowWelcomeYourLang.findViewById<TextView>(R.id.tvRowTitle).text =
+            getString(R.string.lang_translate_to)
+        val yourVal = rowWelcomeYourLang.findViewById<TextView>(R.id.tvRowValue)
+        // Value is the effective target — explicit selection or computed
+        // default. Styling matches a committed selection; if the user wants
+        // something else they tap the row. Tapping Continue without having
+        // picked explicitly runs the install flow for this default.
+        yourVal.text = tgtLocale.getDisplayLanguage(tgtLocale)
+            .replaceFirstChar { it.uppercase(tgtLocale) }
+        yourVal.setTextColor(themeColor(R.attr.ptTextMuted))
+
+        btnWelcomeContinue.text = getString(
+            if (srcInstalled) R.string.onboarding_welcome_continue
+            else R.string.onboarding_welcome_select_source
+        )
+    }
+
+    private fun launchLanguagePicker(mode: String) {
+        startActivity(
+            Intent(this, com.playtranslate.ui.LanguageSetupActivity::class.java)
+                .putExtra(com.playtranslate.ui.LanguageSetupActivity.EXTRA_MODE, mode)
+                .putExtra(com.playtranslate.ui.LanguageSetupActivity.EXTRA_ONBOARDING, true)
+        )
+    }
+
     private fun showOnboardingPage(page: View) {
         onboardingContainer.visibility = View.VISIBLE
+        pageWelcome.visibility    = if (page == pageWelcome)    View.VISIBLE else View.GONE
         pageNotif.visibility      = if (page == pageNotif)      View.VISIBLE else View.GONE
         pageA11y.visibility       = if (page == pageA11y)       View.VISIBLE else View.GONE
         pageA11ySingle.visibility = if (page == pageA11ySingle) View.VISIBLE else View.GONE
     }
 
     private fun setupOnboarding() {
+        // Welcome page — row taps open the appropriate picker; Continue's
+        // label + action depend on whether the source pack is installed yet.
+        rowWelcomeGameLang.setOnClickListener {
+            launchLanguagePicker(com.playtranslate.ui.LanguageSetupActivity.MODE_SOURCE)
+        }
+        rowWelcomeYourLang.setOnClickListener {
+            launchLanguagePicker(com.playtranslate.ui.LanguageSetupActivity.MODE_TARGET)
+        }
+        btnWelcomeContinue.setOnClickListener {
+            val p = Prefs(this)
+            when {
+                !LanguagePackStore.isInstalled(this, p.sourceLangId) -> {
+                    launchLanguagePicker(com.playtranslate.ui.LanguageSetupActivity.MODE_SOURCE)
+                }
+                !p.hasTargetLangBeenSet -> {
+                    // User is accepting the pre-populated default — run the
+                    // same download + ensure-model-ready flow the target
+                    // picker would have, commit prefs on success, advance.
+                    // Using the shared welcomeTargetInstaller so its
+                    // single-flight guard engages across rapid double-taps.
+                    val sourceCode = com.playtranslate.language.SourceLanguageProfiles[
+                        p.sourceLangId
+                    ].translationCode
+                    val defaultTarget = com.playtranslate.ui.WelcomeDefaults
+                        .computeDefaultTarget(sourceCode)
+                    welcomeTargetInstaller.installAndLoad(
+                        sourceLangCode = sourceCode,
+                        targetCode = defaultTarget,
+                        onSuccess = {
+                            Prefs(this).targetLang = defaultTarget
+                            checkOnboardingState()
+                        },
+                    )
+                }
+                else -> checkOnboardingState()
+            }
+        }
+
         pageNotif.findViewById<View>(R.id.btnGrantNotif).setOnClickListener {
             notifPermLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
@@ -1152,7 +1337,7 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
         pageA11y.findViewById<View>(R.id.btnCantEnableA11y).setOnClickListener(cantEnableClick)
         pageA11ySingle.findViewById<View>(R.id.btnCantEnableA11ySingle).setOnClickListener(cantEnableClick)
         // Highlight "PlayTranslate" in the hint text with the theme accent color
-        val accentColor = themeColor(R.attr.colorTextTranslation)
+        val accentColor = themeColor(R.attr.ptTextTranslation)
         colorizeAppName(pageA11y.findViewById(R.id.tvA11yHintDual), accentColor)
         colorizeAppName(pageA11ySingle.findViewById(R.id.tvA11yHintSingle), accentColor)
     }
@@ -1190,8 +1375,8 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
 
     // ── Helpers ───────────────────────────────────────────────────────────
 
-    private fun selectedSourceLang() = TranslateLanguage.JAPANESE
-    private fun selectedTargetLang() = TranslateLanguage.ENGLISH
+    private fun selectedSourceLang() =
+        SourceLanguageProfiles[prefs.sourceLangId].translationCode
 
     /**
      * Sets tvLiveHint text with an inline play icon ImageSpan.
@@ -1200,7 +1385,7 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
     private fun initLiveHintText() {
         val frag = resultFragment ?: return
         val icon = ContextCompat.getDrawable(this, R.drawable.ic_play)?.mutate() ?: return
-        icon.setTint(themeColor(R.attr.colorTextHint))
+        icon.setTint(themeColor(R.attr.ptTextHint))
         val textSize = 24f * resources.displayMetrics.scaledDensity
         val size = (textSize * 1.1f).toInt()
         icon.setBounds(0, 0, size, size)
@@ -1220,8 +1405,8 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
     }
 
     private fun langDisplayName(langCode: String): String =
-        Locale(langCode).getDisplayLanguage(Locale.ENGLISH)
-            .replaceFirstChar { it.uppercase() }
+        Locale(langCode).getDisplayLanguage(Locale.getDefault())
+            .replaceFirstChar { it.uppercase(Locale.getDefault()) }
 
     private fun showEditOverlay() {
         val currentText = resultFragment?.getDisplayedOriginalText()?.takeIf { it.isNotBlank() }
@@ -1248,10 +1433,16 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
         editTranslationJob?.cancel()
         editTranslationJob = lifecycleScope.launch {
             try {
-                val tm = editTranslationManager
-                    ?: TranslationManager(selectedSourceLang(), selectedTargetLang()).also { editTranslationManager = it }
-                tm.ensureModelReady()
-                val translated = tm.translate(newText)
+                // Route through the service so edit re-translations pick up the
+                // current language pair via translateOnce's self-heal, inherit
+                // the full DeepL→Lingva→ML-Kit waterfall, and don't own any
+                // parallel translator state that could go stale on pref change.
+                val svc = captureService
+                if (svc == null) {
+                    frag.updateTranslation("—")
+                    return@launch
+                }
+                val (translated, _) = svc.translateOnce(newText)
                 frag.updateTranslation(translated)
             } catch (_: Exception) {
                 frag.updateTranslation("—")
@@ -1307,7 +1498,7 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
 
         val container = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setBackgroundColor(themeColor(R.attr.colorBgSurface))
+            setBackgroundColor(themeColor(R.attr.ptSurface))
             elevation = 8 * dp
         }
         val rows = mutableListOf<View>()
@@ -1373,7 +1564,7 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
 
         val container = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setBackgroundColor(themeColor(R.attr.colorBgSurface))
+            setBackgroundColor(themeColor(R.attr.ptSurface))
             elevation = 8 * dp
         }
         val rows = mutableListOf<View>()
@@ -1388,7 +1579,9 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
         dropdownHighlightListener = { rowIdx ->
             val regionIdx = dropdownRegionOrder[rowIdx]
             if (regionIdx >= 0) {
-                PlayTranslateAccessibilityService.instance?.updateRegionOverlay(dropdownRegions[regionIdx])
+                dropdownGameDisplay?.let { d ->
+                    PlayTranslateAccessibilityService.instance?.showRegionOverlay(d, dropdownRegions[regionIdx])
+                }
             }
         }
         dropdownCommitAction = { commitRegionDropdownSelection() }
@@ -1463,6 +1656,7 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
     }
 
     private fun openAddCustomRegionFromDropdown() {
+        PlayTranslateAccessibilityService.instance?.hideRegionOverlay()
         val displayManager = getSystemService(Context.DISPLAY_SERVICE) as DisplayManager
         val gameDisplay = displayManager.getDisplay(prefs.captureDisplayId)
         val current = CaptureService.instance?.activeRegion
@@ -1513,14 +1707,14 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
             gravity = Gravity.CENTER_VERTICAL
             setPadding(padH, padV, padH, padV)
             setBackgroundColor(themeColor(
-                if (highlighted) R.attr.colorBgCard else R.attr.colorBgSurface))
+                if (highlighted) R.attr.ptCard else R.attr.ptSurface))
 
             if (isAddNew) {
                 val tv = TextView(this@MainActivity).apply {
                     text = label
                     textSize = 14f
                     setTypeface(null, Typeface.BOLD)
-                    setTextColor(themeColor(R.attr.colorAccentPrimary))
+                    setTextColor(themeColor(R.attr.ptAccent))
                 }
                 addView(tv)
             } else {
@@ -1536,7 +1730,7 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
                 val tv = TextView(this@MainActivity).apply {
                     text = label
                     textSize = 14f
-                    setTextColor(themeColor(R.attr.colorTextPrimary))
+                    setTextColor(themeColor(R.attr.ptText))
                 }
                 addView(rb)
                 addView(tv)
@@ -1546,8 +1740,35 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
 
     private fun updateRowHighlight(row: View, highlighted: Boolean) {
         row.setBackgroundColor(themeColor(
-            if (highlighted) R.attr.colorBgCard else R.attr.colorBgSurface))
+            if (highlighted) R.attr.ptCard else R.attr.ptSurface))
         ((row as? LinearLayout)?.getChildAt(0) as? RadioButton)?.isChecked = highlighted
+    }
+
+    private fun checkTargetPackMigration() {
+        val target = prefs.targetLang
+        if (target == "en") return
+        if (LanguagePackStore.isTargetInstalled(this, target)) return
+        if (prefs.targetPackMigrationDismissed) return
+        val catalogKey = "target-$target"
+        if (LanguagePackCatalogLoader.entryForKey(this, catalogKey) == null) return
+
+        val targetLocale = java.util.Locale(target)
+        val targetName = targetLocale.getDisplayLanguage(targetLocale)
+            .replaceFirstChar { it.uppercase(targetLocale) }
+        AlertDialog.Builder(this)
+            .setTitle("$targetName definitions available")
+            .setMessage(
+                "A $targetName definition pack is available. " +
+                "Download it for word definitions in $targetName instead of English?"
+            )
+            .setPositiveButton("Download") { _, _ ->
+                com.playtranslate.ui.LanguageSetupActivity.launch(this, com.playtranslate.ui.LanguageSetupActivity.MODE_TARGET)
+            }
+            .setNegativeButton("Not now") { _, _ ->
+                prefs.targetPackMigrationDismissed = true
+            }
+            .setCancelable(false)
+            .show()
     }
 
     companion object {

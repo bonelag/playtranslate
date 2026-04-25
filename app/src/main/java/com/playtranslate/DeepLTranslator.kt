@@ -33,8 +33,13 @@ class DeepLTranslator(
     private val host   = if (apiKey.endsWith(":fx")) "api-free.deepl.com" else "api.deepl.com"
 
     fun close() {
-        client.dispatcher.executorService.shutdown()
-        client.connectionPool.evictAll()
+        // Background daemon thread — see LingvaTranslator.close() for the
+        // NetworkOnMainThreadException rationale. Same OkHttp shutdown path.
+        val c = client
+        Thread {
+            c.dispatcher.executorService.shutdown()
+            c.connectionPool.evictAll()
+        }.apply { isDaemon = true; name = "DeepLTranslator-close" }.start()
     }
 
     suspend fun translate(text: String): String = withContext(Dispatchers.IO) {
@@ -76,7 +81,7 @@ class DeepLTranslator(
         "it" -> "IT"
         "pt" -> "PT-PT"
         "ru" -> "RU"
-        else -> mlKitCode.uppercase()
+        else -> mlKitCode.uppercase(java.util.Locale.ROOT)
     }
 
     private data class DeepLResponse(val translations: List<Translation>) {

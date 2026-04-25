@@ -21,15 +21,19 @@ import androidx.lifecycle.lifecycleScope
 import com.playtranslate.AnkiManager
 import com.playtranslate.CaptureService
 import com.playtranslate.Prefs
+import com.playtranslate.language.DefinitionResolver
+import com.playtranslate.language.DefinitionResult
+import com.playtranslate.language.WordTranslator
+import com.playtranslate.language.SourceLanguageEngines
+import com.playtranslate.language.SourceLanguageProfiles
+import com.playtranslate.language.TargetGlossDatabaseProvider
+import com.playtranslate.language.TranslationManagerProvider
 import com.playtranslate.R
-import com.playtranslate.dictionary.Deinflector
-import com.playtranslate.dictionary.DictionaryManager
+import com.playtranslate.language.HintTextKind
 import com.playtranslate.model.TranslationResult
 import com.playtranslate.themeColor
-import com.google.mlkit.nl.translate.TranslateLanguage
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.async
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.supervisorScope
 import kotlinx.coroutines.withContext
@@ -79,10 +83,12 @@ class TranslationResultFragment : Fragment() {
     private lateinit var translationContent: LinearLayout
     private lateinit var originalContent: LinearLayout
     private lateinit var wordsContent: LinearLayout
+    private lateinit var cardTranslation: com.google.android.material.card.MaterialCardView
+    private lateinit var cardOriginal: com.google.android.material.card.MaterialCardView
+    private lateinit var cardWords: com.google.android.material.card.MaterialCardView
     private lateinit var labelOriginal: TextView
     private lateinit var labelTranslation: TextView
     private lateinit var tvNoWords: TextView
-    private lateinit var tvTransliteration: TextView
     private lateinit var resultActionButtons: View
     private lateinit var btnResultClear: View
     private lateinit var btnResultAnki: View
@@ -98,11 +104,6 @@ class TranslationResultFragment : Fragment() {
 
     /** Called when Anki button enabled state changes (e.g. after word lookups complete). */
     var onAnkiEnabledChanged: ((Boolean) -> Unit)? = null
-
-    private val romajiTransliterator by lazy {
-        try { android.icu.text.Transliterator.getInstance("Any-Latin; NFD; [:Nonspacing Mark:] Remove; NFC") }
-        catch (_: Exception) { null }
-    }
 
     private val host: TranslationResultHost?
         get() = activity as? TranslationResultHost
@@ -149,10 +150,12 @@ class TranslationResultFragment : Fragment() {
         translationContent   = view.findViewById(R.id.translationContent)
         originalContent      = view.findViewById(R.id.originalContent)
         wordsContent         = view.findViewById(R.id.wordsContent)
+        cardTranslation      = view.findViewById(R.id.cardTranslation)
+        cardOriginal         = view.findViewById(R.id.cardOriginal)
+        cardWords            = view.findViewById(R.id.cardWords)
         labelOriginal        = view.findViewById(R.id.labelOriginal)
         labelTranslation     = view.findViewById(R.id.labelTranslation)
         tvNoWords            = view.findViewById(R.id.tvNoWords)
-        tvTransliteration    = view.findViewById(R.id.tvTransliteration)
         resultActionButtons  = view.findViewById(R.id.resultActionButtons)
         btnResultClear       = view.findViewById(R.id.btnResultClear)
         btnResultAnki        = view.findViewById(R.id.btnResultAnki)
@@ -199,49 +202,58 @@ class TranslationResultFragment : Fragment() {
 
     private fun applyTranslationVisibility() {
         val hidden = prefs.hideTranslationSection
-        translationContent.visibility = if (hidden) View.GONE else View.VISIBLE
+        cardTranslation.visibility = if (hidden) View.GONE else View.VISIBLE
         btnCopyTranslation.visibility = if (hidden) View.INVISIBLE else View.VISIBLE
         btnToggleTranslation.setImageResource(if (hidden) R.drawable.ic_visibility_off else R.drawable.ic_visibility)
     }
 
     private fun applyOriginalVisibility() {
         val hidden = prefs.hideOriginalSection
-        originalContent.visibility = if (hidden) View.GONE else View.VISIBLE
+        cardOriginal.visibility = if (hidden) View.GONE else View.VISIBLE
         btnCopyOriginal.visibility = if (hidden) View.INVISIBLE else View.VISIBLE
         btnEditOriginal.visibility = if (hidden) View.INVISIBLE else View.VISIBLE
-        btnToggleFurigana.visibility = if (hidden) View.INVISIBLE else View.VISIBLE
+        val hintKind = SourceLanguageProfiles[prefs.sourceLangId].hintTextKind
+        val hasHintText = hintKind != HintTextKind.NONE
+        btnToggleFurigana.visibility = if (hidden || !hasHintText) View.GONE else View.VISIBLE
+        if (hasHintText) {
+            val label = when (hintKind) { HintTextKind.PINYIN -> "pinyin"; else -> "furigana" }
+            btnToggleFurigana.contentDescription = "Toggle inline $label"
+            btnToggleFurigana.setImageResource(
+                if (hintKind == HintTextKind.PINYIN) R.drawable.ic_pinyin else R.drawable.ic_furigana
+            )
+        }
         btnToggleOriginal.setImageResource(if (hidden) R.drawable.ic_visibility_off else R.drawable.ic_visibility)
     }
 
     private fun applyWordsVisibility() {
         val hidden = prefs.hideWordsSection
-        wordsContent.visibility = if (hidden) View.GONE else View.VISIBLE
+        cardWords.visibility = if (hidden) View.GONE else View.VISIBLE
         btnToggleWords.setImageResource(if (hidden) R.drawable.ic_visibility_off else R.drawable.ic_visibility)
     }
 
     private fun applyFurigana() {
         val active = prefs.showFuriganaInline
         val ctx = context ?: return
-        val accentColor = ctx.themeColor(R.attr.colorAccentPrimary)
-        val secondaryColor = ctx.themeColor(R.attr.colorTextSecondary)
+        val accentColor = ctx.themeColor(R.attr.ptAccent)
+        val secondaryColor = ctx.themeColor(R.attr.ptTextMuted)
         btnToggleFurigana.imageTintList = android.content.res.ColorStateList.valueOf(
             if (active) accentColor else secondaryColor
         )
 
         val plainText = tvOriginal.text.toString()
         if (active && plainText.isNotEmpty()) {
-            val dict = DictionaryManager.get(ctx.applicationContext)
-            val tokens = dict.tokenizeForFurigana(plainText)
-            if (tokens.isEmpty()) {
+            val engine = SourceLanguageEngines.get(ctx.applicationContext, prefs.sourceLangId)
+            val annotations = engine.annotateForHintText(plainText)
+            if (annotations.isEmpty()) {
                 tvOriginal.text = plainText
                 return
             }
             val spannable = android.text.SpannableString(plainText)
-            for (ft in tokens) {
-                if (ft.endOffset > plainText.length) continue
+            for (ann in annotations) {
+                if (ann.baseEnd > plainText.length) continue
                 spannable.setSpan(
-                    FuriganaSpan(ft.reading),
-                    ft.startOffset, ft.endOffset,
+                    FuriganaSpan(ann.hintText),
+                    ann.baseStart, ann.baseEnd,
                     android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
                 )
             }
@@ -264,8 +276,8 @@ class TranslationResultFragment : Fragment() {
         applyTranslationVisibility()
         applyOriginalVisibility()
         applyWordsVisibility()
-        labelOriginal.text    = langDisplayName(selectedSourceLang())
-        labelTranslation.text = langDisplayName(selectedTargetLang())
+        labelOriginal.text    = sourceLangLocalizedDisplayName()
+        labelTranslation.text = targetLangDisplayName()
         statusContainer.visibility = View.GONE
         resultsContent.visibility  = View.INVISIBLE
         resultActionButtons.visibility = View.VISIBLE
@@ -283,6 +295,23 @@ class TranslationResultFragment : Fragment() {
     private companion object {
         const val TEXT_SIZE_MAX_SP = 24f
         const val TEXT_SIZE_MIN_SP = 16f
+        const val WORD_DIVIDER_TAG = "pt_word_divider"
+    }
+
+    /** 1dp ptDivider line inset from the start by pt_row_h_padding, matching
+     *  `settings_row_divider` for word rows inside the Words card. */
+    private fun inflateWordDivider(): View {
+        val ctx = requireContext()
+        val dp1 = ctx.resources.displayMetrics.density.toInt().coerceAtLeast(1)
+        return View(ctx).apply {
+            tag = WORD_DIVIDER_TAG
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, dp1
+            ).apply {
+                marginStart = ctx.resources.getDimensionPixelSize(R.dimen.pt_row_h_padding)
+            }
+            setBackgroundColor(ctx.themeColor(R.attr.ptDivider))
+        }
     }
 
     /**
@@ -332,7 +361,8 @@ class TranslationResultFragment : Fragment() {
                     .show()
             else ->
                 AnkiReviewBottomSheet.newInstance(
-                    getDisplayedOriginalText(), result.translatedText, mainWordResults, result.screenshotPath
+                    getDisplayedOriginalText(), result.translatedText, mainWordResults,
+                    result.screenshotPath, prefs.sourceLangId
                 ).show(childFragmentManager, AnkiReviewBottomSheet.TAG)
         }
     }
@@ -356,45 +386,118 @@ class TranslationResultFragment : Fragment() {
         val activity = activity ?: return
         viewLifecycleOwner.lifecycleScope.launch {
             try {
-                val dict = DictionaryManager.get(ctx.applicationContext)
-                val response = withContext(Dispatchers.IO) {
-                    dict.lookup(lookupForm, reading.ifEmpty { null })
+                val appCtx = ctx.applicationContext
+                val prefs = Prefs(appCtx)
+                val engine = SourceLanguageEngines.get(appCtx, prefs.sourceLangId)
+                val targetGlossDb = TargetGlossDatabaseProvider.get(appCtx, prefs.targetLang)
+                val mlKitTranslator = TranslationManagerProvider.get(engine.profile.translationCode, prefs.targetLang)
+                val enToTarget = TranslationManagerProvider.getEnToTarget(prefs.targetLang)
+                val resolver = DefinitionResolver(engine, targetGlossDb,
+                    mlKitTranslator?.let { WordTranslator(it::translate) }, prefs.targetLang,
+                    enToTarget?.let { WordTranslator(it::translate) })
+                val defResult = withContext(Dispatchers.IO) {
+                    resolver.lookup(lookupForm, reading.ifEmpty { null })
                 }
-                val entry = response?.data?.firstOrNull()
+                val response = defResult?.response
+                val entry = response?.entries?.firstOrNull()
 
-                // Build popup data from the JMdict entry when we have one,
-                // or fall back to a reading-only display when the tokenizer
-                // produced a reading but no dictionary entry exists (proper
-                // nouns live in ENAMDICT, which isn't bundled — same for
-                // other out-of-dictionary tokens). If we don't even have a
-                // reading there's nothing meaningful to show, so return.
+                // Build popup data based on DefinitionResult tier.
                 val word: String
+                val popupLabel: String?
                 val senses: List<WordLookupPopup.SenseDisplay>
                 val freqScore: Int
                 val isCommon: Boolean
-                if (entry != null) {
-                    val form = entry.japanese.firstOrNull()
-                    word = form?.word ?: form?.reading ?: entry.slug
-                    senses = entry.senses.map { sense ->
-                        WordLookupPopup.SenseDisplay(
-                            pos = sense.partsOfSpeech.joinToString(", "),
-                            definition = sense.englishDefinitions.joinToString("; ")
-                        )
+                when {
+                    entry != null && defResult is DefinitionResult.Native -> {
+                        val form = entry.headwords.firstOrNull()
+                        word = form?.written ?: form?.reading ?: entry.slug
+                        popupLabel = null
+                        val targetByOrd = defResult.targetSenses.associateBy { it.senseOrd }
+                        val mtDefs = defResult.translatedDefinitions
+                        senses = entry.senses.mapIndexed { i, sense ->
+                            val target = targetByOrd[i]
+                            if (target != null) {
+                                WordLookupPopup.SenseDisplay(
+                                    pos = target.pos.joinToString(", "),
+                                    definition = target.glosses.joinToString("; ")
+                                )
+                            } else {
+                                val mt = mtDefs?.getOrNull(i)?.takeIf { it.isNotBlank() }
+                                WordLookupPopup.SenseDisplay(
+                                    pos = sense.partsOfSpeech.joinToString(", "),
+                                    definition = mt ?: sense.targetDefinitions.joinToString("; ")
+                                )
+                            }
+                        }
+                        freqScore = entry.freqScore
+                        isCommon = entry.isCommon == true
                     }
-                    freqScore = entry.freqScore
-                    isCommon = entry.isCommon == true
-                } else if (reading.isNotEmpty()) {
-                    word = lookupForm
-                    senses = listOf(
-                        WordLookupPopup.SenseDisplay(
-                            pos = "",
-                            definition = "Not in dictionary, may be a name"
+                    entry != null && defResult is DefinitionResult.MachineTranslated -> {
+                        val form = entry.headwords.firstOrNull()
+                        word = form?.written ?: form?.reading ?: entry.slug
+                        popupLabel = "⚠ Machine translated"
+                        val defs = defResult.translatedDefinitions
+                        senses = if (defs != null) {
+                            entry.senses.mapIndexed { i, sense ->
+                                WordLookupPopup.SenseDisplay(
+                                    pos = sense.partsOfSpeech.joinToString(", "),
+                                    definition = defs.getOrElse(i) { sense.targetDefinitions.joinToString("; ") }
+                                )
+                            }
+                        } else {
+                            buildList {
+                                add(WordLookupPopup.SenseDisplay(pos = "", definition = defResult.translatedHeadword))
+                                entry.senses.forEach { sense ->
+                                    add(WordLookupPopup.SenseDisplay(
+                                        pos = sense.partsOfSpeech.joinToString(", "),
+                                        definition = sense.targetDefinitions.joinToString("; ")
+                                    ))
+                                }
+                            }
+                        }
+                        freqScore = entry.freqScore
+                        isCommon = entry.isCommon == true
+                    }
+                    entry != null && defResult is DefinitionResult.EnglishFallback && defResult.translatedDefinitions != null -> {
+                        val form = entry.headwords.firstOrNull()
+                        word = form?.written ?: form?.reading ?: entry.slug
+                        popupLabel = "⚠ Machine translated"
+                        val defs = defResult.translatedDefinitions
+                        senses = entry.senses.mapIndexed { i, sense ->
+                            WordLookupPopup.SenseDisplay(
+                                pos = sense.partsOfSpeech.joinToString(", "),
+                                definition = defs.getOrElse(i) { sense.targetDefinitions.joinToString("; ") }
+                            )
+                        }
+                        freqScore = entry.freqScore
+                        isCommon = entry.isCommon == true
+                    }
+                    entry != null -> {
+                        val form = entry.headwords.firstOrNull()
+                        word = form?.written ?: form?.reading ?: entry.slug
+                        popupLabel = null
+                        senses = entry.senses.map { sense ->
+                            WordLookupPopup.SenseDisplay(
+                                pos = sense.partsOfSpeech.joinToString(", "),
+                                definition = sense.targetDefinitions.joinToString("; ")
+                            )
+                        }
+                        freqScore = entry.freqScore
+                        isCommon = entry.isCommon == true
+                    }
+                    reading.isNotEmpty() -> {
+                        word = lookupForm
+                        popupLabel = null
+                        senses = listOf(
+                            WordLookupPopup.SenseDisplay(
+                                pos = "",
+                                definition = "Not in dictionary, may be a name"
+                            )
                         )
-                    )
-                    freqScore = 0
-                    isCommon = false
-                } else {
-                    return@launch
+                        freqScore = 0
+                        isCommon = false
+                    }
+                    else -> return@launch
                 }
 
                 // Calculate position: center on the tapped word, above it
@@ -434,7 +537,7 @@ class TranslationResultFragment : Fragment() {
                 }
                 wordPopup?.show(word, lookupReading, senses, freqScore,
                     isCommon, screenX, screenY, dm.widthPixels, dm.heightPixels,
-                    anchorHeight = lineH)
+                    anchorHeight = lineH, label = popupLabel)
             } catch (_: Exception) {}
         }
     }
@@ -453,7 +556,7 @@ class TranslationResultFragment : Fragment() {
         val dm = resources.displayMetrics
         fun dp(v: Float) = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, v, dm).toInt()
 
-        val bgColor = ctx.themeColor(R.attr.colorBgCard)
+        val bgColor = ctx.themeColor(R.attr.ptCard)
         val arrowW = dp(12f)
         val arrowH = dp(6f)
 
@@ -461,7 +564,7 @@ class TranslationResultFragment : Fragment() {
         val tv = TextView(ctx).apply {
             text = reading
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
-            setTextColor(ctx.themeColor(R.attr.colorTextPrimary))
+            setTextColor(ctx.themeColor(R.attr.ptText))
             setPadding(dp(10f), dp(5f), dp(10f), dp(5f))
             background = android.graphics.drawable.GradientDrawable().apply {
                 setColor(bgColor)
@@ -596,8 +699,8 @@ class TranslationResultFragment : Fragment() {
         if (!isAdded || view == null) return
         tvOriginal.setSegments(segments)
         tvOriginal.onTapAtOffset = { offset -> onOriginalTapped(offset) }
-        labelOriginal.text = langDisplayName(selectedSourceLang())
-        labelTranslation.text = langDisplayName(selectedTargetLang())
+        labelOriginal.text = sourceLangLocalizedDisplayName()
+        labelTranslation.text = targetLangDisplayName()
         statusContainer.visibility = View.GONE
         resultsContent.visibility = View.VISIBLE
         resultActionButtons.visibility = View.VISIBLE
@@ -625,14 +728,20 @@ class TranslationResultFragment : Fragment() {
         tvMainWordsLoading.visibility = View.VISIBLE
         tvMainWordsLoading.text = getString(R.string.words_loading)
         tvNoWords.visibility = View.GONE
-        tvTransliteration.visibility = View.GONE
 
         wordLookupJob = viewLifecycleOwner.lifecycleScope.launch {
-            val romajiDeferred = async { buildRomaji(text) }
-
             val ctx = context ?: return@launch
+            val appCtx = ctx.applicationContext
+            val wordsPrefs = Prefs(appCtx)
+            val engine = SourceLanguageEngines.get(appCtx, wordsPrefs.sourceLangId)
+            val wordsTargetGlossDb = TargetGlossDatabaseProvider.get(appCtx, wordsPrefs.targetLang)
+            val wordsMlKit = TranslationManagerProvider.get(engine.profile.translationCode, wordsPrefs.targetLang)
+            val wordsEnToTarget = TranslationManagerProvider.getEnToTarget(wordsPrefs.targetLang)
+            val wordsResolver = DefinitionResolver(engine, wordsTargetGlossDb,
+                wordsMlKit?.let { WordTranslator(it::translate) }, wordsPrefs.targetLang,
+                wordsEnToTarget?.let { WordTranslator(it::translate) })
             val allTokens = withContext(Dispatchers.IO) {
-                DictionaryManager.get(ctx.applicationContext).tokenizeWithSurfaces(text)
+                engine.tokenize(text)
             }
 
             // Build surface → character range mapping for furigana taps.
@@ -656,11 +765,6 @@ class TranslationResultFragment : Fragment() {
                 tvMainWordsLoading.visibility = View.GONE
                 tvNoWords.visibility = View.VISIBLE
                 onAnkiEnabledChanged?.invoke(true)
-                val romaji = romajiDeferred.await()
-                if (romaji.isNotBlank() && romaji != text && false /* transliteration disabled */) {
-                    tvTransliteration.text = romaji
-                    tvTransliteration.visibility = View.VISIBLE
-                }
                 return@launch
             }
 
@@ -671,6 +775,9 @@ class TranslationResultFragment : Fragment() {
                 val row = inflater.inflate(R.layout.item_word_lookup, mainWordsContainer, false)
                 row.findViewById<TextView>(R.id.tvItemWord).text = word
                 row.findViewById<TextView>(R.id.tvItemMeaning).text = "…"
+                if (mainWordsContainer.childCount > 0) {
+                    mainWordsContainer.addView(inflateWordDivider())
+                }
                 mainWordsContainer.addView(row)
                 Pair(word, row)
             }
@@ -690,21 +797,60 @@ class TranslationResultFragment : Fragment() {
                         var displayWord = word
                         var freqScore = 0
                         try {
-                            val appCtx = context?.applicationContext ?: return@launch
-                            val response = withContext(Dispatchers.IO) {
-                                DictionaryManager.get(appCtx).lookup(word, readingByToken[word])
+                            val defResult = withContext(Dispatchers.IO) {
+                                wordsResolver.lookup(word, readingByToken[word])
                             }
-                            if (response != null && response.data.isNotEmpty()) {
-                                val entry   = response.data.first()
-                                val primary = entry.japanese.firstOrNull()
-                                displayWord = primary?.word ?: primary?.reading ?: word
-                                tvWord.text = displayWord
-                                reading = primary?.reading?.takeIf { it != primary.word } ?: ""
+                            val response = defResult?.response
+                            if (response != null && response.entries.isNotEmpty()) {
+                                val entry   = response.entries.first()
+                                val primary = entry.headwords.firstOrNull()
                                 freqScore = entry.freqScore
-                                meaning = entry.senses.mapIndexed { i, sense ->
-                                    val glosses = sense.englishDefinitions.joinToString("; ")
-                                    if (entry.senses.size > 1) "${i + 1}. $glosses" else glosses
-                                }.joinToString("\n")
+                                when (defResult) {
+                                    is DefinitionResult.Native -> {
+                                        displayWord = primary?.written ?: primary?.reading ?: word
+                                        tvWord.text = displayWord
+                                        reading = primary?.reading?.takeIf { it != primary.written } ?: ""
+                                        val targetByOrd = defResult.targetSenses.associateBy { it.senseOrd }
+                                        val mtDefs = defResult.translatedDefinitions
+                                        meaning = entry.senses.mapIndexed { i, sense ->
+                                            val target = targetByOrd[i]
+                                            val glosses = target?.glosses?.joinToString("; ")
+                                                ?: mtDefs?.getOrNull(i)?.takeIf { it.isNotBlank() }
+                                                ?: sense.targetDefinitions.joinToString("; ")
+                                            if (entry.senses.size > 1) "${i + 1}. $glosses" else glosses
+                                        }.joinToString("\n")
+                                    }
+                                    is DefinitionResult.MachineTranslated -> {
+                                        displayWord = primary?.written ?: primary?.reading ?: word
+                                        tvWord.text = displayWord
+                                        reading = primary?.reading?.takeIf { it != primary.written } ?: ""
+                                        val defs = defResult.translatedDefinitions
+                                        meaning = if (defs != null) {
+                                            entry.senses.mapIndexed { i, sense ->
+                                                val glosses = defs.getOrElse(i) { sense.targetDefinitions.joinToString("; ") }
+                                                if (entry.senses.size > 1) "${i + 1}. $glosses" else glosses
+                                            }.joinToString("\n")
+                                        } else {
+                                            val translatedLine = defResult.translatedHeadword
+                                            val englishLines = entry.senses.mapIndexed { i, sense ->
+                                                val glosses = sense.targetDefinitions.joinToString("; ")
+                                                if (entry.senses.size > 1) "${i + 1}. $glosses" else glosses
+                                            }.joinToString("\n")
+                                            "$translatedLine\n$englishLines"
+                                        }
+                                    }
+                                    is DefinitionResult.EnglishFallback -> {
+                                        displayWord = primary?.written ?: primary?.reading ?: word
+                                        tvWord.text = displayWord
+                                        reading = primary?.reading?.takeIf { it != primary.written } ?: ""
+                                        val defs = defResult.translatedDefinitions
+                                        meaning = entry.senses.mapIndexed { i, sense ->
+                                            val glosses = defs?.getOrElse(i) { sense.targetDefinitions.joinToString("; ") }
+                                                ?: sense.targetDefinitions.joinToString("; ")
+                                            if (entry.senses.size > 1) "${i + 1}. $glosses" else glosses
+                                        }.joinToString("\n")
+                                    }
+                                }
                             }
                         } catch (_: Exception) {}
                         if (meaning.isNotEmpty()) {
@@ -733,7 +879,22 @@ class TranslationResultFragment : Fragment() {
                                 surfaceArr[idx] = Pair(displayWord, surface)
                             }
                         } else {
-                            mainWordsContainer.removeView(row)
+                            // Remove the row plus its adjacent divider so the
+                            // invariant "every row at index > 0 is preceded by
+                            // a divider" holds after filtering.
+                            val childIdx = mainWordsContainer.indexOfChild(row)
+                            if (childIdx != -1) {
+                                if (childIdx == 0) {
+                                    mainWordsContainer.removeViewAt(0)
+                                    val next = mainWordsContainer.getChildAt(0)
+                                    if (next?.tag == WORD_DIVIDER_TAG) {
+                                        mainWordsContainer.removeViewAt(0)
+                                    }
+                                } else {
+                                    mainWordsContainer.removeViewAt(childIdx - 1) // divider
+                                    mainWordsContainer.removeViewAt(childIdx - 1) // row (shifted)
+                                }
+                            }
                         }
                     }
                 }
@@ -783,28 +944,26 @@ class TranslationResultFragment : Fragment() {
             LastSentenceCache.translation = lastResult?.translatedText
             LastSentenceCache.wordResults = mainWordResults.toMap()
             LastSentenceCache.surfaceForms = surfaces
-
-            val romaji = romajiDeferred.await()
-            if (romaji.isNotBlank() && romaji != text && false /* transliteration disabled */) {
-                tvTransliteration.text = romaji
-                tvTransliteration.visibility = View.VISIBLE
-            }
         }
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────
 
-    private suspend fun buildRomaji(text: String): String = withContext(Dispatchers.IO) {
-        val t = romajiTransliterator ?: return@withContext ""
-        Deinflector.toKanaTokens(text).joinToString(" ") { t.transliterate(it) }
+    private fun selectedTargetLang() =
+        Prefs(requireContext().applicationContext).targetLang
+
+    private fun sourceLangLocalizedDisplayName(): String {
+        val appCtx = requireContext().applicationContext
+        val p = Prefs(appCtx)
+        return p.sourceLangId.displayName(Locale(p.targetLang))
     }
 
-    private fun selectedSourceLang() = TranslateLanguage.JAPANESE
-    private fun selectedTargetLang() = TranslateLanguage.ENGLISH
-
-    private fun langDisplayName(langCode: String): String =
-        Locale(langCode).getDisplayLanguage(Locale.ENGLISH)
-            .replaceFirstChar { it.uppercase() }
+    private fun targetLangDisplayName(): String {
+        val code = selectedTargetLang()
+        val locale = Locale(code)
+        return locale.getDisplayLanguage(locale)
+            .replaceFirstChar { it.uppercase(locale) }
+    }
 
     private fun copyToClipboard(text: String) {
         val ctx = context ?: return

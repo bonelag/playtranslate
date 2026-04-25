@@ -21,7 +21,6 @@ import com.playtranslate.RegionEntry
 import com.playtranslate.R
 import com.playtranslate.model.TextSegment
 import com.playtranslate.model.TranslationResult
-import com.google.mlkit.nl.translate.TranslateLanguage
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -146,10 +145,8 @@ class TranslationResultActivity : AppCompatActivity(), TranslationResultFragment
         val rightFrac  = intent.getFloatExtra(EXTRA_RIGHT_FRAC, 1f)
 
         svc.configureSaved(
-            displayId  = prefs.captureDisplayId,
-            sourceLang = TranslateLanguage.JAPANESE,
-            targetLang = TranslateLanguage.ENGLISH,
-            region     = RegionEntry("Drawn Region", topFrac, bottomFrac, leftFrac, rightFrac)
+            displayId = prefs.captureDisplayId,
+            region    = RegionEntry("Drawn Region", topFrac, bottomFrac, leftFrac, rightFrac)
         )
 
         svc.onResult = { result ->
@@ -183,12 +180,11 @@ class TranslationResultActivity : AppCompatActivity(), TranslationResultFragment
         val segments = sentenceText.map { TextSegment(it.toString()) }
         val frag = resultFragment ?: return
 
-        // Ensure the service is configured for translation
-        svc.configureSaved(
-            displayId  = Prefs(this).captureDisplayId,
-            sourceLang = TranslateLanguage.JAPANESE,
-            targetLang = TranslateLanguage.ENGLISH
-        )
+        // Translation-only path: translateOnce() self-heals language managers
+        // internally, so we don't touch configureSaved — doing so would
+        // overwrite the user's saved capture region with the full-screen
+        // default, which any concurrent capture (e.g. live mode still
+        // running) would then pick up.
 
         frag.showTranslatingPlaceholder(sentenceText, segments)
 

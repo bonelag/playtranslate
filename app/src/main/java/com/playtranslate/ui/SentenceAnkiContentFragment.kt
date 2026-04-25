@@ -16,6 +16,7 @@ import android.widget.TextView
 import androidx.core.content.ContextCompat
 import androidx.fragment.app.Fragment
 import com.playtranslate.R
+import com.playtranslate.language.SourceLangId
 import com.playtranslate.themeColor
 import java.io.File
 
@@ -42,19 +43,21 @@ class SentenceAnkiContentFragment : Fragment() {
     // ── Public API ────────────────────────────────────────────────────────
 
     data class CardData(
-        val japanese: String,
-        val english: String,
+        val source: String,
+        val target: String,
         val words: List<SentenceAnkiHtmlBuilder.WordEntry>,
         val selectedWords: Set<String>,
-        val screenshotPath: String?
+        val screenshotPath: String?,
+        val sourceLangId: SourceLangId
     )
 
     fun getCardData(): CardData = CardData(
-        japanese = etJapanese.text.toString(),
-        english = etTranslation.text.toString(),
+        source = etJapanese.text.toString(),
+        target = etTranslation.text.toString(),
         words = words.toList(),
         selectedWords = selectedWords.toSet(),
-        screenshotPath = if (includePhoto) arguments?.getString(ARG_SCREENSHOT_PATH) else null
+        screenshotPath = if (includePhoto) arguments?.getString(ARG_SCREENSHOT_PATH) else null,
+        sourceLangId = SourceLangId.fromCode(arguments?.getString(ARG_SOURCE_LANG)) ?: SourceLangId.JA
     )
 
     // ── Lifecycle ─────────────────────────────────────────────────────────
@@ -139,7 +142,7 @@ class SentenceAnkiContentFragment : Fragment() {
         val density = resources.displayMetrics.density
         val dp8 = (8 * density).toInt()
         val ctx = view?.context ?: requireContext()
-        val hlColor = ctx.themeColor(R.attr.colorTextTranslation)
+        val hlColor = ctx.themeColor(R.attr.ptTextTranslation)
         highlightColor = hlColor
 
         words.forEach { entry ->
@@ -170,7 +173,7 @@ class SentenceAnkiContentFragment : Fragment() {
             textBlock.addView(TextView(ctx).apply {
                 text = entry.word
                 textSize = if (isSelected) 16f else 14f
-                setTextColor(if (isSelected) hlColor else ctx.themeColor(R.attr.colorTextPrimary))
+                setTextColor(if (isSelected) hlColor else ctx.themeColor(R.attr.ptText))
                 setTypeface(null, Typeface.BOLD)
             })
 
@@ -180,7 +183,7 @@ class SentenceAnkiContentFragment : Fragment() {
                     readingLine.addView(TextView(ctx).apply {
                         text = entry.reading
                         textSize = if (isSelected) 12f else 11f
-                        setTextColor(ContextCompat.getColor(ctx, R.color.text_hint))
+                        setTextColor(ctx.themeColor(R.attr.ptTextHint))
                         if (isSelected) setTypeface(null, Typeface.BOLD)
                     })
                 }
@@ -188,7 +191,7 @@ class SentenceAnkiContentFragment : Fragment() {
                     readingLine.addView(TextView(ctx).apply {
                         text = "  " + SentenceAnkiHtmlBuilder.starsString(entry.freqScore)
                         textSize = if (isSelected) 11f else 10f
-                        setTextColor(ContextCompat.getColor(ctx, R.color.text_hint))
+                        setTextColor(ctx.themeColor(R.attr.ptTextHint))
                     })
                 }
                 textBlock.addView(readingLine)
@@ -198,7 +201,7 @@ class SentenceAnkiContentFragment : Fragment() {
                 textBlock.addView(TextView(ctx).apply {
                     text = line
                     textSize = if (isSelected) 13f else 12f
-                    setTextColor(ContextCompat.getColor(ctx, R.color.text_secondary))
+                    setTextColor(ctx.themeColor(R.attr.ptTextMuted))
                     setPadding(16, 0, 0, 0)
                     if (isSelected) setTypeface(null, Typeface.BOLD)
                 })
@@ -208,7 +211,7 @@ class SentenceAnkiContentFragment : Fragment() {
                 text = "\u2715"
                 textSize = 14f
                 setBackgroundResource(android.R.color.transparent)
-                setTextColor(ContextCompat.getColor(ctx, R.color.text_secondary))
+                setTextColor(ctx.themeColor(R.attr.ptTextMuted))
                 layoutParams = LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.WRAP_CONTENT,
                     ViewGroup.LayoutParams.WRAP_CONTENT
@@ -241,13 +244,15 @@ class SentenceAnkiContentFragment : Fragment() {
         private const val ARG_FREQ_SCORES     = "freq_scores"
         private const val ARG_SCREENSHOT_PATH = "screenshot_path"
         private const val ARG_TARGET_WORD     = "target_word"
+        private const val ARG_SOURCE_LANG     = "source_lang"
 
         fun newInstance(
             japanese: String,
             translation: String,
             words: List<SentenceAnkiHtmlBuilder.WordEntry>,
             screenshotPath: String?,
-            targetWord: String? = null
+            targetWord: String? = null,
+            sourceLangId: SourceLangId = SourceLangId.JA
         ) = SentenceAnkiContentFragment().apply {
             arguments = Bundle().apply {
                 putString(ARG_JAPANESE, japanese)
@@ -258,6 +263,7 @@ class SentenceAnkiContentFragment : Fragment() {
                 putIntArray(ARG_FREQ_SCORES, words.map { it.freqScore }.toIntArray())
                 if (screenshotPath != null) putString(ARG_SCREENSHOT_PATH, screenshotPath)
                 if (targetWord != null) putString(ARG_TARGET_WORD, targetWord)
+                putString(ARG_SOURCE_LANG, sourceLangId.code)
             }
         }
     }

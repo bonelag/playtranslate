@@ -1,6 +1,7 @@
 package com.playtranslate
 
 import android.graphics.Rect
+import com.playtranslate.language.TextOrientation
 import com.playtranslate.ui.TranslationOverlayView
 
 /**
@@ -30,6 +31,7 @@ data class FarGroup(
     val text: String,
     val bounds: Rect,
     val lineCount: Int,
+    val orientation: TextOrientation = TextOrientation.HORIZONTAL,
 )
 
 /**
@@ -116,7 +118,8 @@ fun classifyOcrResults(
                 if (maxH > 0 && kotlin.math.abs(ocrH - boxH) < maxH * 0.5) {
                     contentMatchRemovals.add(boxIdx)
                     val lc = ocrResult.groupLineCounts.getOrElse(ocrIdx) { 1 }
-                    farOcrGroups.add(FarGroup(ocrText, ocrBound, lc))
+                    val orient = ocrResult.groupOrientations.getOrElse(ocrIdx) { TextOrientation.HORIZONTAL }
+                    farOcrGroups.add(FarGroup(ocrText, ocrBound, lc, orient))
                     contentMatched = true
                     break
                 }
@@ -131,7 +134,8 @@ fun classifyOcrResults(
             if (boxIdx >= bitmapRects.size) continue
             if (boxes[boxIdx].dirty) continue
             if (boxIdx in contentMatchRemovals) continue
-            if (OcrManager.wouldGroup(bitmapRects[boxIdx], ocrFullRect)) {
+            val orient = ocrResult.groupOrientations.getOrElse(ocrIdx) { TextOrientation.HORIZONTAL }
+            if (OcrManager.wouldGroup(bitmapRects[boxIdx], ocrFullRect, orient)) {
                 nearExisting = true
                 staleOverlayIndices.add(boxIdx)
             }
@@ -140,7 +144,8 @@ fun classifyOcrResults(
         // 3. Far: brand-new text with no nearby overlay.
         if (!nearExisting) {
             val lc = ocrResult.groupLineCounts.getOrElse(ocrIdx) { 1 }
-            farOcrGroups.add(FarGroup(ocrText, ocrBound, lc))
+            val orient = ocrResult.groupOrientations.getOrElse(ocrIdx) { TextOrientation.HORIZONTAL }
+            farOcrGroups.add(FarGroup(ocrText, ocrBound, lc, orient))
         }
     }
 
@@ -179,7 +184,8 @@ fun cascadeStaleRemovals(
             if (i >= bitmapRects.size) continue
             for (removeIdx in cascadedRemovals.toSet()) {
                 if (removeIdx >= bitmapRects.size) continue
-                if (OcrManager.wouldGroup(bitmapRects[removeIdx], bitmapRects[i])) {
+                val orient = boxes[removeIdx].orientation
+                if (OcrManager.wouldGroup(bitmapRects[removeIdx], bitmapRects[i], orient)) {
                     cascadedRemovals.add(i)
                     expanded = true
                     break

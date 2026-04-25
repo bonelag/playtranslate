@@ -1,31 +1,36 @@
 #!/usr/bin/env python3
 """
-Build the JMdict SQLite database for GameLens offline dictionary.
+Build the JMdict + KANJIDIC2 language pack for PlayTranslate (Japanese).
+
+Produces the same `dict.sqlite` + `manifest.json` + `<code>.zip` bundle
+layout that LanguagePackStore.install expects, mirroring build_zh_dict.py.
+Upload the resulting ja.zip to the playtranslate-langpacks GH release and
+update app/src/main/assets/langpack_catalog.json with the sha256 + size.
 
 Usage (run from project root):
-    python scripts/build_jmdict.py
+    python scripts/build_jmdict.py --output /tmp/ja_pack/
 
 Requirements: Python 3.8+, no third-party libraries needed.
-
-Output: app/src/main/assets/jmdict.db  (~35 MB)
 
 JMdict is © The Electronic Dictionary Research and Development Group,
 licensed under Creative Commons Attribution-ShareAlike 3.0.
 See https://www.edrdg.org/edrdg/licence.html
 """
 
+import argparse
 import gzip
-import os
+import json
 import re
 import sqlite3
 import ssl
+import sys
 import urllib.request
 import xml.etree.ElementTree as ET
+import zipfile
 from pathlib import Path
 
 JMDICT_URL = "https://ftp.edrdg.org/pub/Nihongo/JMdict_e.gz"
 SCRIPT_DIR = Path(__file__).parent
-OUTPUT_PATH = SCRIPT_DIR.parent / "app" / "src" / "main" / "assets" / "jmdict.db"
 
 # Shorten verbose JMdict POS entity values for display
 POS_ABBREV = {
@@ -191,7 +196,7 @@ def create_schema(conn: sqlite3.Connection) -> None:
             is_common  INTEGER NOT NULL DEFAULT 0,
             freq_score INTEGER NOT NULL DEFAULT 0
         );
-        CREATE TABLE kanji (
+        CREATE TABLE headword (
             entry_id   INTEGER NOT NULL,
             position   INTEGER NOT NULL,
             text       TEXT    NOT NULL
@@ -218,8 +223,8 @@ def create_schema(conn: sqlite3.Connection) -> None:
             grade        INTEGER NOT NULL DEFAULT 0,
             stroke_count INTEGER NOT NULL DEFAULT 0
         );
-        CREATE INDEX idx_kanji_text   ON kanji(text);
-        CREATE INDEX idx_reading_text ON reading(text);
+        CREATE INDEX idx_headword_text ON headword(text);
+        CREATE INDEX idx_reading_text  ON reading(text);
         """
     )
 
@@ -250,12 +255,13 @@ def parse_and_insert(xml_bytes: bytes, conn: sqlite3.Connection) -> None:
 
         cur.execute("INSERT OR IGNORE INTO entry VALUES (?,?,?)", (entry_id, is_common, freq_score))
 
-        # Kanji forms
+        # Kanji forms (headword table — the name is schema-shared with
+        # other source packs; for Japanese the values are genuine kanji.)
         for pos, k_ele in enumerate(entry.findall("k_ele")):
             keb = k_ele.findtext("keb")
             if keb:
                 cur.execute(
-                    "INSERT INTO kanji VALUES (?,?,?)", (entry_id, pos, keb)
+                    "INSERT INTO headword VALUES (?,?,?)", (entry_id, pos, keb)
                 )
 
         # Reading forms
@@ -424,19 +430,18 @@ def parse_and_insert_kanjidic(xml_bytes: bytes, conn: sqlite3.Connection) -> Non
     print(f"  Total: {count:,} kanji inserted")
 
 
-def main() -> None:
-    OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
-    if OUTPUT_PATH.exists():
-        OUTPUT_PATH.unlink()
-        print(f"Removed existing {OUTPUT_PATH}")
+def build_sqlite(db_path: Path) -> None:
+    if db_path.exists():
+        db_path.unlink()
+        print(f"Removed existing {db_path}")
 
     xml_bytes = download_jmdict()
     print("Pre-processing XML entities...")
     clean_xml = preprocess_xml(xml_bytes)
     del xml_bytes  # free memory
 
-    print(f"Building {OUTPUT_PATH} ...")
-    conn = sqlite3.connect(OUTPUT_PATH)
+    print(f"Building {db_path} ...")
+    conn = sqlite3.connect(db_path)
     conn.execute("PRAGMA journal_mode=OFF")   # faster bulk insert (no WAL during build)
     conn.execute("PRAGMA synchronous=OFF")
     conn.execute("PRAGMA cache_size=65536")
@@ -453,11 +458,184 @@ def main() -> None:
     conn.execute("VACUUM")
     conn.close()
 
-    size_mb = OUTPUT_PATH.stat().st_size / 1024 / 1024
-    print(f"\nDone!  {OUTPUT_PATH}  ({size_mb:.1f} MB)")
-    print("\nNext: rebuild the APK so the database is bundled as an asset.")
-    print("  JAVA_HOME='.sdk/jdk17' bash gradlew assembleDebug")
+
+# The 8 IPADIC binary files Kuromoji loads from its JAR classpath. Extracted
+# from kuromoji-ipadic-*.jar into the pack's tokenizer/ subdir so the APK
+# can strip them via packagingOptions.resources.excludes. Names must match
+# exactly what SimpleResourceResolver asks for (bare filenames, no prefix).
+KUROMOJI_IPADIC_BINS = (
+    "characterDefinitions.bin",
+    "connectionCosts.bin",
+    "doubleArrayTrie.bin",
+    "tokenInfoDictionary.bin",
+    "tokenInfoFeaturesMap.bin",
+    "tokenInfoPartOfSpeechMap.bin",
+    "tokenInfoTargetMap.bin",
+    "unknownDictionary.bin",
+)
+
+# Resource path prefix inside the JAR. `SimpleResourceResolver` calls
+# `Tokenizer.class.getResourceAsStream(basename)`, which resolves to
+# "/com/atilika/kuromoji/ipadic/<basename>" at the JAR root.
+KUROMOJI_IPADIC_JAR_PREFIX = "com/atilika/kuromoji/ipadic/"
+
+
+def _sha256_of(path: Path) -> str:
+    import hashlib
+    h = hashlib.sha256()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def extract_kuromoji_bins(jar_path: Path, tokenizer_dir: Path) -> list[dict]:
+    """Extract the IPADIC bin files from `kuromoji-ipadic-*.jar` into
+    [tokenizer_dir]. Returns a list of manifest-shape dicts (path relative
+    to the pack root, size, sha256) for appending to manifest.files."""
+    tokenizer_dir.mkdir(parents=True, exist_ok=True)
+    entries: list[dict] = []
+    with zipfile.ZipFile(jar_path, "r") as jar:
+        names = set(jar.namelist())
+        for basename in KUROMOJI_IPADIC_BINS:
+            jar_entry = KUROMOJI_IPADIC_JAR_PREFIX + basename
+            if jar_entry not in names:
+                raise RuntimeError(
+                    f"Kuromoji JAR at {jar_path} is missing entry {jar_entry}. "
+                    "Pass --kuromoji-jar pointing at kuromoji-ipadic-0.9.0.jar "
+                    "(typically under ~/.gradle/caches/modules-2/files-2.1/"
+                    "com.atilika.kuromoji/kuromoji-ipadic/0.9.0/).")
+            out_path = tokenizer_dir / basename
+            with jar.open(jar_entry) as src, out_path.open("wb") as dst:
+                while True:
+                    chunk = src.read(1 << 20)
+                    if not chunk:
+                        break
+                    dst.write(chunk)
+            entries.append({
+                "path": f"tokenizer/{basename}",
+                "size": out_path.stat().st_size,
+                "sha256": _sha256_of(out_path),
+            })
+    print(f"Extracted {len(entries)} Kuromoji files to {tokenizer_dir}")
+    return entries
+
+
+def build_manifest(
+    db_path: Path,
+    manifest_path: Path,
+    pack_version: int,
+    tokenizer_entries: list[dict] | None = None,
+) -> None:
+    size = db_path.stat().st_size
+    files: list[dict] = [{"path": "dict.sqlite", "size": size, "sha256": None}]
+    total = size
+    if tokenizer_entries:
+        files.extend(tokenizer_entries)
+        total += sum(int(e["size"]) for e in tokenizer_entries)
+    manifest = {
+        "langId": "ja",
+        "schemaVersion": 1,
+        "packVersion": pack_version,
+        "appMinVersion": 0,
+        "files": files,
+        "totalSize": total,
+        "licenses": [
+            {
+                "component": "JMdict",
+                "license": "CC-BY-SA-4.0",
+                "attribution": "© EDRDG, https://www.edrdg.org/jmdict/edict_doc.html",
+            },
+            {
+                "component": "KANJIDIC2",
+                "license": "CC-BY-SA-4.0",
+                "attribution": "© EDRDG",
+            },
+            {
+                "component": "Kuromoji IPADIC",
+                "license": "Apache-2.0",
+                "attribution": "© Atilika Inc. (IPADIC: IPA Dictionary, © ICOT)",
+            },
+        ],
+    }
+    manifest_path.write_text(json.dumps(manifest, indent=2))
+    print(f"Wrote {manifest_path} ({size:,} bytes dict, {total:,} bytes total)")
+
+
+def build_zip(
+    db_path: Path,
+    manifest_path: Path,
+    zip_path: Path,
+    tokenizer_dir: Path | None = None,
+) -> None:
+    if zip_path.exists():
+        zip_path.unlink()
+    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as z:
+        z.write(db_path, arcname="dict.sqlite")
+        z.write(manifest_path, arcname="manifest.json")
+        if tokenizer_dir is not None and tokenizer_dir.is_dir():
+            for p in sorted(tokenizer_dir.iterdir()):
+                if p.is_file():
+                    z.write(p, arcname=f"tokenizer/{p.name}")
+    print(f"Wrote {zip_path} ({zip_path.stat().st_size:,} bytes)")
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Build the Japanese language pack")
+    parser.add_argument("--output", type=Path, required=True, help="Output directory")
+    parser.add_argument(
+        "--kuromoji-jar",
+        type=Path,
+        required=False,
+        help="Path to kuromoji-ipadic-*.jar. When provided, its 8 IPADIC "
+             "bin files are extracted into tokenizer/ in the pack so the "
+             "APK can strip them. Omit to produce a tokenizer-less pack "
+             "(dict.sqlite only, classpath-Kuromoji dependency).",
+    )
+    parser.add_argument(
+        "--rebuild-sqlite",
+        action="store_true",
+        help="Force regeneration of dict.sqlite from JMdict/KANJIDIC sources. "
+             "When omitted, an existing dict.sqlite in the output dir is reused.",
+    )
+    parser.add_argument("--pack-version", type=int, default=1)
+    args = parser.parse_args()
+
+    args.output.mkdir(parents=True, exist_ok=True)
+    db_path = args.output / "dict.sqlite"
+    manifest_path = args.output / "manifest.json"
+    zip_path = args.output / "ja.zip"
+    tokenizer_dir = args.output / "tokenizer"
+
+    # Skip the (slow) JMdict rebuild if dict.sqlite already exists. Useful
+    # when iterating on the tokenizer extraction step without re-downloading
+    # JMdict_e.gz + KANJIDIC2 on every run. Pass --rebuild-sqlite to force.
+    if db_path.is_file() and not args.rebuild_sqlite:
+        print(f"Reusing existing {db_path} ({db_path.stat().st_size:,} bytes) — "
+              f"pass --rebuild-sqlite to regenerate from JMdict source")
+    else:
+        build_sqlite(db_path)
+    tokenizer_entries = None
+    if args.kuromoji_jar is not None:
+        if not args.kuromoji_jar.is_file():
+            print(f"error: --kuromoji-jar not a file: {args.kuromoji_jar}", file=sys.stderr)
+            return 1
+        tokenizer_entries = extract_kuromoji_bins(args.kuromoji_jar, tokenizer_dir)
+    build_manifest(db_path, manifest_path, args.pack_version, tokenizer_entries)
+    build_zip(
+        db_path,
+        manifest_path,
+        zip_path,
+        tokenizer_dir if tokenizer_entries else None,
+    )
+
+    print()
+    print("Next steps:")
+    print(f"  1. sha256sum {zip_path}")
+    print(f"  2. Upload {zip_path} to dominostars/playtranslate-langpacks tag ja-v1")
+    print(f"  3. Update assets/langpack_catalog.json with URL + sha256 + new size")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

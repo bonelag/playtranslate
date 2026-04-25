@@ -1,0 +1,428 @@
+{
+  "catalogVersion": 1,
+  "packs": {
+    "ja": {
+      "display": "Japanese",
+      "script": "CJK_JAPANESE",
+      "bundled": false,
+      "packVersion": 1,
+      "size": 33585770,
+      "url": "https://github.com/dominostars/playtranslate-langpacks/releases/download/ja-v1/ja.zip",
+      "sha256": "d1fe9289b5a2817aba784f2a274f6a20a3bf14221ebc8376391b1fa7b743dc0a",
+      "licenses": [
+        {
+          "component": "JMdict",
+          "license": "CC-BY-SA-4.0",
+          "attribution": "© EDRDG, https://www.edrdg.org/jmdict/edict_doc.html"
+        },
+        {
+          "component": "KANJIDIC2",
+          "license": "CC-BY-SA-4.0",
+          "attribution": "© EDRDG"
+        },
+        {
+          "component": "Kuromoji IPADIC",
+          "license": "Apache-2.0",
+          "attribution": "© Atilika Inc. (IPADIC © ICOT)"
+        }
+      ]
+    },
+    "zh": {
+      "display": "Chinese",
+      "script": "CJK_CHINESE",
+      "bundled": false,
+      "packVersion": 1,
+      "size": 15097916,
+      "url": "https://github.com/dominostars/playtranslate-langpacks/releases/download/zh-v1/zh.zip",
+      "sha256": "0494b2c9f1454c17acd787b769e3d2bb51ac0a52fc2fe5f76e61c5f6c82cf897",
+      "licenses": [
+        {
+          "component": "CC-CEDICT",
+          "license": "CC-BY-SA-4.0",
+          "attribution": "© MDBG, https://cc-cedict.org/"
+        },
+        {
+          "component": "HanLP",
+          "license": "Apache-2.0",
+          "attribution": "© hankcs, https://github.com/hankcs/HanLP"
+        }
+      ]
+    },
+    "es": {
+      "display": "Spanish",
+      "script": "LATIN",
+      "bundled": false,
+      "packVersion": 1,
+      "size": 5387943,
+      "url": "https://github.com/dominostars/playtranslate-langpacks/releases/download/es-v1/es.zip",
+      "sha256": "a32d3d2ef02f8ed5daad295ce1c661b2cdbeff5184e9f2b241a7452c497c9880",
+      "licenses": [
+        {
+          "component": "Wiktionary",
+          "license": "CC-BY-SA-3.0",
+          "attribution": "© Wiktionary contributors, https://en.wiktionary.org/"
+        }
+      ]
+    },
+    "en": {
+      "display": "English",
+      "script": "LATIN",
+      "bundled": false,
+      "packVersion": 1,
+      "size": 22426942,
+      "url": "https://github.com/dominostars/playtranslate-langpacks/releases/download/en-v1/en.zip",
+      "sha256": "814a97308e0f54d06b1a9b7b6fee992b62762125c04acbd8b8532ed5e2548ed2",
+      "licenses": [
+        {
+          "component": "Wiktionary",
+          "license": "CC-BY-SA-3.0",
+          "attribution": "© Wiktionary contributors, https://en.wiktionary.org/"
+        }
+      ]
+    },
+    "fr": {
+      "display": "French",
+      "script": "LATIN",
+      "bundled": false,
+      "packVersion": 1,
+      "size": 4471954,
+      "url": "https://github.com/dominostars/playtranslate-langpacks/releases/download/fr-v1/fr.zip",
+      "sha256": "79f2aa046b5a772f9d966a68900a590947ba45b9feb7639c8b41df2152913637",
+      "licenses": [
+        {
+          "component": "Wiktionary",
+          "license": "CC-BY-SA-3.0",
+          "attribution": "© Wiktionary contributors, https://en.wiktionary.org/"
+        }
+      ]
+    },
+    "de": {
+      "display": "German",
+      "script": "LATIN",
+      "bundled": false,
+      "packVersion": 1,
+      "size": 4285854,
+      "url": "https://github.com/dominostars/playtranslate-langpacks/releases/download/de-v1/de.zip",
+      "sha256": "12ef44a4b648071fcd40ba2c984d5cc8b7461141ef9d530b5e05c2ac144002d4",
+      "licenses": [
+        {
+          "component": "Wiktionary",
+          "license": "CC-BY-SA-3.0",
+          "attribution": "© Wiktionary contributors, https://en.wiktionary.org/"
+        }
+      ]
+    },
+    "it": {
+      "display": "Italian",
+      "script": "LATIN",
+      "bundled": false,
+      "packVersion": 1,
+      "size": 3884470,
+      "url": "https://github.com/dominostars/playtranslate-langpacks/releases/download/it-v1/it.zip",
+      "sha256": "836c6fb2967bdcabb5ab184b6d62b1f53177da5ab8352590481d2a9e91480924",
+      "licenses": [
+        {
+          "component": "Wiktionary",
+          "license": "CC-BY-SA-3.0",
+          "attribution": "© Wiktionary contributors, https://en.wiktionary.org/"
+        }
+      ]
+    },
+    "pt": {
+      "display": "Portuguese",
+      "script": "LATIN",
+      "bundled": false,
+      "packVersion": 1,
+      "size": 4231505,
+      "url": "https://github.com/dominostars/playtranslate-langpacks/releases/download/pt-v1/pt.zip",
+      "sha256": "da0be389d1a4339ece0374a34307479a4bcba4b1f4272885a2748837029cff0b",
+      "licenses": [
+        {
+          "component": "Wiktionary",
+          "license": "CC-BY-SA-3.0",
+          "attribution": "© Wiktionary contributors, https://en.wiktionary.org/"
+        }
+      ]
+    },
+    "nl": {
+      "display": "Dutch",
+      "script": "LATIN",
+      "bundled": false,
+      "packVersion": 1,
+      "size": 2166331,
+      "url": "https://github.com/dominostars/playtranslate-langpacks/releases/download/nl-v1/nl.zip",
+      "sha256": "2fb54df90ca1a76f28014d8681e117d59a510ba3e00fe6a6b7302329a4e6d6fa",
+      "licenses": [
+        {
+          "component": "Wiktionary",
+          "license": "CC-BY-SA-3.0",
+          "attribution": "© Wiktionary contributors, https://en.wiktionary.org/"
+        }
+      ]
+    },
+    "tr": {
+      "display": "Turkish",
+      "script": "LATIN",
+      "bundled": false,
+      "packVersion": 1,
+      "size": 1253590,
+      "url": "https://github.com/dominostars/playtranslate-langpacks/releases/download/tr-v1/tr.zip",
+      "sha256": "14599e63f32e43dce28b02e9bba285dddc6282e876576f750c97b234f2237420",
+      "licenses": [
+        {
+          "component": "Wiktionary",
+          "license": "CC-BY-SA-3.0",
+          "attribution": "© Wiktionary contributors, https://en.wiktionary.org/"
+        }
+      ]
+    },
+    "vi": {
+      "display": "Vietnamese",
+      "script": "LATIN",
+      "bundled": false,
+      "packVersion": 1,
+      "size": 1877326,
+      "url": "https://github.com/dominostars/playtranslate-langpacks/releases/download/vi-v1/vi.zip",
+      "sha256": "7db44332779ed0575f09933b3b409534f6be461d67eafc1f257c7a3915c54cbd",
+      "licenses": [
+        {
+          "component": "Wiktionary",
+          "license": "CC-BY-SA-3.0",
+          "attribution": "© Wiktionary contributors, https://en.wiktionary.org/"
+        }
+      ]
+    },
+    "id": {
+      "display": "Indonesian",
+      "script": "LATIN",
+      "bundled": false,
+      "packVersion": 1,
+      "size": 1375217,
+      "url": "https://github.com/dominostars/playtranslate-langpacks/releases/download/id-v1/id.zip",
+      "sha256": "27b8b0c2c1f208ab51d3f3b7a1b8cee300d1557b67af67e2dbcda7567ebda08f",
+      "licenses": [
+        {
+          "component": "Wiktionary",
+          "license": "CC-BY-SA-3.0",
+          "attribution": "© Wiktionary contributors, https://en.wiktionary.org/"
+        }
+      ]
+    },
+    "sv": {
+      "display": "Swedish",
+      "script": "LATIN",
+      "bundled": false,
+      "packVersion": 1,
+      "size": 3286878,
+      "url": "https://github.com/dominostars/playtranslate-langpacks/releases/download/sv-v1/sv.zip",
+      "sha256": "69dcccefc5ffacf6bc5c9336140a92f88fe20697b1f5e11afe7a12b4f5954a9e",
+      "licenses": [
+        {
+          "component": "Wiktionary",
+          "license": "CC-BY-SA-3.0",
+          "attribution": "© Wiktionary contributors, https://en.wiktionary.org/"
+        }
+      ]
+    },
+    "da": {
+      "display": "Danish",
+      "script": "LATIN",
+      "bundled": false,
+      "packVersion": 1,
+      "size": 1125653,
+      "url": "https://github.com/dominostars/playtranslate-langpacks/releases/download/da-v1/da.zip",
+      "sha256": "4d09c02b5bb4052f448e6c3d4299db845d9bdfff05425fc3e553a3ac0a0f5fe7",
+      "licenses": [
+        {
+          "component": "Wiktionary",
+          "license": "CC-BY-SA-3.0",
+          "attribution": "© Wiktionary contributors, https://en.wiktionary.org/"
+        }
+      ]
+    },
+    "no": {
+      "display": "Norwegian",
+      "script": "LATIN",
+      "bundled": false,
+      "packVersion": 1,
+      "size": 1150016,
+      "url": "https://github.com/dominostars/playtranslate-langpacks/releases/download/no-v1/no.zip",
+      "sha256": "34baab36dd84a198647c8edee7a75bbdedfdf3a173bc0a114d122f63b73de09f",
+      "licenses": [
+        {
+          "component": "Wiktionary",
+          "license": "CC-BY-SA-3.0",
+          "attribution": "© Wiktionary contributors, https://en.wiktionary.org/"
+        }
+      ]
+    },
+    "fi": {
+      "display": "Finnish",
+      "script": "LATIN",
+      "bundled": false,
+      "packVersion": 1,
+      "size": 2877789,
+      "url": "https://github.com/dominostars/playtranslate-langpacks/releases/download/fi-v1/fi.zip",
+      "sha256": "79735c6dfe5849039b63b3d00c8d741412989b6a6fc7b2c9e1d96108219670e7",
+      "licenses": [
+        {
+          "component": "Wiktionary",
+          "license": "CC-BY-SA-3.0",
+          "attribution": "© Wiktionary contributors, https://en.wiktionary.org/"
+        }
+      ]
+    },
+    "hu": {
+      "display": "Hungarian",
+      "script": "LATIN",
+      "bundled": false,
+      "packVersion": 1,
+      "size": 2063512,
+      "url": "https://github.com/dominostars/playtranslate-langpacks/releases/download/hu-v1/hu.zip",
+      "sha256": "508188e430f375c2383dc37c85eaf9c638979cf3d3abc826192893adb2c2eb5c",
+      "licenses": [
+        {
+          "component": "Wiktionary",
+          "license": "CC-BY-SA-3.0",
+          "attribution": "© Wiktionary contributors, https://en.wiktionary.org/"
+        }
+      ]
+    },
+    "ro": {
+      "display": "Romanian",
+      "script": "LATIN",
+      "bundled": false,
+      "packVersion": 1,
+      "size": 1325722,
+      "url": "https://github.com/dominostars/playtranslate-langpacks/releases/download/ro-v1/ro.zip",
+      "sha256": "64e8c877ee7b71154b99b6bf8cd5ad5e58cb27cb017072120b76f21fb461d6ac",
+      "licenses": [
+        {
+          "component": "Wiktionary",
+          "license": "CC-BY-SA-3.0",
+          "attribution": "© Wiktionary contributors, https://en.wiktionary.org/"
+        }
+      ]
+    },
+    "ca": {
+      "display": "Catalan",
+      "script": "LATIN",
+      "bundled": false,
+      "packVersion": 1,
+      "size": 2412513,
+      "url": "https://github.com/dominostars/playtranslate-langpacks/releases/download/ca-v1/ca.zip",
+      "sha256": "a40e2719ca1b7591ad4c7783859b0445c2564e983a8141b9276c065f3f21d755",
+      "licenses": [
+        {
+          "component": "Wiktionary",
+          "license": "CC-BY-SA-3.0",
+          "attribution": "© Wiktionary contributors, https://en.wiktionary.org/"
+        }
+      ]
+    },
+    "ko": {
+      "display": "Korean",
+      "script": "CJK_KOREAN",
+      "bundled": false,
+      "packVersion": 1,
+      "size": 4326226,
+      "url": "https://github.com/dominostars/playtranslate-langpacks/releases/download/ko-v1/ko.zip",
+      "sha256": "dec213177cee0f303cc036d88c3b83ffae301f13dd570a0c8316e4b1b9ef79e5",
+      "licenses": [
+        {
+          "component": "Wiktionary",
+          "license": "CC-BY-SA-3.0",
+          "attribution": "© Wiktionary contributors, https://en.wiktionary.org/"
+        },
+        {
+          "component": "KOMORAN",
+          "license": "Apache-2.0",
+          "attribution": "© Shineware, https://github.com/shineware/KOMORAN"
+        }
+      ]
+    },
+    "target-fr": {
+      "display": "French definitions",
+      "type": "target",
+      "script": "LATIN",
+      "bundled": false,
+      "packVersion": 1,
+      "size": 36039549,
+      "url": "https://github.com/dominostars/playtranslate-langpacks/releases/download/target-fr-v1/fr.zip",
+      "sha256": "f7d37afefc6f82800f7f17c4966b459162b693a1a9ddcd75139da3b57afcb261",
+      "licenses": [
+        {
+          "component": "JMdict",
+          "license": "CC-BY-SA-4.0",
+          "attribution": "© EDRDG, https://www.edrdg.org/jmdict/edict_doc.html"
+        },
+        {
+          "component": "CFDICT",
+          "license": "CC-BY-SA-4.0",
+          "attribution": "© chine.in, https://chine.in/mandarin/open/CFDICT/"
+        },
+        {
+          "component": "Wiktionary",
+          "license": "CC-BY-SA-3.0",
+          "attribution": "© Wiktionary contributors"
+        }
+      ]
+    },
+    "target-es": {
+      "display": "Spanish definitions",
+      "type": "target",
+      "script": "LATIN",
+      "bundled": false,
+      "packVersion": 1,
+      "size": 9839420,
+      "url": "https://github.com/dominostars/playtranslate-langpacks/releases/download/target-es-v1/es.zip",
+      "sha256": "94c70a5625bd38491bd9cd4e35f51a9bde25ae558f2691b9673148d0b9838065",
+      "licenses": [
+        {
+          "component": "JMdict",
+          "license": "CC-BY-SA-4.0",
+          "attribution": "© EDRDG, https://www.edrdg.org/jmdict/edict_doc.html"
+        },
+        {
+          "component": "Wiktionary",
+          "license": "CC-BY-SA-3.0",
+          "attribution": "© Wiktionary contributors"
+        }
+      ]
+    },
+    "target-ja": {
+      "display": "Japanese definitions",
+      "type": "target",
+      "script": "CJK",
+      "bundled": false,
+      "packVersion": 1,
+      "size": 17145590,
+      "url": "https://github.com/dominostars/playtranslate-langpacks/releases/download/target-ja-v1/ja.zip",
+      "sha256": "3c8c2b3ce5ce3724881d835418c7c8750ef3ff0212d866c48b97bfd7f495c978",
+      "licenses": [
+        {
+          "component": "Wiktionary",
+          "license": "CC-BY-SA-3.0",
+          "attribution": "© Wiktionary contributors"
+        }
+      ]
+    },
+    "target-zh": {
+      "display": "Chinese (Simplified) definitions",
+      "type": "target",
+      "script": "CJK",
+      "bundled": false,
+      "packVersion": 1,
+      "size": 28768547,
+      "url": "https://github.com/dominostars/playtranslate-langpacks/releases/download/target-zh-v1/zh-Hans.zip",
+      "sha256": "98aeff04642e3563482fe2bbeb3aa2260c476c2a7a3518fd5085eb0cfe9f1b8f",
+      "licenses": [
+        {
+          "component": "Wiktionary",
+          "license": "CC-BY-SA-3.0",
+          "attribution": "© Wiktionary contributors"
+        }
+      ]
+    }
+  }
+}

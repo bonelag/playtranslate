@@ -22,6 +22,7 @@ import androidx.core.view.doOnLayout
 import androidx.core.widget.TextViewCompat
 import com.playtranslate.PinholeCalibration
 import com.playtranslate.R
+import com.playtranslate.language.TextOrientation
 
 /**
  * Transparent overlay that positions auto-sizing TextViews inside bounding
@@ -69,7 +70,9 @@ class TranslationOverlayView(
         /** Marked when pinhole detection finds a minor change under this overlay. */
         val dirty: Boolean = false,
         /** Original OCR source text this overlay translates. Used for content-based matching. */
-        val sourceText: String = ""
+        val sourceText: String = "",
+        /** Text orientation — vertical boxes render with 90° CW rotated text. */
+        val orientation: TextOrientation = TextOrientation.HORIZONTAL
     )
 
     private val dp = context.resources.displayMetrics.density
@@ -132,6 +135,7 @@ class TranslationOverlayView(
             if (ba.translatedText != bb.translatedText) return false
             if (ba.isFurigana != bb.isFurigana) return false
             if (ba.sourceText != bb.sourceText) return false
+            if (ba.orientation != bb.orientation) return false
             val ra = ba.bounds; val rb = bb.bounds
             if (Math.abs(ra.left - rb.left) > tolerance ||
                 Math.abs(ra.top - rb.top) > tolerance ||
@@ -230,14 +234,15 @@ class TranslationOverlayView(
             }
         }
 
-        // Resolve vertical overlaps for non-furigana boxes only
+        // Resolve vertical overlaps for non-furigana horizontal boxes
         val finalRects = screenRects.map { RectF(it) }
-        val nonFuriganaIndices = boxes.indices.filter { !boxes[it].isFurigana }
-            .sortedBy { finalRects[it].top }
-        for (a in nonFuriganaIndices.indices) {
-            for (b in a + 1 until nonFuriganaIndices.size) {
-                val i = nonFuriganaIndices[a]
-                val j = nonFuriganaIndices[b]
+        val hBoxIndices = boxes.indices.filter {
+            !boxes[it].isFurigana && boxes[it].orientation != TextOrientation.VERTICAL
+        }.sortedBy { finalRects[it].top }
+        for (a in hBoxIndices.indices) {
+            for (b in a + 1 until hBoxIndices.size) {
+                val i = hBoxIndices[a]
+                val j = hBoxIndices[b]
                 val ri = finalRects[i]
                 val rj = finalRects[j]
                 if (ri.bottom > rj.top && ri.left < rj.right && ri.right > rj.left) {
@@ -248,24 +253,61 @@ class TranslationOverlayView(
             }
         }
 
+        // Resolve horizontal overlaps for non-furigana vertical boxes
+        // (adjacent columns whose overlay boxes overlap on the X axis).
+        // Sort by right edge descending (right-to-left reading order).
+        val vBoxIndices = boxes.indices.filter {
+            !boxes[it].isFurigana && boxes[it].orientation == TextOrientation.VERTICAL
+        }.sortedByDescending { finalRects[it].right }
+        for (a in vBoxIndices.indices) {
+            for (b in a + 1 until vBoxIndices.size) {
+                val i = vBoxIndices[a]
+                val j = vBoxIndices[b]
+                val ri = finalRects[i]
+                val rj = finalRects[j]
+                if (ri.left < rj.right && ri.top < rj.bottom && ri.bottom > rj.top) {
+                    val mid = (ri.left + rj.right) / 2f
+                    ri.left = mid
+                    rj.right = mid
+                }
+            }
+        }
+
         val hasPlaceholders = boxes.any { it.translatedText.isEmpty() }
 
         boxes.zip(finalRects).forEach { (box, rect) ->
             if (box.isFurigana) {
-                // Furigana: outlined text, no box constraint, sized from line height
-                val textSizePx = (rect.height() * 0.7f).coerceAtLeast(4f)
+                val isVerticalFurigana = box.orientation == TextOrientation.VERTICAL
+                // Vertical furigana: size from box width; horizontal: from box height
+                val textSizePx = if (isVerticalFurigana) {
+                    (rect.width() * 0.7f).coerceAtLeast(4f)
+                } else {
+                    (rect.height() * 0.7f).coerceAtLeast(4f)
+                }
                 val strokeW = 3f * dp
                 val strokePad = (strokeW / 2f + 0.5f).toInt()
+                // Vertical: stack characters top-to-bottom with newlines
+                val displayText = if (isVerticalFurigana) {
+                    box.translatedText.toList().joinToString("\n")
+                } else {
+                    box.translatedText
+                }
                 val child = OutlinedTextView(context).apply {
-                    text = box.translatedText
+                    text = displayText
                     setTextColor(Color.WHITE)
                     outlineColor = Color.BLACK
                     outlineWidth = strokeW
                     typeface = Typeface.DEFAULT_BOLD
                     includeFontPadding = false
-                    setPadding(strokePad, strokePad, strokePad, strokePad)
                     setShadowLayer(strokeW, 0f, 0f, Color.TRANSPARENT)
                     setTextSize(TypedValue.COMPLEX_UNIT_PX, textSizePx)
+                    if (isVerticalFurigana) {
+                        gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
+                        setPadding(strokePad, 0, strokePad, 0)
+                        setLineSpacing(0f, 0.8f)
+                    } else {
+                        setPadding(strokePad, strokePad, strokePad, strokePad)
+                    }
                 }
                 child.setTag(R.id.tag_bg_color, Color.BLACK)
                 addView(child, LayoutParams(
@@ -273,12 +315,19 @@ class TranslationOverlayView(
                 ))
                 // Position after measurement but before draw — no (0,0) flash
                 child.doOnLayout {
-                    child.translationX = rect.left - strokePad
-                    child.translationY = (rect.bottom - child.measuredHeight).coerceAtLeast(0f)
+                    if (isVerticalFurigana) {
+                        // Vertical: align to top of OCR box, no Y offset
+                        child.translationX = rect.left - strokePad
+                        child.translationY = rect.top
+                    } else {
+                        child.translationX = rect.left - strokePad
+                        child.translationY = (rect.bottom - child.measuredHeight).coerceAtLeast(0f)
+                    }
                 }
             } else {
                 val rectW = rect.width().toInt().coerceAtLeast(1)
                 val rectH = rect.height().toInt().coerceAtLeast(1)
+                val isVertical = box.orientation == TextOrientation.VERTICAL
 
                 val child: View = if (box.translatedText.isEmpty()) {
                     buildSkeletonView(rectW, rectH, box.lineCount, box.bgColor, box.textColor)
@@ -301,11 +350,25 @@ class TranslationOverlayView(
                 }
 
                 child.setTag(R.id.tag_bg_color, box.bgColor)
-                val lp = LayoutParams(rectW, rectH).apply {
-                    leftMargin = rect.left.toInt()
-                    topMargin = rect.top.toInt()
+
+                if (isVertical && box.translatedText.isNotEmpty()) {
+                    // Vertical text: create view with swapped dimensions (width=rectH,
+                    // height=rectW) so auto-sizing picks a readable font, then rotate
+                    // 90° CW so text reads top-to-bottom in the original narrow box.
+                    val lp = LayoutParams(rectH, rectW)
+                    addView(child, lp)
+                    child.rotation = 90f
+                    // Position so the visual center aligns with the original box center.
+                    // After rotation, the (rectH × rectW) layout visually becomes (rectW × rectH).
+                    child.translationX = rect.centerX() - rectH / 2f
+                    child.translationY = rect.centerY() - rectW / 2f
+                } else {
+                    val lp = LayoutParams(rectW, rectH).apply {
+                        leftMargin = rect.left.toInt()
+                        topMargin = rect.top.toInt()
+                    }
+                    addView(child, lp)
                 }
-                addView(child, lp)
             }
         }
 
@@ -387,6 +450,8 @@ class TranslationOverlayView(
     /**
      * Get the actual screen rects of all text box children.
      * Uses getLocationOnScreen for pixel-perfect positioning — no computed approximations.
+     * For rotated children (vertical text overlays), uses the visual bounds
+     * from the transformation matrix rather than the layout width/height.
      * Call after layout completes (doOnLayout).
      */
     fun getChildScreenRects(): List<Rect> {
@@ -395,8 +460,19 @@ class TranslationOverlayView(
         for (i in 0 until childCount) {
             val child = getChildAt(i)
             if (child.getTag(R.id.tag_bg_color) == null) continue
-            child.getLocationOnScreen(location)
-            rects += Rect(location[0], location[1], location[0] + child.width, location[1] + child.height)
+            if (child.rotation != 0f) {
+                // Rotated child: compute visual bounds via the hit rect,
+                // which accounts for rotation/translation transforms.
+                val hitRect = android.graphics.Rect()
+                child.getHitRect(hitRect)
+                // getHitRect returns parent-relative coords; offset to screen
+                getLocationOnScreen(location)
+                hitRect.offset(location[0], location[1])
+                rects += hitRect
+            } else {
+                child.getLocationOnScreen(location)
+                rects += Rect(location[0], location[1], location[0] + child.width, location[1] + child.height)
+            }
         }
         return rects
     }

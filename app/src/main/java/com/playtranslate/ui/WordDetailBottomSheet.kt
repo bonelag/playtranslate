@@ -2,23 +2,33 @@ package com.playtranslate.ui
 
 import android.graphics.Typeface
 import android.os.Bundle
+import android.util.TypedValue
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
 import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.TextView
-import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
-import androidx.core.content.ContextCompat
+import androidx.core.widget.NestedScrollView
+import com.google.android.material.card.MaterialCardView
+import com.playtranslate.themeColor
 
 import androidx.fragment.app.DialogFragment
 import androidx.lifecycle.lifecycleScope
 import com.playtranslate.AnkiManager
+import com.playtranslate.Prefs
 import com.playtranslate.R
 import com.playtranslate.fullScreenDialogTheme
-import com.playtranslate.dictionary.DictionaryManager
-import com.playtranslate.model.JishoWord
+import com.playtranslate.language.DefinitionResolver
+import com.playtranslate.language.DefinitionResult
+import com.playtranslate.language.TatoebaClient
+import com.playtranslate.language.WordTranslator
+import com.playtranslate.language.TargetGlossDatabaseProvider
+import com.playtranslate.language.TranslationManagerProvider
+import com.playtranslate.model.CharacterDetail
+import com.playtranslate.model.DictionaryEntry
+import com.playtranslate.model.HanziDetail
 import com.playtranslate.model.KanjiDetail
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -70,6 +80,17 @@ class WordDetailBottomSheet : DialogFragment() {
         inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?
     ): View = inflater.inflate(R.layout.bottom_sheet_word_detail, container, false)
 
+    override fun onDestroyView() {
+        // Null out view references so the fragment instance doesn't
+        // retain the old view tree between onDestroyView and the next
+        // onCreateView (e.g. rotation). Scopes are tied to
+        // viewLifecycleOwner so in-flight coroutines cancel themselves;
+        // this just closes the reference-leak window.
+        moreExamplesGroup = null
+        moreExamplesBody = null
+        super.onDestroyView()
+    }
+
     override fun onStart() {
         super.onStart()
         dialog?.window?.apply {
@@ -88,19 +109,46 @@ class WordDetailBottomSheet : DialogFragment() {
         view.findViewById<TextView>(R.id.tvDetailHeadword).text = word
 
         val content     = view.findViewById<LinearLayout>(R.id.detailContent)
-        val scrollView  = view.findViewById<android.widget.ScrollView>(R.id.detailScrollView)
+        val scrollView  = view.findViewById<NestedScrollView>(R.id.detailScrollView)
         val btnAddAnki  = view.findViewById<Button>(R.id.btnWordAddToAnki)
 
-        lifecycleScope.launch {
-            val dict = DictionaryManager.get(requireContext())
-            val response = withContext(Dispatchers.IO) { dict.lookup(word, readingHint) }
-            val entry = response?.data?.firstOrNull()
+        // Scope to the VIEW lifecycle (cancels on onDestroyView) rather
+        // than the fragment lifecycle — config-change rotations rebuild
+        // the view while the fragment instance survives, and async work
+        // that captured references into the old view tree would otherwise
+        // write stale TextViews after they were detached.
+        viewLifecycleOwner.lifecycleScope.launch {
+            val appCtx = requireContext().applicationContext
+            val prefs = Prefs(appCtx)
+            val engine = com.playtranslate.language.SourceLanguageEngines.get(appCtx, prefs.sourceLangId)
+            moreExamplesSourceLang = prefs.sourceLangId.code
+            moreExamplesTargetLang = prefs.targetLang
+            val targetGlossDb = TargetGlossDatabaseProvider.get(appCtx, prefs.targetLang)
+            val mlKitTranslator = TranslationManagerProvider.get(engine.profile.translationCode, prefs.targetLang)
+            val enToTarget = TranslationManagerProvider.getEnToTarget(prefs.targetLang)
+            val resolver = DefinitionResolver(engine, targetGlossDb,
+                mlKitTranslator?.let { WordTranslator(it::translate) }, prefs.targetLang,
+                enToTarget?.let { WordTranslator(it::translate) })
+            val defResult = withContext(Dispatchers.IO) { resolver.lookup(word, readingHint) }
+            val response = defResult?.response
+            val entry = response?.entries?.firstOrNull()
             if (!isAdded) return@launch
             if (entry == null) {
-                addText(content, getString(R.string.word_detail_not_found, word), 14f, R.color.text_hint)
+                addNotFoundNotice(content, getString(R.string.word_detail_not_found, word))
                 return@launch
             }
-            buildContent(content, entry, dict)
+            // Definitions render immediately. For target=en the pack's
+            // stored English example translations are already usable, so
+            // we pass them in as the initial translations. For non-English
+            // targets we leave the translation slots empty (the TextView
+            // stays GONE until we have real translations) and fill them
+            // in asynchronously so ML Kit latency doesn't stall the
+            // first paint.
+            val initialTranslations: List<List<String>>? = if (prefs.targetLang == "en") {
+                entry.senses.map { s -> s.examples.map { it.translation } }
+            } else null
+            val translationRegistry = mutableMapOf<Pair<Int, Int>, TextView>()
+            buildContent(content, entry, engine, defResult, initialTranslations, translationRegistry)
             scrollView?.scrollTo(0, 0)
 
             // Show Add to Anki button once we have a valid entry
@@ -110,13 +158,51 @@ class WordDetailBottomSheet : DialogFragment() {
                 if (!ankiManager.isAnkiDroidInstalled()) {
                     showAnkiNotInstalledDialog(requireContext())
                 } else {
-                    openWordAnkiReview(word, entry, screenshotPath)
+                    openWordAnkiReview(word, entry, screenshotPath, defResult)
+                }
+            }
+
+            // Kick off async example translation AFTER the definitions
+            // are on-screen so the user isn't staring at a blank popup
+            // while ML Kit warms up / translates. Results are dropped in
+            // via the registry of translation TextViews.
+            if (prefs.targetLang != "en" && response != null) {
+                launch {
+                    val translated = runCatching {
+                        withContext(Dispatchers.IO) { resolver.translateExamples(response) }
+                    }.getOrNull() ?: return@launch
+                    if (!isAdded) return@launch
+                    translated.forEachIndexed { sIdx, perSense ->
+                        perSense.forEachIndexed { eIdx, tr ->
+                            if (tr.isBlank()) return@forEachIndexed
+                            translationRegistry[sIdx to eIdx]?.let { tv ->
+                                tv.text = tr
+                                tv.visibility = View.VISIBLE
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Tatoeba "More examples" — only if the section placeholder
+            // was rendered (source != target and a candidate word exists).
+            if (moreExamplesGroup != null) {
+                launch {
+                    val lookupWord = entry.headwords.firstOrNull()?.written
+                        ?: entry.slug
+                    val pairs = TatoebaClient.fetch(
+                        word = lookupWord,
+                        sourceLang = moreExamplesSourceLang,
+                        targetLang = moreExamplesTargetLang,
+                    )
+                    if (!isAdded) return@launch
+                    applyMoreExamples(pairs)
                 }
             }
         }
     }
 
-    private fun openWordAnkiReview(word: String, entry: JishoWord, screenshotPath: String?) {
+    private fun openWordAnkiReview(word: String, entry: DictionaryEntry, screenshotPath: String?, defResult: DefinitionResult?) {
         if (!AnkiManager(requireContext()).hasPermission()) {
             AlertDialog.Builder(requireContext())
                 .setTitle(R.string.anki_permission_rationale_title)
@@ -133,17 +219,32 @@ class WordDetailBottomSheet : DialogFragment() {
             return
         }
 
-        val reading = entry.japanese.firstOrNull()?.reading
-            ?.takeIf { it != entry.japanese.firstOrNull()?.word } ?: ""
+        val reading = entry.headwords.firstOrNull()?.reading
+            ?.takeIf { it != entry.headwords.firstOrNull()?.written } ?: ""
 
         val pos = entry.senses.firstOrNull()?.partsOfSpeech
             ?.filter { it.isNotBlank() }?.joinToString(" · ") ?: ""
 
+        // Use resolved definitions (target-pack native or ML Kit translated)
+        // instead of raw English glosses from the dictionary entry.
+        val targetByOrd = if (defResult is DefinitionResult.Native)
+            defResult.targetSenses.associateBy { it.senseOrd } else null
+        val translatedDefs = when (defResult) {
+            is DefinitionResult.MachineTranslated -> defResult.translatedDefinitions
+            is DefinitionResult.EnglishFallback -> defResult.translatedDefinitions
+            else -> null
+        }
+        val nonEmptySenseCount = entry.senses.count { it.targetDefinitions.isNotEmpty() }
+        var displayNum = 0
         val definition = entry.senses
-            .filter { it.englishDefinitions.isNotEmpty() }
-            .mapIndexed { i, sense ->
-                val prefix = if (entry.senses.size > 1) "${i + 1}. " else ""
-                prefix + sense.englishDefinitions.joinToString("; ")
+            .mapIndexedNotNull { i, sense ->
+                if (sense.targetDefinitions.isEmpty()) return@mapIndexedNotNull null
+                displayNum++
+                val glosses = targetByOrd?.get(i)?.glosses?.joinToString("; ")
+                    ?: translatedDefs?.getOrElse(i) { sense.targetDefinitions.joinToString("; ") }
+                    ?: sense.targetDefinitions.joinToString("; ")
+                val prefix = if (nonEmptySenseCount > 1) "$displayNum. " else ""
+                prefix + glosses
             }
             .joinToString("\n")
 
@@ -165,118 +266,591 @@ class WordDetailBottomSheet : DialogFragment() {
                 }.toMap()
             }
 
+        val sourceLangId = com.playtranslate.Prefs(requireContext().applicationContext).sourceLangId
         WordAnkiReviewSheet.newInstance(
             word, reading, pos, definition, screenshotPath,
             freqScore = entry.freqScore,
             sentenceOriginal = sentenceOriginal,
             sentenceTranslation = sentenceTranslation,
-            sentenceWordResults = sentenceWordResults
+            sentenceWordResults = sentenceWordResults,
+            sourceLangId = sourceLangId
         ).show(childFragmentManager, WordAnkiReviewSheet.TAG)
     }
 
-    private suspend fun buildContent(content: LinearLayout, entry: JishoWord, dict: DictionaryManager) {
-        // ── Readings ─────────────────────────────────────────────────────
-        val allReadings = entry.japanese.mapNotNull { f ->
-            f.reading?.takeIf { it != f.word }
+    /** Source language code for the "More examples" section; set in
+     *  [onViewCreated] and compared against [moreExamplesTargetLang] to
+     *  decide whether the section appears at all. */
+    private var moreExamplesSourceLang: String = ""
+    private var moreExamplesTargetLang: String = ""
+
+    /** Set inside [addMoreExamplesPlaceholder] so the async Tatoeba
+     *  fetch can populate or hide the section once the first paint is
+     *  already on screen. Cleared if the check in [buildContent] skips
+     *  the placeholder. */
+    private var moreExamplesGroup: LinearLayout? = null
+    private var moreExamplesBody: LinearLayout? = null
+
+    private suspend fun buildContent(
+        content: LinearLayout,
+        entry: DictionaryEntry,
+        engine: com.playtranslate.language.SourceLanguageEngine,
+        defResult: DefinitionResult?,
+        initialTranslations: List<List<String>>?,
+        translationRegistry: MutableMap<Pair<Int, Int>, TextView>,
+    ) {
+        // ── Header block: readings + badges ───────────────────────────────
+        val allReadings = entry.headwords.mapNotNull { f ->
+            f.reading?.takeIf { it != f.written }
         }.distinct()
-        if (allReadings.isNotEmpty()) {
-            addText(content, allReadings.joinToString("  /  "), 15f, R.color.text_hint)
+        val badges = buildList {
+            if (entry.isCommon == true) add("Common")
+            if (entry.freqScore > 0) add("★".repeat(entry.freqScore))
         }
+        addHeaderBlock(content, allReadings, badges)
 
-        // ── Badges: Common + frequency ────────────────────────────────────
-        val badgeRow = LinearLayout(requireContext()).apply {
-            orientation = LinearLayout.HORIZONTAL
-            layoutParams = rowParams(topMargin = 8)
+        // ── Definitions group ─────────────────────────────────────────────
+        val translatedDefs = when (defResult) {
+            is DefinitionResult.Native -> defResult.translatedDefinitions
+            is DefinitionResult.MachineTranslated -> defResult.translatedDefinitions
+            is DefinitionResult.EnglishFallback -> defResult.translatedDefinitions
+            else -> null
         }
-        if (entry.isCommon == true)  badgeRow.addView(makeBadge("Common"))
-        if (entry.freqScore > 0)     badgeRow.addView(makeBadge("★".repeat(entry.freqScore)))
-        if (badgeRow.childCount > 0) content.addView(badgeRow)
+        val targetByOrd = if (defResult is DefinitionResult.Native)
+            defResult.targetSenses.associateBy { it.senseOrd } else null
+        val numSenses = entry.senses.count { it.targetDefinitions.isNotEmpty() }
 
-        addDivider(content, topMargin = 14)
+        // "Machine translated" banner fires when the user will actually
+        // see MT output — either because no Native target was available
+        // (MachineTranslated headword), or because the Native result
+        // didn't cover every source sense so MT is filling the gaps.
+        val anyMtDisplayed = entry.senses.withIndex().any { (idx, s) ->
+            if (s.targetDefinitions.isEmpty()) return@any false
+            val target = targetByOrd?.get(idx)
+            target == null && translatedDefs?.getOrNull(idx)?.isNotBlank() == true
+        }
+        val mtNotice = when {
+            defResult is DefinitionResult.MachineTranslated ->
+                "⚠ Machine translated: ${defResult.translatedHeadword}"
+            anyMtDisplayed ->
+                "⚠ Machine translated"
+            else -> null
+        }
+        if (mtNotice != null) addMachineTranslatedNotice(content, mtNotice)
 
-        // ── Senses ────────────────────────────────────────────────────────
-        val senses = entry.senses.filter { it.englishDefinitions.isNotEmpty() }
-        senses.forEachIndexed { idx, sense ->
-            val posFiltered = sense.partsOfSpeech.filter { it.isNotBlank() }
-            if (posFiltered.isNotEmpty()) {
-                val posRow = LinearLayout(requireContext()).apply {
-                    orientation = LinearLayout.HORIZONTAL
-                    layoutParams = rowParams(topMargin = if (idx == 0) 0 else 12)
-                }
-                posFiltered.forEach { posRow.addView(makeBadge(it, small = true)) }
-                content.addView(posRow)
-            }
+        addGroupHeader(content, "Definitions")
+        val definitionsCard = addGroupCard(content)
 
-            val prefix = if (senses.size > 1) "${idx + 1}.  " else ""
-            addText(
-                content,
-                prefix + sense.englishDefinitions.joinToString("; "),
-                16f, R.color.text_primary, topMargin = 4
+        var displayCount = 0
+        entry.senses.forEachIndexed { origIdx, sense ->
+            if (sense.targetDefinitions.isEmpty()) return@forEachIndexed
+            val target = targetByOrd?.get(origIdx)
+            val posLabels = (target?.pos ?: sense.partsOfSpeech).filter { it.isNotBlank() }
+            val glosses = target?.glosses?.joinToString("; ")
+                ?: translatedDefs?.getOrElse(origIdx) { sense.targetDefinitions.joinToString("; ") }
+                ?: sense.targetDefinitions.joinToString("; ")
+            val prefix = if (numSenses > 1) "${displayCount + 1}.  " else ""
+
+            if (displayCount > 0) addInsetDivider(definitionsCard)
+            addSenseRow(
+                parent = definitionsCard,
+                posLabels = posLabels,
+                glossText = prefix + glosses,
+                miscText = sense.misc.takeIf { it.isNotEmpty() }?.joinToString(" · "),
+                examples = sense.examples,
+                exampleTranslations = initialTranslations?.getOrNull(origIdx),
+                senseIndex = origIdx,
+                translationRegistry = translationRegistry,
             )
-
-            if (sense.misc.isNotEmpty()) {
-                addText(content, sense.misc.joinToString(" · "), 12f, R.color.text_hint,
-                    topMargin = 2, italic = true)
-            }
+            displayCount++
         }
 
-        // ── Kanji breakdown ───────────────────────────────────────────────
-        val cjkChars = (entry.japanese.firstOrNull()?.word ?: entry.slug)
+        // ── More examples (Tatoeba, online) ──────────────────────────────
+        // Render only when Tatoeba actually supports the pair. The
+        // `supports` check normalizes codes (e.g. zh / zh-Hant both map
+        // to `cmn`) and rejects equal-normalized pairs, so we don't
+        // surface a placeholder that would later flip into a misleading
+        // "check your connection" error for a pair the API could never
+        // serve.
+        if (TatoebaClient.supports(moreExamplesSourceLang, moreExamplesTargetLang)) {
+            addMoreExamplesPlaceholder(content)
+        }
+
+        // ── Character breakdown group (Kanji / Hanzi) ────────────────────
+        val cjkChars = (entry.headwords.firstOrNull()?.written ?: entry.slug)
             .filter { c -> c.code in 0x4E00..0x9FFF || c.code in 0x3400..0x4DBF }
             .toList().distinct()
 
         if (cjkChars.isNotEmpty()) {
-            val kanjiDetails = withContext(Dispatchers.IO) {
-                cjkChars.mapNotNull { dict.lookupKanji(it) }
+            val characterDetails = withContext(Dispatchers.IO) {
+                cjkChars.mapNotNull { engine.lookupCharacter(it) }
             }
-            if (isAdded && kanjiDetails.isNotEmpty()) {
-                addDivider(content, topMargin = 14)
-                addSectionLabel(content, "Kanji")
-                kanjiDetails.forEach { addKanjiCard(content, it) }
+            if (isAdded && characterDetails.isNotEmpty()) {
+                val header = when (characterDetails.first()) {
+                    is KanjiDetail -> "Kanji"
+                    is HanziDetail -> "Hanzi"
+                }
+                addGroupHeader(content, header)
+                val charCard = addGroupCard(content)
+                characterDetails.forEachIndexed { index, detail ->
+                    if (index > 0) addInsetDivider(charCard)
+                    addCharacterRow(charCard, detail)
+                }
             }
         }
     }
 
-    // ── View helpers ──────────────────────────────────────────────────────
+    // ── Section builders ──────────────────────────────────────────────────
 
-    private fun addText(
-        parent: LinearLayout, text: String, sizeSp: Float, colorRes: Int,
-        topMargin: Int = 0, italic: Boolean = false
+    private fun addHeaderBlock(
+        parent: LinearLayout,
+        readings: List<String>,
+        badges: List<String>
     ) {
-        parent.addView(TextView(requireContext()).apply {
+        if (readings.isEmpty() && badges.isEmpty()) return
+        val ctx = requireContext()
+        val block = LinearLayout(ctx).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(4), dp(4), dp(4), dp(8))
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            )
+        }
+        if (readings.isNotEmpty()) {
+            block.addView(TextView(ctx).apply {
+                text = readings.joinToString("  /  ")
+                textSize = 15f
+                setTextColor(ctx.themeColor(R.attr.ptTextMuted))
+            })
+        }
+        if (badges.isNotEmpty()) {
+            val badgeRow = LinearLayout(ctx).apply {
+                orientation = LinearLayout.HORIZONTAL
+                layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                ).also { if (readings.isNotEmpty()) it.topMargin = dp(8) }
+            }
+            badges.forEach { badgeRow.addView(makeBadge(it)) }
+            block.addView(badgeRow)
+        }
+        parent.addView(block)
+    }
+
+    private fun addMachineTranslatedNotice(parent: LinearLayout, text: String) {
+        val ctx = requireContext()
+        parent.addView(TextView(ctx).apply {
             this.text = text
-            textSize = sizeSp
-            setTextColor(ContextCompat.getColor(requireContext(), colorRes))
-            if (italic) setTypeface(null, Typeface.ITALIC)
-            layoutParams = rowParams(topMargin)
+            textSize = 12f
+            setTextColor(ctx.themeColor(R.attr.ptTextHint))
+            setTypeface(null, Typeface.ITALIC)
+            setPadding(dp(4), 0, dp(4), dp(4))
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            )
         })
     }
 
-    private fun addSectionLabel(parent: LinearLayout, label: String) {
-        parent.addView(TextView(requireContext()).apply {
-            text = label.uppercase()
-            textSize = 10f
-            letterSpacing = 0.15f
-            setTextColor(ContextCompat.getColor(requireContext(), R.color.text_secondary))
-            setTypeface(null, Typeface.BOLD)
-            layoutParams = rowParams(topMargin = 4, bottomMargin = 4)
-        })
+    private fun addGroupHeader(parent: LinearLayout, title: String) {
+        val header = LayoutInflater.from(requireContext())
+            .inflate(R.layout.settings_group_header, parent, false)
+        header.findViewById<TextView>(R.id.tvGroupTitle).text =
+            title.uppercase(java.util.Locale.ROOT)
+        parent.addView(header)
     }
 
-    private fun addDivider(parent: LinearLayout, topMargin: Int = 0) {
-        parent.addView(View(requireContext()).apply {
-            setBackgroundColor(ContextCompat.getColor(requireContext(), R.color.bg_divider))
+    private fun addGroupCard(parent: LinearLayout): LinearLayout {
+        val ctx = requireContext()
+        val card = MaterialCardView(ctx).apply {
+            setCardBackgroundColor(ctx.themeColor(R.attr.ptCard))
+            radius = ctx.resources.getDimension(R.dimen.pt_radius)
+            cardElevation = 0f
+            strokeColor = ctx.themeColor(R.attr.ptDivider)
+            strokeWidth = dp(1)
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            )
+        }
+        val inner = LinearLayout(ctx).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutParams = ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            )
+        }
+        card.addView(inner)
+        parent.addView(card)
+        return inner
+    }
+
+    private fun addInsetDivider(parent: LinearLayout) {
+        val ctx = requireContext()
+        parent.addView(View(ctx).apply {
+            setBackgroundColor(ctx.themeColor(R.attr.ptDivider))
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, dp(1)
-            ).also { it.topMargin = dp(topMargin) }
+            ).also { it.marginStart = dpRes(R.dimen.pt_row_h_padding) }
+        })
+    }
+
+    /**
+     * Adds a "More examples" group (header + card with placeholder +
+     * attribution) to [parent]. The outer group and the inner sentences
+     * container are stashed in [moreExamplesGroup] / [moreExamplesBody]
+     * so [applyMoreExamples] can replace the placeholder asynchronously
+     * without rebuilding the hierarchy.
+     *
+     * Card structure:
+     *   MaterialCardView
+     *     LinearLayout vertical
+     *       moreExamplesBody  — holds the "Loading…" row, then sentences
+     *       inset divider
+     *       attribution row    — "Sentences from Tatoeba (CC BY 2.0 FR)"
+     */
+    private fun addMoreExamplesPlaceholder(parent: LinearLayout) {
+        val ctx = requireContext()
+        val group = LinearLayout(ctx).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            )
+        }
+        addGroupHeader(group, getString(R.string.word_detail_more_examples))
+        val card = addGroupCard(group)
+
+        val body = LinearLayout(ctx).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(
+                dpRes(R.dimen.pt_row_h_padding),
+                dpRes(R.dimen.pt_row_v_padding),
+                dpRes(R.dimen.pt_row_h_padding),
+                dpRes(R.dimen.pt_row_v_padding),
+            )
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            )
+        }
+        body.addView(TextView(ctx).apply {
+            text = getString(R.string.word_detail_more_examples_loading)
+            textSize = 13f
+            setTextColor(ctx.themeColor(R.attr.ptTextMuted))
+            setTypeface(null, Typeface.ITALIC)
+        })
+        card.addView(body)
+
+        addInsetDivider(card)
+
+        card.addView(TextView(ctx).apply {
+            text = getString(R.string.word_detail_tatoeba_attribution)
+            textSize = 11f
+            setTextColor(ctx.themeColor(R.attr.ptTextHint))
+            setPadding(
+                dpRes(R.dimen.pt_row_h_padding),
+                dp(8),
+                dpRes(R.dimen.pt_row_h_padding),
+                dp(8),
+            )
+            isClickable = true
+            isFocusable = true
+            setOnClickListener {
+                runCatching {
+                    val i = android.content.Intent(
+                        android.content.Intent.ACTION_VIEW,
+                        android.net.Uri.parse("https://tatoeba.org/")
+                    )
+                    startActivity(i)
+                }
+            }
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            )
+        })
+
+        parent.addView(group)
+        moreExamplesGroup = group
+        moreExamplesBody = body
+    }
+
+    /**
+     * Replace the placeholder rendered by [addMoreExamplesPlaceholder]
+     * with the supplied [pairs]. A non-null empty list hides the whole
+     * group (empty-state noise outweighs its value). A null [pairs]
+     * means network/API failure — surface a muted error instead of
+     * hiding so the user knows the feature exists.
+     */
+    private fun applyMoreExamples(pairs: List<TatoebaClient.SentencePair>?) {
+        val body = moreExamplesBody ?: return
+        val group = moreExamplesGroup ?: return
+        val ctx = requireContext()
+        body.removeAllViews()
+
+        when {
+            pairs == null -> {
+                body.addView(TextView(ctx).apply {
+                    text = getString(R.string.word_detail_more_examples_error)
+                    textSize = 13f
+                    setTextColor(ctx.themeColor(R.attr.ptTextHint))
+                })
+            }
+            pairs.isEmpty() -> {
+                group.visibility = View.GONE
+            }
+            else -> {
+                pairs.forEachIndexed { i, p ->
+                    if (i > 0) {
+                        body.addView(View(ctx).apply {
+                            setBackgroundColor(ctx.themeColor(R.attr.ptDivider))
+                            layoutParams = LinearLayout.LayoutParams(
+                                LinearLayout.LayoutParams.MATCH_PARENT, dp(1)
+                            ).also { it.topMargin = dp(8); it.bottomMargin = dp(6) }
+                        })
+                    }
+                    val (block, tv) = buildExampleBlock(ctx, p.source, p.target)
+                    // buildExampleBlock top-margins the first item by 8dp;
+                    // trim that for the leading card row since we already
+                    // pad the body container.
+                    if (i == 0) {
+                        (block.layoutParams as? LinearLayout.LayoutParams)?.topMargin = 0
+                    }
+                    body.addView(block)
+                    // Translation is present and non-blank; ensure the
+                    // TextView is visible (buildExampleBlock hides it when
+                    // initial translation is empty, which isn't the case
+                    // here but set explicitly for clarity).
+                    tv.visibility = View.VISIBLE
+                }
+            }
+        }
+    }
+
+    private fun addSenseRow(
+        parent: LinearLayout,
+        posLabels: List<String>,
+        glossText: String,
+        miscText: String?,
+        examples: List<com.playtranslate.model.Example> = emptyList(),
+        exampleTranslations: List<String>? = null,
+        senseIndex: Int = -1,
+        translationRegistry: MutableMap<Pair<Int, Int>, TextView>? = null,
+    ) {
+        val ctx = requireContext()
+        val row = LinearLayout(ctx).apply {
+            orientation = LinearLayout.VERTICAL
+            minimumHeight = dpRes(R.dimen.pt_row_min_height)
+            setPadding(
+                dpRes(R.dimen.pt_row_h_padding),
+                dpRes(R.dimen.pt_row_v_padding),
+                dpRes(R.dimen.pt_row_h_padding),
+                dpRes(R.dimen.pt_row_v_padding)
+            )
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            )
+        }
+
+        if (posLabels.isNotEmpty()) {
+            row.addView(TextView(ctx).apply {
+                text = posLabels.joinToString(" · ").uppercase(java.util.Locale.ROOT)
+                textSize = 10f
+                letterSpacing = 0.15f
+                setTextColor(ctx.themeColor(R.attr.ptTextMuted))
+                isAllCaps = true
+                layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                )
+            })
+        }
+
+        row.addView(TextView(ctx).apply {
+            text = glossText
+            textSize = 16f
+            setTextColor(ctx.themeColor(R.attr.ptText))
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).also { if (posLabels.isNotEmpty()) it.topMargin = dp(6) }
+        })
+
+        if (miscText != null) {
+            row.addView(TextView(ctx).apply {
+                text = miscText
+                textSize = 12f
+                setTextColor(ctx.themeColor(R.attr.ptTextHint))
+                setTypeface(null, Typeface.ITALIC)
+                layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                ).also { it.topMargin = dp(4) }
+            })
+        }
+
+        examples.forEachIndexed { i, ex ->
+            // Initial translation: non-null from `exampleTranslations` when
+            // the caller supplied stored English (target=en), else "" so
+            // the translation TextView starts hidden and waits for the
+            // async ML Kit update to populate via translationRegistry.
+            val initialTranslation = exampleTranslations?.getOrNull(i) ?: ""
+            val (block, translationTv) = buildExampleBlock(ctx, ex.text, initialTranslation)
+            row.addView(block)
+            if (senseIndex >= 0 && translationRegistry != null) {
+                translationRegistry[senseIndex to i] = translationTv
+            }
+        }
+
+        parent.addView(row)
+    }
+
+    private fun buildExampleBlock(ctx: android.content.Context, text: String, initialTranslation: String): Pair<View, TextView> {
+        // Quoted-example block: indented column with italic source text on
+        // top and muted translation beneath. The translation TextView is
+        // always added but starts GONE when empty — this lets the async
+        // ML Kit update just flip visibility + set text instead of
+        // rebuilding the view hierarchy when translations arrive.
+        val block = LinearLayout(ctx).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(12), 0, 0, 0)
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).also { it.topMargin = dp(8) }
+        }
+        block.addView(TextView(ctx).apply {
+            this.text = text
+            textSize = 14f
+            setTextColor(ctx.themeColor(R.attr.ptText))
+            setTypeface(null, Typeface.ITALIC)
+        })
+        val translationTv = TextView(ctx).apply {
+            this.text = initialTranslation
+            visibility = if (initialTranslation.isNotBlank()) View.VISIBLE else View.GONE
+            textSize = 13f
+            setTextColor(ctx.themeColor(R.attr.ptTextMuted))
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).also { it.topMargin = dp(2) }
+        }
+        block.addView(translationTv)
+        return block to translationTv
+    }
+
+    private fun addCharacterRow(parent: LinearLayout, detail: CharacterDetail) {
+        val ctx = requireContext()
+        val row = LinearLayout(ctx).apply {
+            orientation = LinearLayout.HORIZONTAL
+            minimumHeight = dpRes(R.dimen.pt_row_min_height)
+            setPadding(
+                dpRes(R.dimen.pt_row_h_padding),
+                dpRes(R.dimen.pt_row_v_padding),
+                dpRes(R.dimen.pt_row_h_padding),
+                dpRes(R.dimen.pt_row_v_padding)
+            )
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            )
+        }
+
+        row.addView(TextView(ctx).apply {
+            text = detail.literal.toString()
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 32f)
+            setTextColor(ctx.themeColor(R.attr.ptText))
+            setTypeface(null, Typeface.BOLD)
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).also { it.marginEnd = dp(14); it.gravity = android.view.Gravity.CENTER_VERTICAL }
+        })
+
+        val col = LinearLayout(ctx).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                .also { it.gravity = android.view.Gravity.CENTER_VERTICAL }
+        }
+
+        if (detail.meanings.isNotEmpty()) {
+            col.addView(TextView(ctx).apply {
+                text = detail.meanings.take(4).joinToString(", ")
+                textSize = 15f
+                setTextColor(ctx.themeColor(R.attr.ptText))
+                typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+            })
+        }
+
+        val readings = when (detail) {
+            is KanjiDetail -> buildList {
+                if (detail.onReadings.isNotEmpty())  add("on: ${detail.onReadings.joinToString(", ")}")
+                if (detail.kunReadings.isNotEmpty()) add("kun: ${detail.kunReadings.take(3).joinToString(", ")}")
+            }
+            is HanziDetail -> listOfNotNull(detail.pinyin)
+        }
+        if (readings.isNotEmpty()) {
+            col.addView(TextView(ctx).apply {
+                text = readings.joinToString("  ")
+                textSize = 12f
+                setTextColor(ctx.themeColor(R.attr.ptTextMuted))
+                layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                ).also { it.topMargin = dp(2) }
+            })
+        }
+
+        val meta = when (detail) {
+            is KanjiDetail -> buildList {
+                if (detail.jlpt > 0)       add("JLPT N${detail.jlpt}")
+                if (detail.grade in 1..6)  add("Grade ${detail.grade}")
+                else if (detail.grade == 8) add("Secondary")
+                if (detail.strokeCount > 0) add("${detail.strokeCount} strokes")
+            }
+            is HanziDetail -> buildList {
+                if (detail.isCommon) add("Common")
+                if (detail.freqScore > 0) add("★".repeat(detail.freqScore))
+            }
+        }
+        if (meta.isNotEmpty()) {
+            col.addView(TextView(ctx).apply {
+                text = meta.joinToString("  ·  ")
+                textSize = 11f
+                setTextColor(ctx.themeColor(R.attr.ptTextHint))
+                layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                ).also { it.topMargin = dp(2) }
+            })
+        }
+
+        row.addView(col)
+        parent.addView(row)
+    }
+
+    private fun addNotFoundNotice(parent: LinearLayout, text: String) {
+        val ctx = requireContext()
+        parent.addView(TextView(ctx).apply {
+            this.text = text
+            textSize = 14f
+            setTextColor(ctx.themeColor(R.attr.ptTextHint))
+            setPadding(dp(4), dp(12), dp(4), 0)
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            )
         })
     }
 
     private fun makeBadge(label: String, small: Boolean = false): TextView {
-        return TextView(requireContext()).apply {
+        val ctx = requireContext()
+        return TextView(ctx).apply {
             text = label
             textSize = if (small) 11f else 12f
-            setTextColor(ContextCompat.getColor(requireContext(), R.color.text_secondary))
+            setTextColor(ctx.themeColor(R.attr.ptTextMuted))
             setBackgroundResource(R.drawable.bg_badge)
             setPadding(dp(6), dp(2), dp(6), dp(2))
             layoutParams = LinearLayout.LayoutParams(
@@ -286,79 +860,7 @@ class WordDetailBottomSheet : DialogFragment() {
         }
     }
 
-    private fun addKanjiCard(parent: LinearLayout, detail: KanjiDetail) {
-        val ctx = requireContext()
-        val card = LinearLayout(ctx).apply {
-            orientation = LinearLayout.HORIZONTAL
-            setBackgroundColor(ContextCompat.getColor(ctx, R.color.bg_card))
-            layoutParams = rowParams(topMargin = 8)
-            setPadding(dp(12), dp(10), dp(12), dp(10))
-        }
-
-        card.addView(TextView(ctx).apply {
-            text = detail.literal.toString()
-            textSize = 36f
-            setTextColor(ContextCompat.getColor(ctx, R.color.text_primary))
-            setTypeface(null, Typeface.BOLD)
-            layoutParams = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.WRAP_CONTENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
-            ).also { it.marginEnd = dp(14) }
-        })
-
-        val col = LinearLayout(ctx).apply {
-            orientation = LinearLayout.VERTICAL
-            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-        }
-
-        if (detail.meanings.isNotEmpty()) {
-            col.addView(TextView(ctx).apply {
-                text = detail.meanings.take(4).joinToString(", ")
-                textSize = 14f
-                setTextColor(ContextCompat.getColor(ctx, R.color.text_primary))
-            })
-        }
-
-        val readings = buildList {
-            if (detail.onReadings.isNotEmpty())  add("on: ${detail.onReadings.joinToString(", ")}")
-            if (detail.kunReadings.isNotEmpty()) add("kun: ${detail.kunReadings.take(3).joinToString(", ")}")
-        }
-        if (readings.isNotEmpty()) {
-            col.addView(TextView(ctx).apply {
-                text = readings.joinToString("  ")
-                textSize = 12f
-                setTextColor(ContextCompat.getColor(ctx, R.color.text_hint))
-                layoutParams = LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT
-                ).also { it.topMargin = dp(2) }
-            })
-        }
-
-        val meta = buildList {
-            if (detail.jlpt > 0)       add("JLPT N${detail.jlpt}")
-            if (detail.grade in 1..6)  add("Grade ${detail.grade}")
-            else if (detail.grade == 8) add("Secondary")
-            if (detail.strokeCount > 0) add("${detail.strokeCount} strokes")
-        }
-        if (meta.isNotEmpty()) {
-            col.addView(TextView(ctx).apply {
-                text = meta.joinToString("  ·  ")
-                textSize = 11f
-                setTextColor(ContextCompat.getColor(ctx, R.color.text_hint))
-                layoutParams = LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT
-                ).also { it.topMargin = dp(2) }
-            })
-        }
-
-        card.addView(col)
-        parent.addView(card)
-    }
-
-    private fun rowParams(topMargin: Int = 0, bottomMargin: Int = 0) =
-        LinearLayout.LayoutParams(
-            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
-        ).also { it.topMargin = dp(topMargin); it.bottomMargin = dp(bottomMargin) }
-
     private fun dp(value: Int) = (value * resources.displayMetrics.density).toInt()
+
+    private fun dpRes(resId: Int) = resources.getDimensionPixelSize(resId)
 }

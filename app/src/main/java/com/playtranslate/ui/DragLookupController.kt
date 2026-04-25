@@ -15,8 +15,13 @@ import com.playtranslate.MainActivity
 import com.playtranslate.OcrManager
 import com.playtranslate.PlayTranslateAccessibilityService
 import com.playtranslate.Prefs
-import com.playtranslate.dictionary.DictionaryManager
-import com.playtranslate.model.JishoWord
+import com.playtranslate.language.DefinitionResolver
+import com.playtranslate.language.DefinitionResult
+import com.playtranslate.language.WordTranslator
+import com.playtranslate.language.SourceLanguageEngines
+import com.playtranslate.language.TargetGlossDatabaseProvider
+import com.playtranslate.language.TranslationManagerProvider
+import com.playtranslate.model.DictionaryEntry
 import kotlinx.coroutines.*
 import java.io.File
 import kotlin.math.abs
@@ -49,7 +54,7 @@ class DragLookupController(
     /** Called before transitioning to Anki review so live mode isn't resumed on popup dismiss. */
     var onTransitioningToAnki: (() -> Unit)? = null
     /** Current dictionary entry shown in the popup — used for Anki export. */
-    private var currentEntry: JishoWord? = null
+    private var currentEntry: DictionaryEntry? = null
     /** Path to the screenshot captured at drag start — used for Anki export. */
     private var screenshotPath: String? = null
     private var currentSentence: String? = null
@@ -94,6 +99,78 @@ class DragLookupController(
             '.', '!', '?', '\u2026',   // Latin / general (… = \u2026)
             '\u3002', '\uFF01', '\uFF1F' // 。！？ CJK fullwidth
         )
+
+        /**
+         * Finds the token at [fingerX] in [lineText]. Uses [symbols] (per-
+         * character bounds from ML Kit) when available — correct for non-
+         * monospaced fonts like Latin. Falls back to `fallbackLineLeft +
+         * idx * fallbackCharWidth` math when symbols are absent or
+         * misaligned with [lineText], preserving the pre-Phase-3 CJK path.
+         *
+         * Preference order:
+         *  1. Symbol-aware precise hit — finger within [left, right] of a token
+         *  2. charWidth fallback precise hit
+         *  3. Nearest-center (covers gaps between tokens)
+         *
+         * `internal` so the unit test in `FindClosestTokenTest` can exercise
+         * it without needing an instance of the enclosing class.
+         */
+        /**
+         * Finds the token closest to the finger position along the text flow axis.
+         *
+         * @param fingerPos The finger coordinate along the text flow axis:
+         *   X for horizontal text, Y for vertical text.
+         * @param vertical When true, token extents come from symbol top/bottom
+         *   and fallback uses character height instead of width.
+         */
+        internal fun findClosestToken(
+            lineText: String,
+            tokens: List<String>,
+            fingerPos: Int,
+            symbols: List<OcrManager.SymbolBox>,
+            fallbackLineStart: Int,
+            fallbackCharExtent: Float,
+            vertical: Boolean = false,
+        ): Pair<String, Int>? {
+            data class TokenPos(val token: String, val idx: Int, val start: Float, val end: Float)
+            val positioned = mutableListOf<TokenPos>()
+
+            var pos = 0
+            for (token in tokens) {
+                val idx = lineText.indexOf(token, pos)
+                if (idx < 0) continue
+                val endIdx = idx + token.length
+                val tokenSymbols = symbols.filter { it.charOffset in idx until endIdx }
+                val start: Float
+                val end: Float
+                if (tokenSymbols.isNotEmpty()) {
+                    if (vertical) {
+                        start = tokenSymbols.minOf { it.bounds.top }.toFloat()
+                        end = tokenSymbols.maxOf { it.bounds.bottom }.toFloat()
+                    } else {
+                        start = tokenSymbols.minOf { it.bounds.left }.toFloat()
+                        end = tokenSymbols.maxOf { it.bounds.right }.toFloat()
+                    }
+                } else {
+                    start = fallbackLineStart + idx * fallbackCharExtent
+                    end = fallbackLineStart + endIdx * fallbackCharExtent
+                }
+                positioned += TokenPos(token, idx, start, end)
+                pos = endIdx
+            }
+            if (positioned.isEmpty()) return null
+
+            // Prefer exact hit (finger within token span).
+            val exact = positioned.firstOrNull { fingerPos >= it.start && fingerPos <= it.end }
+            if (exact != null) return exact.token to exact.idx
+
+            // Fallback: nearest center.
+            val nearest = positioned.minByOrNull {
+                val center = (it.start + it.end) / 2f
+                abs(fingerPos - center)
+            }
+            return nearest?.let { it.token to it.idx }
+        }
     }
 
     private val wobbleRadiusPx: Float by lazy {
@@ -146,7 +223,7 @@ class DragLookupController(
         val lines = withContext(Dispatchers.Default) {
             try {
                 screenshotPath = path
-                ocrManager.recogniseWithPositions(bitmap, "ja")
+                ocrManager.recogniseWithPositions(bitmap, Prefs(popup.ctx).sourceLang)
             } finally {
                 bitmap.recycle()
             }
@@ -277,7 +354,7 @@ class DragLookupController(
             try {
                 // Save screenshot for potential Anki export
                 screenshotPath = saveScreenshot(bitmap)
-                ocrManager.recogniseWithPositions(bitmap, "ja")
+                ocrManager.recogniseWithPositions(bitmap, Prefs(service).sourceLang)
             } finally {
                 bitmap.recycle()
             }
@@ -317,20 +394,30 @@ class DragLookupController(
         Log.d(TAG, "Hit line: \"${hitLine.text}\" at ($fingerX, $fingerY)")
 
         val lineText = hitLine.text
-        val lineWidth = hitLine.bounds.width().toFloat()
-        val charWidth = lineWidth / lineText.length
+        val isVertical = hitLine.orientation == com.playtranslate.language.TextOrientation.VERTICAL
+        // For vertical text, characters stack along the height; for horizontal, along the width.
+        val lineExtent = if (isVertical) hitLine.bounds.height().toFloat() else hitLine.bounds.width().toFloat()
+        val charExtent = lineExtent / lineText.length
 
         // Tokenize the line (surface spans for position mapping, lookup forms for dictionary)
         val service = PlayTranslateAccessibilityService.instance ?: return false
-        val dict = DictionaryManager.get(service)
-        val tokenResults = dict.tokenizeWithSurfaces(lineText)
+        val engine = SourceLanguageEngines.get(service, Prefs(service).sourceLangId)
+        val tokenResults = engine.tokenize(lineText)
 
         if (tokenResults.isEmpty()) return false
 
-        // Find the token whose estimated screen position is closest to the finger
-        // Uses surface forms for position mapping in the original text
+        // Find the token whose screen position is closest to the finger.
+        // For vertical text, match along the Y axis; for horizontal, along X.
         val surfaceTokens = tokenResults.map { it.surface }
-        val tokenMatch = findClosestToken(lineText, surfaceTokens, fingerX, hitLine.bounds.left, charWidth)
+        val tokenMatch = findClosestToken(
+            lineText = lineText,
+            tokens = surfaceTokens,
+            fingerPos = if (isVertical) fingerY else fingerX,
+            symbols = hitLine.symbols,
+            fallbackLineStart = if (isVertical) hitLine.bounds.top else hitLine.bounds.left,
+            fallbackCharExtent = charExtent,
+            vertical = isVertical,
+        )
         if (tokenMatch == null) return false
 
         val matchedSurface = tokenMatch.first
@@ -343,24 +430,111 @@ class DragLookupController(
         if (lookupForm == lastWord && popup.isShowing) return true
 
         // Dictionary lookup using the base/dictionary form + reading hint
-        val response = dict.lookup(lookupForm, matchedToken?.reading)
-        val entry = response?.data?.firstOrNull()
+        val prefs = Prefs(service)
+        val targetGlossDb = TargetGlossDatabaseProvider.get(service, prefs.targetLang)
+        val mlKitTranslator = TranslationManagerProvider.get(engine.profile.translationCode, prefs.targetLang)
+        val enToTarget = TranslationManagerProvider.getEnToTarget(prefs.targetLang)
+        val resolver = DefinitionResolver(engine, targetGlossDb,
+            mlKitTranslator?.let { WordTranslator(it::translate) }, prefs.targetLang,
+            enToTarget?.let { WordTranslator(it::translate) })
+        val defResult = resolver.lookup(lookupForm, matchedToken?.reading)
+        val response = defResult?.response
+        val entry = response?.entries?.firstOrNull()
 
-        // Build popup data. If JMdict has the token, use its entry. Otherwise
-        // fall back to a reading-only "Not in dictionary, may be a name"
-        // popup when the tokenizer gave us a reading (proper nouns live in
-        // ENAMDICT, not JMdict). If neither, there's nothing to show.
+        // Build popup data based on DefinitionResult tier.
         val reading = matchedToken?.reading
         val popupData: PopupData = when {
-            entry != null -> {
-                val form = entry.japanese.firstOrNull()
+            entry != null && defResult is DefinitionResult.Native -> {
+                val form = entry.headwords.firstOrNull()
+                // Build senses by ordinal alignment: for each source sense,
+                // use the target-language gloss if senseOrd matches, else
+                // the resolver's MT fallback, else raw source English.
+                val targetByOrd = defResult.targetSenses.associateBy { it.senseOrd }
+                val mtDefs = defResult.translatedDefinitions
                 PopupData(
-                    word = form?.word ?: form?.reading ?: entry.slug,
+                    word = form?.written ?: form?.reading ?: entry.slug,
+                    reading = form?.reading,
+                    senses = entry.senses.mapIndexed { i, sense ->
+                        val target = targetByOrd[i]
+                        if (target != null) {
+                            WordLookupPopup.SenseDisplay(
+                                pos = target.pos.joinToString(", "),
+                                definition = target.glosses.joinToString("; ")
+                            )
+                        } else {
+                            val mt = mtDefs?.getOrNull(i)?.takeIf { it.isNotBlank() }
+                            WordLookupPopup.SenseDisplay(
+                                pos = sense.partsOfSpeech.joinToString(", "),
+                                definition = mt ?: sense.targetDefinitions.joinToString("; ")
+                            )
+                        }
+                    },
+                    freqScore = entry.freqScore,
+                    isCommon = entry.isCommon == true,
+                    entry = entry
+                )
+            }
+            entry != null && defResult is DefinitionResult.MachineTranslated -> {
+                val form = entry.headwords.firstOrNull()
+                val defs = defResult.translatedDefinitions
+                PopupData(
+                    word = form?.written ?: form?.reading ?: entry.slug,
+                    reading = form?.reading,
+                    senses = if (defs != null) {
+                        // Translated definitions available — show them directly
+                        entry.senses.mapIndexed { i, sense ->
+                            WordLookupPopup.SenseDisplay(
+                                pos = sense.partsOfSpeech.joinToString(", "),
+                                definition = defs.getOrElse(i) { sense.targetDefinitions.joinToString("; ") }
+                            )
+                        }
+                    } else {
+                        // No translated definitions — headword + English context
+                        buildList {
+                            add(WordLookupPopup.SenseDisplay(pos = "", definition = defResult.translatedHeadword))
+                            entry.senses.forEach { sense ->
+                                add(WordLookupPopup.SenseDisplay(
+                                    pos = sense.partsOfSpeech.joinToString(", "),
+                                    definition = sense.targetDefinitions.joinToString("; ")
+                                ))
+                            }
+                        }
+                    },
+                    freqScore = entry.freqScore,
+                    isCommon = entry.isCommon == true,
+                    entry = entry,
+                    machineTranslated = true
+                )
+            }
+            entry != null && defResult is DefinitionResult.EnglishFallback && defResult.translatedDefinitions != null -> {
+                // Translated definitions without headword translation
+                val form = entry.headwords.firstOrNull()
+                val defs = defResult.translatedDefinitions
+                PopupData(
+                    word = form?.written ?: form?.reading ?: entry.slug,
+                    reading = form?.reading,
+                    senses = entry.senses.mapIndexed { i, sense ->
+                        WordLookupPopup.SenseDisplay(
+                            pos = sense.partsOfSpeech.joinToString(", "),
+                            definition = defs.getOrElse(i) { sense.targetDefinitions.joinToString("; ") }
+                        )
+                    },
+                    freqScore = entry.freqScore,
+                    isCommon = entry.isCommon == true,
+                    entry = entry,
+                    machineTranslated = true
+                )
+            }
+            entry != null -> {
+                // EnglishFallback with no translations — show English as-is
+                val form = entry.headwords.firstOrNull()
+                PopupData(
+                    word = form?.written ?: form?.reading ?: entry.slug,
                     reading = form?.reading,
                     senses = entry.senses.map { sense ->
                         WordLookupPopup.SenseDisplay(
                             pos = sense.partsOfSpeech.joinToString(", "),
-                            definition = sense.englishDefinitions.joinToString("; ")
+                            definition = sense.targetDefinitions.joinToString("; ")
                         )
                     },
                     freqScore = entry.freqScore,
@@ -386,9 +560,14 @@ class DragLookupController(
             else -> return false
         }
 
-        // Estimate the word's center X in screen coordinates (using surface span position)
+        // Estimate the word's center position along the text flow axis.
         val tokenCenterIdx = matchedIdx + matchedSurface.length / 2f
-        val wordCenterX = (hitLine.bounds.left + tokenCenterIdx * charWidth).toInt()
+        val wordCenterX = if (isVertical) {
+            // For vertical text, use the column's center X for popup positioning
+            hitLine.bounds.centerX()
+        } else {
+            (hitLine.bounds.left + tokenCenterIdx * charExtent).toInt()
+        }
 
         Log.d(TAG, "Found: $matchedSurface ($lookupForm) → ${entry?.slug ?: "(fallback)"}")
         lastWord = lookupForm
@@ -418,7 +597,8 @@ class DragLookupController(
         val senses: List<WordLookupPopup.SenseDisplay>,
         val freqScore: Int,
         val isCommon: Boolean,
-        val entry: JishoWord?
+        val entry: DictionaryEntry?,
+        val machineTranslated: Boolean = false
     )
 
     private fun findLineAt(x: Int, y: Int, lines: List<OcrManager.OcrLine>): OcrManager.OcrLine? {
@@ -443,8 +623,12 @@ class DragLookupController(
                 val cy = line.bounds.centerY()
                 val dx = (x - cx).toLong()
                 val dy = (y - cy).toLong()
-                // Weight vertical distance 3× to strongly prefer the line the finger is actually on
-                val dist = dx * dx + dy * dy * 9
+                // Weight the cross-axis distance 3× to prefer the line/column
+                // the finger is on. For horizontal text, weight vertical; for
+                // vertical columns, weight horizontal.
+                val isVertical = line.orientation == com.playtranslate.language.TextOrientation.VERTICAL
+                val dist = if (isVertical) dx * dx * 9 + dy * dy
+                           else dx * dx + dy * dy * 9
                 if (dist < bestDist) {
                     bestDist = dist
                     bestLine = line
@@ -455,39 +639,6 @@ class DragLookupController(
         return null
     }
 
-    /**
-     * Finds the token at [fingerX]. First checks if the finger falls within a token's
-     * estimated screen span; if not, falls back to the token with the nearest center.
-     */
-    private fun findClosestToken(
-        lineText: String, tokens: List<String>,
-        fingerX: Int, lineLeft: Int, charWidth: Float
-    ): Pair<String, Int>? {
-        // Build list of (token, startIdx, screenLeft, screenRight)
-        data class TokenPos(val token: String, val idx: Int, val left: Float, val right: Float)
-        val positioned = mutableListOf<TokenPos>()
-        var pos = 0
-        for (token in tokens) {
-            val idx = lineText.indexOf(token, pos)
-            if (idx < 0) continue
-            val left = lineLeft + idx * charWidth
-            val right = lineLeft + (idx + token.length) * charWidth
-            positioned += TokenPos(token, idx, left, right)
-            pos = idx + token.length
-        }
-        if (positioned.isEmpty()) return null
-
-        // Prefer exact hit (finger within token span)
-        val exact = positioned.firstOrNull { fingerX >= it.left && fingerX <= it.right }
-        if (exact != null) return exact.token to exact.idx
-
-        // Fallback: nearest center
-        val nearest = positioned.minByOrNull {
-            val center = (it.left + it.right) / 2f
-            abs(fingerX - center)
-        }
-        return nearest?.let { it.token to it.idx }
-    }
 
     private fun showPopup(data: PopupData, fingerX: Int, fingerY: Int) {
         currentEntry = data.entry
@@ -509,7 +660,8 @@ class DragLookupController(
             screenX = fingerX,
             screenY = fingerY,
             screenW = screen.x,
-            screenH = screen.y
+            screenH = screen.y,
+            label = if (data.machineTranslated) "⚠ Machine translated" else null
         )
 
         popup.showAnkiButton = savedShowAnki
@@ -599,16 +751,16 @@ class DragLookupController(
         val entry = currentEntry ?: return
         val service = PlayTranslateAccessibilityService.instance ?: return
 
-        val form = entry.japanese.firstOrNull()
-        val word = form?.word ?: form?.reading ?: entry.slug
+        val form = entry.headwords.firstOrNull()
+        val word = form?.written ?: form?.reading ?: entry.slug
         val reading = form?.reading?.takeIf { it != word } ?: ""
         val pos = entry.senses.firstOrNull()?.partsOfSpeech
             ?.filter { it.isNotBlank() }?.joinToString(" · ") ?: ""
         val definition = entry.senses
-            .filter { it.englishDefinitions.isNotEmpty() }
+            .filter { it.targetDefinitions.isNotEmpty() }
             .mapIndexed { i, sense ->
                 val prefix = if (entry.senses.size > 1) "${i + 1}. " else ""
-                prefix + sense.englishDefinitions.joinToString("; ")
+                prefix + sense.targetDefinitions.joinToString("; ")
             }
             .joinToString("\n")
 
@@ -659,6 +811,8 @@ class DragLookupController(
         putExtra(WordAnkiReviewActivity.EXTRA_DEFINITION, definition)
         putExtra(WordAnkiReviewActivity.EXTRA_FREQ_SCORE, freqScore)
         putExtra(WordAnkiReviewActivity.EXTRA_SCREENSHOT_PATH, screenshotPath)
+        putExtra(WordAnkiReviewActivity.EXTRA_SOURCE_LANG,
+            com.playtranslate.Prefs(context).sourceLangId.code)
         if (sentenceOriginal != null) {
             putExtra(WordAnkiReviewActivity.EXTRA_SENTENCE_ORIGINAL, sentenceOriginal)
         }

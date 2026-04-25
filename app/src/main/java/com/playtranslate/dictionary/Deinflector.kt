@@ -2,6 +2,7 @@ package com.playtranslate.dictionary
 
 import android.util.Log
 import com.atilika.kuromoji.ipadic.Tokenizer
+import java.io.File
 
 private const val TAG = "Deinflector"
 
@@ -22,7 +23,46 @@ object Deinflector {
     private data class Rule(val inflected: String, val dictionary: String, val reason: String)
 
     // Kuromoji tokenizer — lazy so it initialises on first use (always on IO thread).
-    private val tokenizer by lazy { Tokenizer() }
+    // Pack-aware: if [initPackDir] has been called with a directory containing
+    // IPADIC bin files before first access, the tokenizer loads them from that
+    // directory instead of the APK classpath. See [PackAwareKuromojiBuilder].
+    @Volatile private var packDir: File? = null
+    @Volatile private var _tokenizer: Tokenizer? = null
+    private val tokenizerLock = Any()
+
+    private val tokenizer: Tokenizer
+        get() = _tokenizer ?: synchronized(tokenizerLock) {
+            _tokenizer ?: createTokenizer().also { _tokenizer = it }
+        }
+
+    private fun createTokenizer(): Tokenizer {
+        val dir = packDir
+        return if (dir != null && File(dir, "doubleArrayTrie.bin").isFile) {
+            PackAwareKuromojiBuilder(dir).build()
+        } else {
+            // Classpath fallback — used when no pack dir is set, when the pack
+            // doesn't contain tokenizer files yet (pre-migration packs), or
+            // when the APK hasn't been resource-stripped.
+            Tokenizer()
+        }
+    }
+
+    /**
+     * Register a directory containing IPADIC bin files. Always clears the
+     * cached tokenizer so the next [preload] or tokenize call re-deserializes
+     * from whatever is on disk now. Called from [JapaneseEngine]'s init block,
+     * which runs once per engine instance — a new engine appearing after
+     * [SourceLanguageEngines.release] means the pack on disk may have been
+     * swapped (install's safeSwap reuses the same directory path), so an
+     * "idempotent no-op on same path" would keep serving the old bins.
+     * Safe to call from any thread.
+     */
+    fun initPackDir(dir: File?) {
+        synchronized(tokenizerLock) {
+            packDir = dir
+            _tokenizer = null
+        }
+    }
 
     /** Call once on a background thread early in startup to avoid first-use latency. */
     fun preload() {
@@ -42,27 +82,6 @@ object Deinflector {
      * part-of-speech level 1, and base form (null when Kuromoji returns "*").
      * Used by [DictionaryManager] for greedy N-gram phrase detection.
      */
-    /**
-     * Converts [text] to its full kana representation by replacing each token
-     * with Kuromoji's reading (katakana). Tokens with no reading (punctuation,
-     * unknown words) are kept as-is. The result is suitable for romaji conversion.
-     */
-    fun toKana(text: String): String =
-        tokenizer.tokenize(text).joinToString("") { t ->
-            val r = t.reading
-            if (!r.isNullOrEmpty() && r != "*") r else t.surface
-        }
-
-    /**
-     * Same as [toKana] but returns one kana string per morphological token,
-     * so callers can join with spaces for word-spaced romanisation.
-     */
-    fun toKanaTokens(text: String): List<String> =
-        tokenizer.tokenize(text).map { t ->
-            val r = t.reading
-            if (!r.isNullOrEmpty() && r != "*") r else t.surface
-        }
-
     internal fun rawTokenInfos(text: String): List<TokenInfo> =
         tokenizer.tokenize(text).map { t ->
             Log.d(TAG, "token: surface=${t.surface} pos=${t.partOfSpeechLevel1} baseForm=${t.baseForm} reading=${t.reading}")

@@ -4,12 +4,14 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.database.sqlite.SQLiteDatabase
 import android.util.Log
-import com.playtranslate.model.JapaneseForm
-import com.playtranslate.model.JishoMeta
-import com.playtranslate.model.JishoResponse
-import com.playtranslate.model.JishoSense
-import com.playtranslate.model.JishoWord
+import com.playtranslate.language.LanguagePackCatalogLoader
+import com.playtranslate.language.LanguagePackStore
+import com.playtranslate.language.SourceLangId
+import com.playtranslate.model.DictionaryEntry
+import com.playtranslate.model.DictionaryResponse
+import com.playtranslate.model.Headword
 import com.playtranslate.model.KanjiDetail
+import com.playtranslate.model.Sense
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -17,7 +19,6 @@ import kotlinx.coroutines.withContext
 import java.io.File
 
 private const val TAG = "DictionaryManager"
-private const val DB_ASSET = "jmdict.db"
 
 /** Result from [DictionaryManager.tokenizeWithSurfaces]. */
 data class TokenWithReading(
@@ -46,9 +47,9 @@ data class FuriganaToken(
  * as an app asset.  The database is copied from assets to internal storage
  * on first use, then re-used on every subsequent launch.
  *
- * Drop-in replacement for JishoClient: [lookup] returns a [JishoResponse]
- * using the same model classes, so the UI bottom sheets need no changes
- * other than swapping the call site.
+ * Drop-in replacement for the legacy JishoClient: [lookup] returns a
+ * [DictionaryResponse] whose shape matches what the UI bottom sheets expect,
+ * so no consumer changes beyond the call site.
  *
  * Obtain via [DictionaryManager.get] — one instance is kept for the lifetime
  * of the process.
@@ -216,7 +217,7 @@ class DictionaryManager private constructor(private val context: Context) {
      *
      * This is a suspend function; do NOT call on the main thread.
      */
-    suspend fun lookup(word: String, reading: String? = null): JishoResponse? = withContext(Dispatchers.IO) {
+    suspend fun lookup(word: String, reading: String? = null): DictionaryResponse? = withContext(Dispatchers.IO) {
         val database = ensureOpen() ?: return@withContext null
 
         // 1. Exact match narrowed by reading (if available)
@@ -228,7 +229,7 @@ class DictionaryManager private constructor(private val context: Context) {
             }
         }
 
-        // 2. Exact match (kanji or reading table, no reading filter)
+        // 2. Exact match (headword or reading table, no reading filter)
         val directIds = queryEntryIds(database, word)
         if (directIds.isNotEmpty()) {
             Log.d(TAG, "lookup($word): exact match ids=$directIds")
@@ -279,15 +280,19 @@ class DictionaryManager private constructor(private val context: Context) {
     private suspend fun ensureOpen(): SQLiteDatabase? = mutex.withLock {
         db?.let { return@withLock it }
 
-        val dbFile = context.getDatabasePath(DB_ASSET)
+        val dbFile = LanguagePackStore.dictDbFor(context, SourceLangId.JA)
 
         if (dbFile.exists() && !isSchemaUpToDate(dbFile)) {
-            Log.d(TAG, "JMdict schema outdated — re-copying from assets")
+            // Should be unreachable: LanguagePackStore.isInstalled schema-
+            // validates before callers reach us. Keep the guard as
+            // defense-in-depth.
+            Log.w(TAG, "JMdict schema outdated at ${dbFile.absolutePath} — deleting; user must re-run onboarding")
             dbFile.delete()
         }
 
         if (!dbFile.exists()) {
-            if (!copyFromAssets(dbFile)) return@withLock null
+            Log.w(TAG, "JMdict pack not installed at ${dbFile.absolutePath}; lookups will return empty")
+            return@withLock null
         }
 
         db = try {
@@ -297,14 +302,34 @@ class DictionaryManager private constructor(private val context: Context) {
             Log.e(TAG, "Failed to open JMdict: ${e.message}")
             null
         }
+
+        // Bootstrap the bundled-pack manifest once the DB is known-good.
+        // Idempotent — writeManifestIfMissing no-ops on subsequent boots.
+        if (db != null) {
+            LanguagePackCatalogLoader.entryFor(context, SourceLangId.JA)?.let { entry ->
+                try {
+                    LanguagePackStore.writeManifestIfMissing(context, SourceLangId.JA, entry)
+                } catch (e: Exception) {
+                    Log.w(TAG, "Manifest write failed: ${e.message}")
+                }
+            }
+        }
+
         db
     }
 
-    /** Returns false if the on-device DB is missing required tables/columns. */
+    /** Returns false if the on-device DB is missing required tables/columns.
+     *
+     *  Must probe `headword` (not `kanji`) post-rename. Pre-rename DBs — both
+     *  the legacy bundled JMdict and any downloaded v1-era pack — don't have
+     *  that table, so this returns false and the caller drops the DB; the
+     *  stale-install cleanup in [LanguagePackStore.isInstalled] then deletes
+     *  the file and routes the user through a fresh download. */
     private fun isSchemaUpToDate(dbFile: File): Boolean {
         return try {
             SQLiteDatabase.openDatabase(dbFile.absolutePath, null, SQLiteDatabase.OPEN_READONLY).use { tempDb ->
                 tempDb.rawQuery("SELECT freq_score FROM entry LIMIT 1", null).use { }
+                tempDb.rawQuery("SELECT text FROM headword LIMIT 1", null).use { }
                 tempDb.rawQuery("SELECT misc FROM sense LIMIT 1", null).use { }
                 tempDb.rawQuery("SELECT literal FROM kanjidic LIMIT 1", null).use { }
             }
@@ -314,29 +339,15 @@ class DictionaryManager private constructor(private val context: Context) {
         }
     }
 
-    private fun copyFromAssets(dbFile: File): Boolean {
-        return try {
-            dbFile.parentFile?.mkdirs()
-            context.assets.open(DB_ASSET).use { src ->
-                dbFile.outputStream().use { dst -> src.copyTo(dst) }
-            }
-            Log.d(TAG, "Copied JMdict from assets (${dbFile.length() / 1_048_576} MB)")
-            true
-        } catch (e: Exception) {
-            Log.e(TAG, "JMdict asset not found — run scripts/build_jmdict.py first: ${e.message}")
-            false
-        }
-    }
-
     // ── Database queries ──────────────────────────────────────────────────
 
     /**
-     * Returns entry IDs matching [word] as a kanji or reading form, up to 8,
-     * sorted by frequency (most common first).
+     * Returns entry IDs matching [word] as a kanji (written headword) or
+     * reading form, up to 8, sorted by frequency (most common first).
      */
     /** Fast existence check — no JOIN, no sorting. Used by tokenization. */
     private fun hasEntry(db: SQLiteDatabase, word: String): Boolean {
-        db.rawQuery("SELECT 1 FROM kanji WHERE text = ? LIMIT 1", arrayOf(word))
+        db.rawQuery("SELECT 1 FROM headword WHERE text = ? LIMIT 1", arrayOf(word))
             .use { if (it.moveToFirst()) return true }
         db.rawQuery("SELECT 1 FROM reading WHERE text = ? LIMIT 1", arrayOf(word))
             .use { if (it.moveToFirst()) return true }
@@ -345,7 +356,7 @@ class DictionaryManager private constructor(private val context: Context) {
 
     /**
      * Batch existence check: returns the subset of [candidates] that exist
-     * in the kanji or reading tables. Uses 2 queries with IN (...) instead
+     * in the headword or reading tables. Uses 2 queries with IN (...) instead
      * of one query per candidate.
      */
     private fun batchCheckEntries(db: SQLiteDatabase, candidates: Set<String>): Set<String> {
@@ -355,9 +366,9 @@ class DictionaryManager private constructor(private val context: Context) {
         for (chunk in candidates.chunked(500)) {
             val placeholders = chunk.joinToString(",") { "?" }
             val args = chunk.toTypedArray()
-            db.rawQuery("SELECT DISTINCT text FROM kanji WHERE text IN ($placeholders)", args)
+            db.rawQuery("SELECT DISTINCT text FROM headword WHERE text IN ($placeholders)", args)
                 .use { c -> while (c.moveToNext()) found.add(c.getString(0)) }
-            // Only query reading table for candidates not already found in kanji
+            // Only query reading table for candidates not already found in headword
             val remaining = chunk.filter { it !in found }
             if (remaining.isNotEmpty()) {
                 val ph2 = remaining.joinToString(",") { "?" }
@@ -373,11 +384,11 @@ class DictionaryManager private constructor(private val context: Context) {
     private fun queryEntryIdsWithReading(db: SQLiteDatabase, word: String, reading: String): List<Long> {
         val ids = mutableListOf<Long>()
         db.rawQuery(
-            """SELECT DISTINCT k.entry_id
-               FROM kanji k
-               JOIN entry e ON e.id = k.entry_id
-               JOIN reading r ON r.entry_id = k.entry_id
-               WHERE k.text = ? AND r.text = ?
+            """SELECT DISTINCT h.entry_id
+               FROM headword h
+               JOIN entry e ON e.id = h.entry_id
+               JOIN reading r ON r.entry_id = h.entry_id
+               WHERE h.text = ? AND r.text = ?
                ORDER BY e.freq_score DESC LIMIT 8""",
             arrayOf(word, reading)
         ).use { c -> while (c.moveToNext()) ids.add(c.getLong(0)) }
@@ -388,7 +399,7 @@ class DictionaryManager private constructor(private val context: Context) {
         val ids = mutableListOf<Long>()
 
         db.rawQuery(
-            "SELECT DISTINCT k.entry_id FROM kanji k JOIN entry e ON e.id = k.entry_id WHERE k.text = ? ORDER BY e.freq_score DESC LIMIT 8",
+            "SELECT DISTINCT h.entry_id FROM headword h JOIN entry e ON e.id = h.entry_id WHERE h.text = ? ORDER BY e.freq_score DESC LIMIT 8",
             arrayOf(word)
         ).use { c -> while (c.moveToNext()) ids.add(c.getLong(0)) }
 
@@ -406,12 +417,12 @@ class DictionaryManager private constructor(private val context: Context) {
         db: SQLiteDatabase,
         entryIds: List<Long>,
         inflectionNote: String? = null
-    ): JishoResponse {
-        val words = entryIds.mapNotNull { buildWord(db, it, inflectionNote) }
-        return JishoResponse(meta = JishoMeta(200), data = words)
+    ): DictionaryResponse {
+        val entries = entryIds.mapNotNull { buildEntry(db, it, inflectionNote) }
+        return DictionaryResponse(entries = entries)
     }
 
-    private fun buildWord(db: SQLiteDatabase, id: Long, inflectionNote: String?): JishoWord? {
+    private fun buildEntry(db: SQLiteDatabase, id: Long, inflectionNote: String?): DictionaryEntry? {
         val idStr = id.toString()
 
         var isCommon = false
@@ -425,7 +436,7 @@ class DictionaryManager private constructor(private val context: Context) {
 
         val kanjiForms = mutableListOf<String>()
         db.rawQuery(
-            "SELECT text FROM kanji WHERE entry_id=? ORDER BY position",
+            "SELECT text FROM headword WHERE entry_id=? ORDER BY position",
             arrayOf(idStr)
         ).use { c -> while (c.moveToNext()) kanjiForms.add(c.getString(0)) }
 
@@ -435,16 +446,16 @@ class DictionaryManager private constructor(private val context: Context) {
             arrayOf(idStr)
         ).use { c -> while (c.moveToNext()) readingForms.add(c.getString(0)) }
 
-        val japanese = if (kanjiForms.isNotEmpty()) {
+        val headwords = if (kanjiForms.isNotEmpty()) {
             kanjiForms.mapIndexed { i, k ->
-                JapaneseForm(word = k, reading = readingForms.getOrNull(i) ?: readingForms.firstOrNull())
+                Headword(written = k, reading = readingForms.getOrNull(i) ?: readingForms.firstOrNull())
             }
         } else {
-            readingForms.map { JapaneseForm(word = null, reading = it) }
+            readingForms.map { Headword(written = null, reading = it) }
         }
-        if (japanese.isEmpty()) return null
+        if (headwords.isEmpty()) return null
 
-        val senses = mutableListOf<JishoSense>()
+        val senses = mutableListOf<Sense>()
         db.rawQuery(
             "SELECT pos, glosses, misc FROM sense WHERE entry_id=? ORDER BY position LIMIT 8",
             arrayOf(idStr)
@@ -458,8 +469,8 @@ class DictionaryManager private constructor(private val context: Context) {
                 else
                     posList
                 senses.add(
-                    JishoSense(
-                        englishDefinitions = glossList,
+                    Sense(
+                        targetDefinitions = glossList,
                         partsOfSpeech = finalPos,
                         tags = emptyList(),
                         restrictions = emptyList(),
@@ -471,12 +482,12 @@ class DictionaryManager private constructor(private val context: Context) {
         }
         if (senses.isEmpty()) return null
 
-        return JishoWord(
+        return DictionaryEntry(
             slug = kanjiForms.firstOrNull() ?: readingForms.firstOrNull() ?: idStr,
             isCommon = isCommon,
             tags = emptyList(),
             jlpt = emptyList(),   // JMdict doesn't reliably carry JLPT levels
-            japanese = japanese,
+            headwords = headwords,
             senses = senses,
             freqScore = freqScore
         )
