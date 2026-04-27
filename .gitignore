@@ -5,7 +5,7 @@ local.properties
 build/
 app/build/
 .gradle/
-
+clone.py
 # Android SDK / JDK (bundled toolchain, not part of source)
 .sdk/
 

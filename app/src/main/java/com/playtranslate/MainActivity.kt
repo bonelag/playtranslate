@@ -245,7 +245,7 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
             }
             android.util.Log.i(
                 "MainActivity",
-                "projectionLauncher OK rc=${result.resultCode} extraData=${data != null}",
+                "projectionLauncher OK rc=${result.resultCode}",
             )
             try {
                 ContextCompat.startForegroundService(this, launch)
@@ -480,7 +480,7 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
             dimController = DimController(findViewById(R.id.dimOverlay))
         }
 
-        checkOnboardingState(isStartup = true)
+        checkOnboardingState()
     }
 
     override fun onNewIntent(intent: Intent?) {
@@ -1398,7 +1398,7 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
 
     private fun isSingleScreen(): Boolean = Prefs.isSingleScreen(this)
 
-    private fun checkOnboardingState(isStartup: Boolean = false) {
+    private fun checkOnboardingState() {
         val prefs = Prefs(this)
         val sourceInstalled = LanguagePackStore.isInstalled(this, prefs.sourceLangId)
         val languageConfigured = sourceInstalled && prefs.hasTargetLangBeenSet
@@ -1655,7 +1655,7 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
         val frag = resultFragment ?: return
         val icon = ContextCompat.getDrawable(this, R.drawable.ic_play)?.mutate() ?: return
         icon.setTint(themeColor(R.attr.ptTextHint))
-        val textSize = 24f * resources.displayMetrics.scaledDensity
+        val textSize = android.util.TypedValue.applyDimension(android.util.TypedValue.COMPLEX_UNIT_SP, 24f, resources.displayMetrics)
         val size = (textSize * 1.1f).toInt()
         icon.setBounds(0, 0, size, size)
         val span = android.text.style.ImageSpan(icon, android.text.style.ImageSpan.ALIGN_BASELINE)
