@@ -120,9 +120,9 @@ class ProjectionOverlayHost private constructor(
         displayManager?.registerDisplayListener(displayListener, main)
     }
 
-    private fun setupVirtualDisplay() {
+    private fun createImageReader(width: Int, height: Int): ImageReader {
         val reader = ImageReader.newInstance(
-            captureWidth, captureHeight, PixelFormat.RGBA_8888, /* maxImages = */ 2,
+            width, height, PixelFormat.RGBA_8888, /* maxImages = */ 2,
         )
         reader.setOnImageAvailableListener({ r ->
             // Acquire the latest image and discard the previous one to avoid backpressure.
@@ -133,44 +133,78 @@ class ProjectionOverlayHost private constructor(
                 lastFrameTimeNs = System.nanoTime()
             }
         }, captureHandler)
-        imageReader = reader
-
-        virtualDisplay = projection.createVirtualDisplay(
-            "PlayTranslate-Capture",
-            captureWidth, captureHeight, captureDpi,
-            DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
-            reader.surface,
-            /* callback = */ null,
-            captureHandler,
-        )
+        return reader
     }
 
-    private fun recreateVirtualDisplay(width: Int, height: Int, dpi: Int) {
-        try { virtualDisplay?.release() } catch (_: Exception) {}
-        virtualDisplay = null
-        try { imageReader?.close() } catch (_: Exception) {}
-        imageReader = null
+    private fun setupVirtualDisplay() {
+        val reader = createImageReader(captureWidth, captureHeight)
+        imageReader = reader
+
+        try {
+            virtualDisplay = projection.createVirtualDisplay(
+                "PlayTranslate-Capture",
+                captureWidth, captureHeight, captureDpi,
+                DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
+                reader.surface,
+                /* callback = */ null,
+                captureHandler,
+            )
+        } catch (e: Exception) {
+            imageReader = null
+            try { reader.close() } catch (_: Exception) {}
+            throw e
+        }
+    }
+
+    private fun recreateVirtualDisplay(width: Int, height: Int, dpi: Int): Boolean {
+        if (width <= 0 || height <= 0 || dpi <= 0) return false
+        val vd = virtualDisplay ?: return false
+        val oldReader = imageReader
+        val reader = try {
+            createImageReader(width, height)
+        } catch (e: Exception) {
+            Log.e(TAG, "ImageReader resize failed", e)
+            return false
+        }
         synchronized(imageLock) {
             latestImage?.close()
             latestImage = null
         }
+        try {
+            vd.resize(width, height, dpi)
+            vd.setSurface(reader.surface)
+        } catch (e: Exception) {
+            Log.e(TAG, "VirtualDisplay resize failed", e)
+            try { vd.resize(captureWidth, captureHeight, captureDpi) } catch (_: Exception) {}
+            try { oldReader?.let { vd.setSurface(it.surface) } } catch (_: Exception) {}
+            try { reader.close() } catch (_: Exception) {}
+            return false
+        }
+        imageReader = reader
+        try { oldReader?.setOnImageAvailableListener(null, null) } catch (_: Exception) {}
+        try { oldReader?.close() } catch (_: Exception) {}
         captureWidth = width
         captureHeight = height
         captureDpi = dpi
-        setupVirtualDisplay()
         lastCaptureTimeMs = 0L
+        return true
     }
 
     private fun handlePrimaryDisplayChanged() {
         if (stopped) return
         val display = displayManager?.getDisplay(Display.DEFAULT_DISPLAY) ?: return
         val (w, h, dpi) = primaryDisplayMetrics(display)
+        if (w <= 0 || h <= 0 || dpi <= 0) {
+            main.postDelayed({ handlePrimaryDisplayChanged() }, 120L)
+            return
+        }
         val sizeChanged = w != captureWidth || h != captureHeight || dpi != captureDpi
         if (sizeChanged) {
             Log.i(TAG, "Primary display changed: ${captureWidth}x$captureHeight@$captureDpi -> ${w}x$h@$dpi")
-            recreateVirtualDisplay(w, h, dpi)
-            hideTranslationOverlay()
-            service.refreshLiveOverlay()
+            if (recreateVirtualDisplay(w, h, dpi)) {
+                hideTranslationOverlay()
+                service.refreshLiveOverlay()
+            }
         }
         if (Prefs(context).showOverlayIcon) {
             showFloatingIconInternal(display, Prefs(context))

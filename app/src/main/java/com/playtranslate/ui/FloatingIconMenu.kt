@@ -563,7 +563,9 @@ class FloatingIconMenu(context: Context) : FrameLayout(context) {
                 screenW - mw - margin
             }
 
-            val menuY = (iconCy - mh / 2).coerceIn(margin, screenH - mh - margin)
+            val minY = margin
+            val maxY = (screenH - mh - margin).coerceAtLeast(minY)
+            val menuY = (iconCy - mh / 2).coerceIn(minY, maxY)
 
             lp.gravity = Gravity.TOP or Gravity.START
             lp.leftMargin = menuX

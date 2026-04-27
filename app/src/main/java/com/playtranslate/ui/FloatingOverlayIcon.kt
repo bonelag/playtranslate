@@ -188,8 +188,8 @@ class FloatingOverlayIcon(context: Context) : View(context) {
         return Point(bounds.width(), bounds.height())
     }
 
-    private val screenW: Int get() = queryScreenSize().x
-    private val screenH: Int get() = queryScreenSize().y
+    private val screenW: Int get() = queryScreenSize().x.coerceAtLeast(viewSizePx)
+    private val screenH: Int get() = queryScreenSize().y.coerceAtLeast(viewSizePx)
 
     private var velocityTracker: VelocityTracker? = null
     private var downRawX = 0f
@@ -224,8 +224,8 @@ class FloatingOverlayIcon(context: Context) : View(context) {
     private val tapThresholdPx = TAP_THRESHOLD_DP * resources.displayMetrics.density
     /** Inset from top/bottom to avoid system gesture zones. */
     private val gestureInsetPx = (48 * resources.displayMetrics.density).toInt()
-    private val minCy get() = gestureInsetPx
-    private val maxCy get() = screenH - gestureInsetPx
+    private val minCy get() = minOf(gestureInsetPx, screenH / 2)
+    private val maxCy get() = maxOf(minCy, screenH - gestureInsetPx)
 
     companion object {
         private const val FLING_THRESHOLD = 600f // px/s
