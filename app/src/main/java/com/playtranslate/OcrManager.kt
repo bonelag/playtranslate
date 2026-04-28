@@ -360,7 +360,7 @@ class OcrManager private constructor() {
         val isLatinOrVietnamese = sourceLang == "vi" || sourceLang == "en" || sourceLang == "fr" || sourceLang == "es" || sourceLang == "tr" || sourceLang == "ro"
 
         // Determine scale factor
-        val targetMinDim = if (isLatinOrVietnamese) 1600 else TARGET_MIN_DIM
+        val targetMinDim = if (isLatinOrVietnamese) 1400 else TARGET_MIN_DIM
         val minDim = minOf(bitmap.width, bitmap.height)
         var scaleFactor = if (minDim < targetMinDim)
             (targetMinDim.toFloat() / minDim).coerceAtMost(if (isLatinOrVietnamese) 4f else 3f)
@@ -382,7 +382,7 @@ class OcrManager private constructor() {
 
         // Contrast: output = input * 2.0 - 127.5
         // Tăng contrast nhẹ cho nhóm tiếng Latin/Vietnamese để nét nhỏ không bị mất
-        val contrastScale = if (isLatinOrVietnamese) 2.4f else 2.0f
+        val contrastScale = if (isLatinOrVietnamese) 1.6f else 2.0f
         val contrastTranslate = (1f - contrastScale) / 2f * 255f
         val contrast = ColorMatrix(floatArrayOf(
             contrastScale, 0f, 0f, 0f, contrastTranslate,
@@ -452,7 +452,8 @@ class OcrManager private constructor() {
                 val lV = left and 0xff
                 val rV = right and 0xff
                 
-                var v = 5 * cV - tV - bV - lV - rV
+                // Giảm 50% cường độ làm sắc nét (Soft Unsharp Mask) để giữ lại đường nét nhỏ
+                var v = (6 * cV - tV - bV - lV - rV) / 2
                 if (v < 0) v = 0 else if (v > 255) v = 255
 
                 // Ghi lại pixel với Alpha = 255 và R=G=B=v
