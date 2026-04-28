@@ -1070,6 +1070,16 @@ class SettingsRenderer(
         }
         rowDetectionLog.setOnClickListener { switchDetLog.toggle() }
 
+        // Show crash dialog
+        val rowShowCrashDialog = root.findViewById<View>(R.id.rowShowCrashDialog)
+        val switchCrashDialog = rowShowCrashDialog.findViewById<MaterialSwitch>(R.id.switchRowToggle)
+        rowShowCrashDialog.findViewById<TextView>(R.id.tvRowTitle).text = "Show crash dialog on launch"
+        switchCrashDialog.isChecked = prefs.debugShowCrashDialog
+        switchCrashDialog.setOnCheckedChangeListener { _, checked ->
+            prefs.debugShowCrashDialog = checked
+        }
+        rowShowCrashDialog.setOnClickListener { switchCrashDialog.toggle() }
+
         // Force crash
         val rowForceCrash = root.findViewById<View>(R.id.rowForceCrash)
         rowForceCrash.findViewById<TextView>(R.id.tvRowTitle).text = "Force crash"

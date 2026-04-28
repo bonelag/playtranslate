@@ -238,6 +238,10 @@ class Prefs(context: Context) {
         get() = sp.getBoolean(KEY_DEBUG_SHOW_DETECTION_LOG, false)
         set(v) = sp.edit().putBoolean(KEY_DEBUG_SHOW_DETECTION_LOG, v).apply()
 
+    var debugShowCrashDialog: Boolean
+        get() = sp.getBoolean(KEY_DEBUG_SHOW_CRASH_DIALOG, true)
+        set(v) = sp.edit().putBoolean(KEY_DEBUG_SHOW_CRASH_DIALOG, v).apply()
+
     /** Set to true after the user dismisses the target-pack migration dialog. */
     var targetPackMigrationDismissed: Boolean
         get() = sp.getBoolean(KEY_TARGET_PACK_MIGRATION_DISMISSED, false)
@@ -341,6 +345,7 @@ class Prefs(context: Context) {
         private const val KEY_DEBUG_FORCE_SINGLE_SCREEN      = "debug_force_single_screen"
         private const val KEY_DEBUG_SHOW_OCR_BOXES           = "debug_show_ocr_boxes"
         private const val KEY_DEBUG_SHOW_DETECTION_LOG      = "debug_show_detection_log"
+        private const val KEY_DEBUG_SHOW_CRASH_DIALOG       = "debug_show_crash_dialog"
         private const val KEY_HOTKEY_TRANSLATION           = "hotkey_translation"
         private const val KEY_HOTKEY_FURIGANA              = "hotkey_furigana"
         private const val KEY_LAST_UPDATE_CHECK            = "last_update_check"

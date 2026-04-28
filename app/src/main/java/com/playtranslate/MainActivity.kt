@@ -389,7 +389,6 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
         super.onCreate(savedInstanceState)
         prefs.migrateLegacyPrefs()
         maybePromptForCrashShare()
-        showRecentCrashLogIfNeeded()
         // Suppress the window transition that would otherwise flash when recreating for a theme change
         if (prefs.suppressNextTransition) {
             prefs.suppressNextTransition = false
@@ -604,29 +603,6 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
 
     // ── Setup ─────────────────────────────────────────────────────────────
 
-    private fun showRecentCrashLogIfNeeded() {
-        try {
-            val dir = java.io.File(filesDir, "crashes")
-            val files = dir.listFiles { f -> f.isFile && f.name.startsWith("crash-") }
-            if (files != null && files.isNotEmpty()) {
-                val latest = files.maxByOrNull { it.lastModified() }
-                if (latest != null) {
-                    val content = latest.readText()
-                    // Only show if it happened recently (within last 5 minutes)
-                    if (System.currentTimeMillis() - latest.lastModified() < 5 * 60 * 1000) {
-                        android.app.AlertDialog.Builder(this)
-                            .setTitle("Recent Crash Log")
-                            .setMessage(content.take(2000)) // Show first 2000 chars
-                            .setPositiveButton("OK", null)
-                            .setNeutralButton("Delete") { _, _ -> latest.delete() }
-                            .show()
-                    }
-                }
-            }
-        } catch (e: Exception) {
-            e.printStackTrace()
-        }
-    }
 
     private fun bindViews() {
         btnTranslate         = findViewById(R.id.btnTranslate)
@@ -1299,6 +1275,7 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
     }
 
     private fun maybePromptForCrashShare() {
+        if (!prefs.debugShowCrashDialog) return
         val crashFiles = LogExporter.getCrashFiles(this)
         if (crashFiles.isEmpty()) return
         OverlayAlert.Builder(this)
@@ -1321,6 +1298,30 @@ class MainActivity : AppCompatActivity(), TranslationResultFragment.TranslationR
                     }
                     LogExporter.emailFiles(this@MainActivity, files, subject, body)
                     LogExporter.deleteCrashFiles(this@MainActivity)
+                }
+            }
+            .addButton(
+                "Copy",
+                themeColor(R.attr.ptDivider),
+                themeColor(R.attr.ptText)
+            ) {
+                lifecycleScope.launch {
+                    val files = withContext(Dispatchers.IO) {
+                        runCatching {
+                            crashFiles + LogExporter.exportLogcat(this@MainActivity)
+                        }.getOrElse { crashFiles }
+                    }
+                    val contentBuilder = java.lang.StringBuilder()
+                    for (file in files) {
+                        if (file.exists()) {
+                            contentBuilder.append("--- ").append(file.name).append(" ---\n")
+                            contentBuilder.append(file.readText()).append("\n\n")
+                        }
+                    }
+                    val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                    val clip = android.content.ClipData.newPlainText("Crash Log", contentBuilder.toString())
+                    clipboard.setPrimaryClip(clip)
+                    Toast.makeText(this@MainActivity, "Crash log copied to clipboard", Toast.LENGTH_SHORT).show()
                 }
             }
             .addButton(

@@ -1196,6 +1196,10 @@ class CaptureService : Service() {
         // [target], so calling it per group-translation is essentially free.
         ensureLanguageManagersFor(target)
 
+        if (target.source == target.target) {
+            return Pair(text, null).also { setDegraded(false) }
+        }
+
         // Capture local references to all three translators so a concurrent
         // ensureFor() in another call can't null out or replace a translator
         // we're about to use. The entire waterfall operates on the snapshot

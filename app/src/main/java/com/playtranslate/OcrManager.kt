@@ -117,7 +117,7 @@ class OcrManager private constructor() {
     )
 
     suspend fun recognise(bitmap: Bitmap, sourceLang: String = "ja", collectDebugBoxes: Boolean = false, screenshotWidth: Int = 0): OcrResult? {
-        val processed = prepareForOcr(bitmap)
+        val processed = prepareForOcr(bitmap, sourceLang)
         val scaleFactor = processed.width.toFloat() / bitmap.width
         val addWordSpaces = SourceLanguageProfiles.forCode(sourceLang)?.wordsSeparatedByWhitespace ?: false
 
@@ -356,14 +356,17 @@ class OcrManager private constructor() {
      * - Auto-invert detects light-on-dark text (common in JRPGs) and flips it
      *   to dark-on-light, which OCR engines are trained on.
      */
-    private fun prepareForOcr(bitmap: Bitmap): Bitmap {
+    private fun prepareForOcr(bitmap: Bitmap, sourceLang: String = "ja"): Bitmap {
+        val isLatinOrVietnamese = sourceLang == "vi" || sourceLang == "en" || sourceLang == "fr" || sourceLang == "es" || sourceLang == "tr" || sourceLang == "ro"
+
         // Determine scale factor
+        val targetMinDim = if (isLatinOrVietnamese) 1600 else TARGET_MIN_DIM
         val minDim = minOf(bitmap.width, bitmap.height)
-        var scaleFactor = if (minDim < TARGET_MIN_DIM)
-            (TARGET_MIN_DIM.toFloat() / minDim).coerceAtMost(3f)
+        var scaleFactor = if (minDim < targetMinDim)
+            (targetMinDim.toFloat() / minDim).coerceAtMost(if (isLatinOrVietnamese) 4f else 3f)
         else 1f
         // Cap total output size to avoid OOM on narrow crops (e.g. 1920×357 × 3 = 5760×1071)
-        val maxDim = 3000
+        val maxDim = 3500 // Increased slightly to support the 1600 target
         if (bitmap.width * scaleFactor > maxDim || bitmap.height * scaleFactor > maxDim) {
             scaleFactor = minOf(maxDim.toFloat() / bitmap.width, maxDim.toFloat() / bitmap.height)
         }
@@ -378,7 +381,8 @@ class OcrManager private constructor() {
         val gray = ColorMatrix().apply { setSaturation(0f) }
 
         // Contrast: output = input * 2.0 - 127.5
-        val contrastScale = 2.0f
+        // Tăng contrast nhẹ cho nhóm tiếng Latin/Vietnamese để nét nhỏ không bị mất
+        val contrastScale = if (isLatinOrVietnamese) 2.4f else 2.0f
         val contrastTranslate = (1f - contrastScale) / 2f * 255f
         val contrast = ColorMatrix(floatArrayOf(
             contrastScale, 0f, 0f, 0f, contrastTranslate,
@@ -406,7 +410,70 @@ class OcrManager private constructor() {
         val canvas = Canvas(out)
         if (scaleFactor != 1f) canvas.scale(scaleFactor, scaleFactor)
         canvas.drawBitmap(bitmap, 0f, 0f, paint)
+        
+        // Apply sharpening pass for accented languages
+        if (isLatinOrVietnamese) {
+            val sharpened = sharpenGrayscale(out)
+            out.recycle()
+            return sharpened
+        }
+
         return out
+    }
+
+    /**
+     * Thuật toán Sharpening (Làm sắc nét) dựa trên Convolution 3x3.
+     * Tối ưu hóa cực nhanh cho ảnh xám (Grayscale) bằng cách xử lý mảng int 1D.
+     * Ma trận: [0, -1, 0]
+     *          [-1, 5, -1]
+     *          [0, -1, 0]
+     */
+    private fun sharpenGrayscale(src: Bitmap): Bitmap {
+        val width = src.width
+        val height = src.height
+        val pixels = IntArray(width * height)
+        src.getPixels(pixels, 0, width, 0, 0, width, height)
+        
+        val outPixels = IntArray(width * height)
+        
+        for (y in 1 until height - 1) {
+            var p = y * width + 1
+            for (x in 1 until width - 1) {
+                val center = pixels[p]
+                val top = pixels[p - width]
+                val bottom = pixels[p + width]
+                val left = pixels[p - 1]
+                val right = pixels[p + 1]
+
+                // Chỉ lấy 1 channel (Blue) vì ảnh đã là Grayscale (R=G=B)
+                val cV = center and 0xff
+                val tV = top and 0xff
+                val bV = bottom and 0xff
+                val lV = left and 0xff
+                val rV = right and 0xff
+                
+                var v = 5 * cV - tV - bV - lV - rV
+                if (v < 0) v = 0 else if (v > 255) v = 255
+
+                // Ghi lại pixel với Alpha = 255 và R=G=B=v
+                outPixels[p] = (0xFF shl 24) or (v shl 16) or (v shl 8) or v
+                p++
+            }
+        }
+        
+        // Sao chép các cạnh viền để tránh bị đen
+        for (x in 0 until width) {
+            outPixels[x] = pixels[x]
+            outPixels[(height - 1) * width + x] = pixels[(height - 1) * width + x]
+        }
+        for (y in 0 until height) {
+            outPixels[y * width] = pixels[y * width]
+            outPixels[y * width + width - 1] = pixels[y * width + width - 1]
+        }
+
+        val result = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+        result.setPixels(outPixels, 0, width, 0, 0, width, height)
+        return result
     }
 
     /**
@@ -610,7 +677,7 @@ class OcrManager private constructor() {
      * Used by drag-to-lookup to hit-test finger position against text lines.
      */
     suspend fun recogniseWithPositions(bitmap: Bitmap, sourceLang: String = "ja"): List<OcrLine>? {
-        val processed = prepareForOcr(bitmap)
+        val processed = prepareForOcr(bitmap, sourceLang)
         val scaleFactor = processed.width.toFloat() / bitmap.width
         val addWordSpaces = SourceLanguageProfiles.forCode(sourceLang)?.wordsSeparatedByWhitespace ?: false
 
