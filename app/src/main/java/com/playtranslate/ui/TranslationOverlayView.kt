@@ -175,7 +175,8 @@ class TranslationOverlayView(
 
     override fun dispatchDraw(canvas: Canvas) {
         val mask = pinholeMaskBitmap
-        if (!pinholeMode || mask == null) {
+        // Always apply the dotted mask for visual consistency across modes
+        if (mask == null) {
             super.dispatchDraw(canvas)
             return
         }
@@ -340,9 +341,8 @@ class TranslationOverlayView(
                         typeface = Typeface.DEFAULT_BOLD
                         gravity = Gravity.CENTER_VERTICAL
                         setPadding(textMargin, textMargin, textMargin, textMargin)
-                        // Pinholes need opaque bg (pinholes handle transparency).
-                        // Without pinholes, use native alpha (~224 = 88% opaque).
-                        setBackgroundColor(if (pinholeMode) box.bgColor or 0xFF000000.toInt() else box.bgColor)
+                        // Always use opaque background so the pinhole mask creates a consistent "dotted" visual effect
+                        setBackgroundColor(box.bgColor or 0xFF000000.toInt())
                         TextViewCompat.setAutoSizeTextTypeUniformWithConfiguration(
                             this, minTextSizeSp, maxTextSizeSp, 1, TypedValue.COMPLEX_UNIT_SP
                         )
@@ -378,7 +378,7 @@ class TranslationOverlayView(
     /** Builds a skeleton placeholder with [lineCount] bars evenly spaced within the box. */
     private fun buildSkeletonView(boxW: Int, boxH: Int, lineCount: Int, bgColor: Int, barColor: Int): View {
         val container = FrameLayout(context).apply {
-            setBackgroundColor(bgColor)
+            setBackgroundColor(bgColor or 0xFF000000.toInt())
         }
 
         val sideMargin = textMargin * 2
