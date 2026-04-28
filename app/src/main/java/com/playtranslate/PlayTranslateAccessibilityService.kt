@@ -476,9 +476,14 @@ class PlayTranslateAccessibilityService : AccessibilityService(), OverlayHost {
             WindowManager.LayoutParams.MATCH_PARENT,
             WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
             PixelFormat.TRANSLUCENT
-        )
+        ).apply {
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
+                layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+            }
+        }
         wm.addView(view, params)
         dragWm = wm
         dragView = view
@@ -630,7 +635,12 @@ class PlayTranslateAccessibilityService : AccessibilityService(), OverlayHost {
                 WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
                 WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
             PixelFormat.TRANSLUCENT
-        ).apply { windowAnimations = 0 }
+        ).apply { 
+            windowAnimations = 0
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
+                layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+            }
+        }
         wm.addView(view, params)
         translationOverlayWm = wm
         translationOverlayView = view
@@ -647,7 +657,12 @@ class PlayTranslateAccessibilityService : AccessibilityService(), OverlayHost {
                 WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
                 WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
             PixelFormat.TRANSLUCENT
-        ).apply { windowAnimations = 0 }
+        ).apply { 
+            windowAnimations = 0
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
+                layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+            }
+        }
         wm.addView(dirtyView, dirtyParams)
         dirtyOverlayWm = wm
         dirtyOverlayView = dirtyView
@@ -1166,12 +1181,7 @@ class PlayTranslateAccessibilityService : AccessibilityService(), OverlayHost {
                 hideTranslationOverlay()
                 CaptureService.instance?.refreshLiveOverlay()
             } else {
-                val effectivelySingleScreen = Prefs.isSingleScreen(this) || !MainActivity.isInForeground
-                if (effectivelySingleScreen) {
-                    handleRegionSelection(display.displayId, region)
-                } else {
-                    sendMainActivityIntent(MainActivity.ACTION_REGION_CAPTURE)
-                }
+                CaptureService.instance?.translateOnceOnScreen()
             }
         }
         menu.onClearRegion = {
@@ -1380,7 +1390,7 @@ class PlayTranslateAccessibilityService : AccessibilityService(), OverlayHost {
                 if (CaptureService.instance?.isLive == true) {
                     CaptureService.instance?.refreshLiveOverlay()
                 } else {
-                    handleRegionSelection(display.displayId, drawnRegion)
+                    CaptureService.instance?.translateOnceOnScreen()
                 }
             }
         }

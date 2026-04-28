@@ -481,6 +481,14 @@ class ProjectionOverlayHost private constructor(
     private var floatingMenu: FloatingIconMenu? = null
     private var floatingMenuWm: WindowManager? = null
 
+    // ── Region Editor state ───────────────────────────────────────────────
+    private var dragView: com.playtranslate.ui.RegionDragView? = null
+    private var dragWm: WindowManager? = null
+    private var regionEditorBar: View? = null
+    private var regionEditorBarWm: WindowManager? = null
+    private var regionEditorLabel: View? = null
+    private var regionEditorLabelWm: WindowManager? = null
+
     private fun showFloatingMenu(display: Display) {
         val icon = floatingIcon ?: return
         dismissFloatingMenu()
@@ -561,15 +569,8 @@ class ProjectionOverlayHost private constructor(
             }
         }
         menu.onCaptureRegion = {
-            // Custom region authoring needs the in-app sheet UI; route
-            // through MainActivity. Drag-to-select inside the menu still
-            // works for ad-hoc one-shot regions without leaving the game.
             dismissFloatingMenu()
-            val launch = Intent(context, MainActivity::class.java).apply {
-                action = MainActivity.ACTION_ADD_CUSTOM_REGION
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP)
-            }
-            context.startActivity(launch)
+            showRegionEditor(display)
         }
         menu.onSettings = {
             dismissFloatingMenu()
@@ -615,6 +616,187 @@ class ProjectionOverlayHost private constructor(
         floatingMenu = null
         floatingMenuWm = null
         if (wasShowing) service.holdActive = false
+    }
+
+    // ── Region Editor ─────────────────────────────────────────────────────
+
+    private fun showRegionEditor(display: Display) {
+        hideRegionEditor()
+        // Suppress live captures while editing
+        service.holdActive = true
+        hideTranslationOverlay()
+
+        // Pre-populate with current active region (or default if full-screen)
+        val currentRegion = service.activeRegion
+        val initRegion = if (currentRegion == null || currentRegion.isFullScreen)
+            com.playtranslate.RegionEntry("", 0.25f, 0.75f, 0.25f, 0.75f) else currentRegion
+
+        val displayCtx = context.createDisplayContext(display)
+        val wm = displayCtx.getSystemService(WindowManager::class.java) ?: return
+        
+        val view = com.playtranslate.ui.RegionDragView(displayCtx).apply {
+            setRegion(initRegion.top, initRegion.bottom, initRegion.left, initRegion.right)
+            this.onRegionChanged = { _ -> }
+        }
+        val dragParams = WindowManager.LayoutParams(
+            WindowManager.LayoutParams.MATCH_PARENT,
+            WindowManager.LayoutParams.MATCH_PARENT,
+            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+            PixelFormat.TRANSLUCENT
+        ).apply {
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
+                layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+            }
+        }
+        wm.addView(view, dragParams)
+        dragWm = wm
+        dragView = view
+
+        view.onDragStart = {
+            regionEditorBar?.visibility = View.INVISIBLE
+            regionEditorLabel?.visibility = View.INVISIBLE
+        }
+        view.onDragEnd = {
+            regionEditorBar?.visibility = View.VISIBLE
+            regionEditorLabel?.visibility = View.VISIBLE
+        }
+
+        // Build floating Use / Cancel button bar
+        val dp = displayCtx.resources.displayMetrics.density
+        val btnSize = (48 * dp).toInt()
+        val barPad = (12 * dp).toInt()
+        val gap = (16 * dp).toInt()
+
+        val surfaceColor = com.playtranslate.OverlayColors.surface(displayCtx)
+        val cardColor = com.playtranslate.OverlayColors.card(displayCtx)
+        val dividerColor = com.playtranslate.OverlayColors.divider(displayCtx)
+        val accentColorBtn = com.playtranslate.OverlayColors.accent(displayCtx)
+        val accentOnColor = com.playtranslate.OverlayColors.accentOn(displayCtx)
+        val textColor = com.playtranslate.OverlayColors.text(displayCtx)
+        val surfaceAlpha = android.graphics.Color.argb(230,
+            android.graphics.Color.red(surfaceColor),
+            android.graphics.Color.green(surfaceColor),
+            android.graphics.Color.blue(surfaceColor))
+        val btnRadius = 16 * dp
+
+        val bar = android.widget.LinearLayout(displayCtx).apply {
+            orientation = android.widget.LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER
+            setPadding(barPad * 2 - (9 * dp).toInt(), barPad, barPad * 2 - (9 * dp).toInt(), barPad)
+            background = android.graphics.drawable.GradientDrawable().apply {
+                setColor(surfaceAlpha)
+                setStroke((1 * dp).toInt(), dividerColor)
+                cornerRadius = 22 * dp
+            }
+        }
+
+        // Cancel button (X)
+        val cancelBtn = android.widget.TextView(displayCtx).apply {
+            text = "\u2715"
+            setTextColor(textColor)
+            textSize = 22f
+            gravity = Gravity.CENTER
+            background = android.graphics.drawable.GradientDrawable().apply {
+                setColor(cardColor)
+                cornerRadius = btnRadius
+            }
+            layoutParams = android.widget.LinearLayout.LayoutParams(btnSize, btnSize).apply {
+                marginEnd = gap
+            }
+            setOnClickListener {
+                hideRegionEditor()
+                if (service.isLive == true) {
+                    service.refreshLiveOverlay()
+                }
+            }
+        }
+
+        // Use button (checkmark)
+        val useBtn = android.widget.TextView(displayCtx).apply {
+            text = "\u2713"
+            setTextColor(accentOnColor)
+            textSize = 22f
+            gravity = Gravity.CENTER
+            background = android.graphics.drawable.GradientDrawable().apply {
+                setColor(accentColorBtn)
+                cornerRadius = btnRadius
+            }
+            layoutParams = android.widget.LinearLayout.LayoutParams(btnSize, btnSize)
+            setOnClickListener {
+                val dv = dragView ?: return@setOnClickListener
+                val drawnRegion = com.playtranslate.RegionEntry("Drawn Region", dv.topFraction, dv.bottomFraction, dv.leftFraction, dv.rightFraction)
+                hideRegionEditor()
+                service.configureOverride(drawnRegion)
+                if (service.isLive == true) {
+                    service.refreshLiveOverlay()
+                } else {
+                    service.translateOnceOnScreen()
+                }
+            }
+        }
+
+        bar.addView(cancelBtn)
+        bar.addView(useBtn)
+
+        val barParams = WindowManager.LayoutParams(
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+            PixelFormat.TRANSLUCENT
+        ).apply {
+            gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
+            y = (32 * dp).toInt()
+        }
+
+        wm.addView(bar, barParams)
+        regionEditorBarWm = wm
+        regionEditorBar = bar
+
+        // Instruction label at top center
+        val label = android.widget.TextView(displayCtx).apply {
+            text = "Drag edges to restrict screen captures to this region"
+            setTextColor(textColor)
+            textSize = 14f
+            gravity = Gravity.CENTER
+            setPadding((16 * dp).toInt(), (8 * dp).toInt(), (16 * dp).toInt(), (8 * dp).toInt())
+            background = android.graphics.drawable.GradientDrawable().apply {
+                setColor(surfaceAlpha)
+                setStroke((1 * dp).toInt(), dividerColor)
+                cornerRadius = 12 * dp
+            }
+        }
+        val labelParams = WindowManager.LayoutParams(
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+            PixelFormat.TRANSLUCENT
+        ).apply {
+            gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
+            y = (48 * dp).toInt()
+        }
+        wm.addView(label, labelParams)
+        regionEditorLabelWm = wm
+        regionEditorLabel = label
+    }
+
+    private fun hideRegionEditor() {
+        try { dragView?.let { dragWm?.removeView(it) } } catch (_: Exception) {}
+        dragView = null
+        dragWm = null
+        try { regionEditorBar?.let { regionEditorBarWm?.removeView(it) } } catch (_: Exception) {}
+        regionEditorBar = null
+        regionEditorBarWm = null
+        try { regionEditorLabel?.let { regionEditorLabelWm?.removeView(it) } } catch (_: Exception) {}
+        regionEditorLabel = null
+        regionEditorLabelWm = null
+        service.holdActive = false
     }
 
     private fun openMainSettings() {
@@ -677,7 +859,12 @@ class ProjectionOverlayHost private constructor(
                 WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
                 WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
             PixelFormat.TRANSLUCENT,
-        ).apply { windowAnimations = 0 }
+        ).apply { 
+            windowAnimations = 0 
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
+                layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+            }
+        }
         try { wm.addView(view, params) } catch (e: Exception) {
             Log.e(TAG, "showTranslationOverlay: addView failed", e); return
         }
