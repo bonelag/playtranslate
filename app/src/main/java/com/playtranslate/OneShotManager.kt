@@ -28,7 +28,7 @@ class OneShotManager(private val service: CaptureService) {
     fun cancel() {
         currentJob?.cancel()
         currentJob = null
-        PlayTranslateAccessibilityService.instance?.hideTranslationOverlay()
+        OverlayHost.current?.hideTranslationOverlay()
     }
 
 
@@ -91,10 +91,17 @@ class OneShotManager(private val service: CaptureService) {
 
     private fun showNoTextPill() {
         val a11y = PlayTranslateAccessibilityService.instance
-        val dm = service.getSystemService(android.hardware.display.DisplayManager::class.java)
-        val display = dm?.getDisplay(service.gameDisplayId)
-        if (a11y != null && display != null) {
-            a11y.showNoTextPill(display, service.noTextMessage())
+        if (a11y != null) {
+            val dm = service.getSystemService(android.hardware.display.DisplayManager::class.java)
+            val display = dm?.getDisplay(service.gameDisplayId)
+            if (display != null) {
+                a11y.showNoTextPill(display, service.noTextMessage())
+                return
+            }
+        }
+        // Fallback for Projection Mode
+        android.os.Handler(android.os.Looper.getMainLooper()).post {
+            android.widget.Toast.makeText(service, service.noTextMessage(), android.widget.Toast.LENGTH_SHORT).show()
         }
     }
 }

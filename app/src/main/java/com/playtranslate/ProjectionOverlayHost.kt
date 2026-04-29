@@ -495,13 +495,9 @@ class ProjectionOverlayHost private constructor(
         val displayCtx = context.createDisplayContext(display)
         val wm = displayCtx.getSystemService(WindowManager::class.java) ?: return
         val prefs = Prefs(context)
-        val themeRes = when (prefs.themeIndex) {
-            1    -> R.style.Theme_PlayTranslate_White
-            2    -> R.style.Theme_PlayTranslate_Rainbow
-            3    -> R.style.Theme_PlayTranslate_Purple
-            else -> R.style.Theme_PlayTranslate
-        }
+        val themeRes = baseActivityTheme(context)
         val themedCtx = android.view.ContextThemeWrapper(displayCtx, themeRes)
+        themedCtx.theme.applyStyle(prefs.accent.overlay, true)
         val menu = FloatingIconMenu(themedCtx)
         menu.isSingleScreen = Prefs.isSingleScreen(context)
 
