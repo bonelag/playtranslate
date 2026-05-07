@@ -41,8 +41,6 @@ class OcrDebugOverlayView(context: Context) : View(context) {
     private var debugBoxes: OcrManager.OcrDebugBoxes? = null
     private var cropOffsetX = 0
     private var cropOffsetY = 0
-    private var displayScaleX = 1f
-    private var displayScaleY = 1f
     private var screenshotW = 1
     private var screenshotH = 1
 
@@ -56,26 +54,11 @@ class OcrDebugOverlayView(context: Context) : View(context) {
         cropOffsetY = cropTop
         this.screenshotW = screenshotW
         this.screenshotH = screenshotH
-        if (width > 0 && height > 0) updateScales()
         invalidate()
     }
 
-    override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
-        super.onSizeChanged(w, h, oldw, oldh)
-        updateScales()
-    }
-
-    private fun updateScales() {
-        displayScaleX = width.toFloat() / screenshotW
-        displayScaleY = height.toFloat() / screenshotH
-    }
-
     private fun mapRect(r: Rect, scaleFactor: Float): RectF {
-        val left   = (r.left   / scaleFactor + cropOffsetX) * displayScaleX
-        val top    = (r.top    / scaleFactor + cropOffsetY) * displayScaleY
-        val right  = (r.right  / scaleFactor + cropOffsetX) * displayScaleX
-        val bottom = (r.bottom / scaleFactor + cropOffsetY) * displayScaleY
-        return RectF(left, top, right, bottom)
+        return BoundingBoxMapper.mapRect(r, this, scaleFactor, cropOffsetX, cropOffsetY)
     }
 
     override fun onDraw(canvas: Canvas) {

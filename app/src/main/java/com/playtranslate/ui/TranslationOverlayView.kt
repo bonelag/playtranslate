@@ -89,8 +89,6 @@ class TranslationOverlayView(
     private var boxes: List<TextBox> = emptyList()
     private var cropOffsetX = 0
     private var cropOffsetY = 0
-    private var displayScaleX = 1f
-    private var displayScaleY = 1f
     private var screenshotW = 1
     private var screenshotH = 1
 
@@ -123,7 +121,6 @@ class TranslationOverlayView(
         this.screenshotW = screenshotW
         this.screenshotH = screenshotH
         if (width > 0 && height > 0) {
-            updateScales()
             rebuildChildren()
         }
     }
@@ -163,7 +160,6 @@ class TranslationOverlayView(
 
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
         super.onSizeChanged(w, h, oldw, oldh)
-        updateScales()
         pinholeMaskBitmap?.recycle()
         pinholeMaskBitmap = if (w > 0 && h > 0) createPinholeMask(w, h) else null
         post { rebuildChildren() }
@@ -189,17 +185,8 @@ class TranslationOverlayView(
         canvas.restoreToCount(layer)
     }
 
-    private fun updateScales() {
-        displayScaleX = width.toFloat() / screenshotW
-        displayScaleY = height.toFloat() / screenshotH
-    }
-
     private fun mapRect(r: Rect): RectF {
-        val left   = (r.left   + cropOffsetX) * displayScaleX
-        val top    = (r.top    + cropOffsetY) * displayScaleY
-        val right  = (r.right  + cropOffsetX) * displayScaleX
-        val bottom = (r.bottom + cropOffsetY) * displayScaleY
-        return RectF(left, top, right, bottom)
+        return BoundingBoxMapper.mapRect(r, this, cropOffsetX, cropOffsetY)
     }
 
     private fun rebuildChildren() {

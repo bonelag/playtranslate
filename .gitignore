@@ -16,7 +16,7 @@ app/build/
 local/
 scripts/thor-wifi-connect.sh
 docs/
-
+CLAUDE.md
 # Python cache from scripts/
 __pycache__/
 *.pyc
@@ -26,12 +26,12 @@ __pycache__/
 
 # Icon source images
 img/
-
+.agents
 # Android Studio
 .idea/
 *.iml
 .DS_Store
-
+.claude
 # Debug screenshots and session logs
 dirty_*.png
 ocr_*.png
@@ -53,3 +53,4 @@ app/src/androidTest/assets/ocr_golden/**/*.notes.md
 
 # OS
 Thumbs.db
+skills-lock.json
