@@ -134,7 +134,7 @@ class OcrManager private constructor() {
         sourceLang: String = "ja",
         collectDebugBoxes: Boolean = false,
         screenshotWidth: Int = 0,
-        recipe: OcrPreprocessingRecipe = OcrPreprocessingRecipe.Default
+        recipe: OcrPreprocessingRecipe = selectOcrRecipe(sourceLang)
     ): OcrResult? {
         val processed = recipe.apply(bitmap, sampleIsDarkBackground(bitmap))
         val scaleFactor = processed.width.toFloat() / bitmap.width
@@ -573,7 +573,7 @@ class OcrManager private constructor() {
     suspend fun recogniseWithPositions(
         bitmap: Bitmap,
         sourceLang: String = "ja",
-        recipe: OcrPreprocessingRecipe = OcrPreprocessingRecipe.Default
+        recipe: OcrPreprocessingRecipe = selectOcrRecipe(sourceLang)
     ): List<OcrLine>? {
         val processed = recipe.apply(bitmap, sampleIsDarkBackground(bitmap))
         val scaleFactor = processed.width.toFloat() / bitmap.width
