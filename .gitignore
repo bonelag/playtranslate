@@ -11,7 +11,7 @@ app/build/
 
 # Claude Code
 .claude/
-
+TODO.md
 # Local scratch / test data (not committed)
 local/
 scripts/thor-wifi-connect.sh

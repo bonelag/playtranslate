@@ -623,8 +623,7 @@ class CaptureService : Service() {
             val screenshotPath = mgr?.saveToCache(raw, displayId)
 
             val region = activeRegionForDisplay(displayId)
-            val statusBarHeight = getStatusBarHeightForDisplay(displayId)
-            val top    = maxOf((raw.height * region.top).toInt(), statusBarHeight)
+            val top    = (raw.height * region.top).toInt()
             val left   = (raw.width  * region.left).toInt()
             val bottom = (raw.height * region.bottom).toInt()
             val right  = (raw.width  * region.right).toInt()
@@ -1356,16 +1355,14 @@ class CaptureService : Service() {
     }
 
     /** Run the shared OCR pipeline on a frame captured from [displayId].
-     *  Every per-display parameter (active region, status bar height, icon
-     *  rect to black out) is resolved for [displayId] — the pipeline has no
-     *  notion of a "primary" display. Caller still owns [raw]. */
+     *  Every per-display parameter (active region, icon rect to black out) is
+     *  resolved for [displayId]. Caller still owns [raw]. */
     internal suspend fun runOcr(raw: Bitmap, displayId: Int): OverlayToolkit.OcrPipelineResult? {
         return OverlayToolkit.runOcrPipeline(
             raw,
             activeRegionForDisplay(displayId),
             sourceLang,
             ocrManager,
-            getStatusBarHeightForDisplay(displayId),
             PlayTranslateAccessibilityService.instance?.getFloatingIconRect(displayId),
             Prefs(this).compactOverlayIcon
         )
@@ -1555,8 +1552,7 @@ class CaptureService : Service() {
                 ?.screenshotManager?.saveToCache(raw, displayId)
 
             val region = activeRegionForDisplay(displayId)
-            val statusBarHeight = getStatusBarHeightForDisplay(displayId)
-            val top    = maxOf((raw.height * region.top).toInt(), statusBarHeight)
+            val top    = (raw.height * region.top).toInt()
             val left   = (raw.width  * region.left).toInt()
             val bottom = (raw.height * region.bottom).toInt()
             val right  = (raw.width  * region.right).toInt()

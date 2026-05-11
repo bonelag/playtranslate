@@ -422,6 +422,7 @@ class PlayTranslateAccessibilityService : AccessibilityService() {
         val wm = ctx.getSystemService(WindowManager::class.java) ?: return
         val dp = ctx.resources.displayMetrics.density
         val displayLabel = region.label
+        val displaySize = getDisplaySize(display)
 
         val accentColor = OverlayColors.accent(this)
         val bgColor = OverlayColors.bg(this)
@@ -431,6 +432,20 @@ class PlayTranslateAccessibilityService : AccessibilityService() {
             // tearing down the overlay window (which causes a 1-2 frame flash).
             var liveRegion: RegionEntry = region
             var liveLabel: String = displayLabel
+
+            private fun viewRegion(): RegionEntry {
+                val location = IntArray(2)
+                getLocationOnScreen(location)
+                return RegionCoordinateMapper.displayRegionToViewRegion(
+                    region = liveRegion,
+                    viewLeft = location[0],
+                    viewTop = location[1],
+                    viewWidth = width,
+                    viewHeight = height,
+                    displayWidth = displaySize.x,
+                    displayHeight = displaySize.y,
+                )
+            }
 
             private val dimPaint = android.graphics.Paint().apply {
                 color = android.graphics.Color.argb(200, 0, 0, 0)
@@ -480,10 +495,11 @@ class PlayTranslateAccessibilityService : AccessibilityService() {
             override fun onDraw(canvas: android.graphics.Canvas) {
                 val w = width.toFloat()
                 val h = height.toFloat()
-                val l = w * liveRegion.left
-                val t = h * liveRegion.top
-                val r = w * liveRegion.right
-                val b = h * liveRegion.bottom
+                val drawRegion = viewRegion()
+                val l = w * drawRegion.left
+                val t = h * drawRegion.top
+                val r = w * drawRegion.right
+                val b = h * drawRegion.bottom
 
                 // Persistent indicator (region picker): darken outside the region.
                 // Flash indicator: leave background untouched.
@@ -697,6 +713,7 @@ class PlayTranslateAccessibilityService : AccessibilityService() {
             WindowManager.LayoutParams.MATCH_PARENT,
             WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
                 WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
             PixelFormat.TRANSLUCENT
         )
@@ -1555,17 +1572,17 @@ class PlayTranslateAccessibilityService : AccessibilityService() {
         }
         // The floating menu is anchored to a specific display; show that
         // display's region in the picker and route override writes to it.
-        menu.activeRegion = CaptureService.instance?.activeRegionForDisplay(display.displayId)
         menu.onRegionSelected = { region ->
+            val displayRegion = mapViewRegionToDisplay(display, menu, region)
             dismissFloatingMenu()
-            CaptureService.instance?.configureOverride(display.displayId, region)
+            CaptureService.instance?.configureOverride(display.displayId, displayRegion)
             if (CaptureService.instance?.isLive == true) {
                 hideTranslationOverlay()
                 CaptureService.instance?.refreshLiveOverlay()
             } else {
                 val effectivelySingleScreen = Prefs.isSingleScreen(this) || !MainActivity.isInForeground
                 if (effectivelySingleScreen) {
-                    handleRegionSelection(display.displayId, region)
+                    handleRegionSelection(display.displayId, displayRegion)
                 } else {
                     sendMainActivityIntent(MainActivity.ACTION_REGION_CAPTURE, display.displayId)
                 }
@@ -1604,13 +1621,20 @@ class PlayTranslateAccessibilityService : AccessibilityService() {
             WindowManager.LayoutParams.MATCH_PARENT,
             WindowManager.LayoutParams.MATCH_PARENT,
             WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
-            WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+            WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
             PixelFormat.TRANSLUCENT
         )
 
         addOverlayWindow(menu, wm, params, display.displayId)
         floatingMenuWm = wm
         floatingMenu = menu
+        menu.post {
+            menu.activeRegion = CaptureService.instance
+                ?.activeRegionForDisplay(display.displayId)
+                ?.let { mapDisplayRegionToView(display, menu, it) }
+            menu.invalidate()
+        }
 
         // Compute icon center in screen coords
         val p = icon.params
@@ -1701,6 +1725,11 @@ class PlayTranslateAccessibilityService : AccessibilityService() {
             RegionEntry("", 0.25f, 0.75f, 0.25f, 0.75f) else currentRegion
 
         showRegionDragOverlay(display, initRegion) { _ -> }
+        dragView?.post {
+            val dv = dragView ?: return@post
+            val viewRegion = mapDisplayRegionToView(display, dv, initRegion)
+            dv.setRegion(viewRegion.top, viewRegion.bottom, viewRegion.left, viewRegion.right)
+        }
         dragView?.onDragStart = {
             regionEditorBar?.visibility = View.INVISIBLE
             regionEditorLabel?.visibility = View.INVISIBLE
@@ -1776,12 +1805,13 @@ class PlayTranslateAccessibilityService : AccessibilityService() {
             setOnClickListener {
                 val dv = dragView ?: return@setOnClickListener
                 val drawnRegion = RegionEntry("Drawn Region", dv.topFraction, dv.bottomFraction, dv.leftFraction, dv.rightFraction)
+                val displayRegion = mapViewRegionToDisplay(display, dv, drawnRegion)
                 hideRegionEditor()
-                CaptureService.instance?.configureOverride(display.displayId, drawnRegion)
+                CaptureService.instance?.configureOverride(display.displayId, displayRegion)
                 if (CaptureService.instance?.isLive == true) {
                     CaptureService.instance?.refreshLiveOverlay()
                 } else {
-                    handleRegionSelection(display.displayId, drawnRegion)
+                    handleRegionSelection(display.displayId, displayRegion)
                 }
             }
         }
@@ -1979,6 +2009,36 @@ class PlayTranslateAccessibilityService : AccessibilityService() {
         val primaryId = prefs.captureDisplayIds.firstOrNull()
             ?: Display.DEFAULT_DISPLAY
         return dm.getDisplay(primaryId) ?: displays.firstOrNull()
+    }
+
+    private fun mapViewRegionToDisplay(display: Display, view: View, region: RegionEntry): RegionEntry {
+        val displaySize = getDisplaySize(display)
+        val location = IntArray(2)
+        view.getLocationOnScreen(location)
+        return RegionCoordinateMapper.viewRegionToDisplayRegion(
+            region = region,
+            viewLeft = location[0],
+            viewTop = location[1],
+            viewWidth = view.width,
+            viewHeight = view.height,
+            displayWidth = displaySize.x,
+            displayHeight = displaySize.y,
+        )
+    }
+
+    private fun mapDisplayRegionToView(display: Display, view: View, region: RegionEntry): RegionEntry {
+        val displaySize = getDisplaySize(display)
+        val location = IntArray(2)
+        view.getLocationOnScreen(location)
+        return RegionCoordinateMapper.displayRegionToViewRegion(
+            region = region,
+            viewLeft = location[0],
+            viewTop = location[1],
+            viewWidth = view.width,
+            viewHeight = view.height,
+            displayWidth = displaySize.x,
+            displayHeight = displaySize.y,
+        )
     }
 
     @Suppress("DEPRECATION")

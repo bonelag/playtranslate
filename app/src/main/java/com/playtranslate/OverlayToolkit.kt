@@ -465,11 +465,10 @@ object OverlayToolkit {
         activeRegion: RegionEntry,
         sourceLang: String,
         ocrManager: OcrManager,
-        statusBarHeight: Int,
         iconRect: Rect?,
         compactIcon: Boolean
     ): OcrPipelineResult? {
-        val top    = maxOf((raw.height * activeRegion.top).toInt(), statusBarHeight)
+        val top    = (raw.height * activeRegion.top).toInt()
         val left   = (raw.width  * activeRegion.left).toInt()
         val bottom = (raw.height * activeRegion.bottom).toInt()
         val right  = (raw.width  * activeRegion.right).toInt()
