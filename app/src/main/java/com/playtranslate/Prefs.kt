@@ -269,6 +269,27 @@ class Prefs(context: Context) {
         get() = sp.getBoolean(KEY_LINGVA_ENABLED, true)
         set(v) = sp.edit().putBoolean(KEY_LINGVA_ENABLED, v).apply()
 
+    /** User's explicit "use TranslateGemma?" toggle. Default false because the
+     *  backend requires a separate ~2.5 GB model download. The download flow
+     *  flips this to true on success; toggling it off opens a dialog with
+     *  "Disable only" / "Delete model" / "Cancel" choices.
+     *
+     *  The on-disk model file is the source of truth for "is the model
+     *  installed?" — see TranslateGemmaModel.isInstalled() — so we deliberately
+     *  do NOT track installation state in prefs. */
+    var translateGemmaEnabled: Boolean
+        get() = sp.getBoolean(KEY_TRANSLATEGEMMA_ENABLED, false)
+        set(v) = sp.edit().putBoolean(KEY_TRANSLATEGEMMA_ENABLED, v).apply()
+
+    /** User-controlled toggle for the on-device Qwen 2.5 1.5B backend. Default
+     *  off; flipped on by the download flow's Success outcome (or by tapping
+     *  the row when the model file is already on disk). The disable dialog
+     *  flips it back off. File existence is checked separately via
+     *  [com.playtranslate.translation.qwen.QwenModel.isInstalled]. */
+    var qwenEnabled: Boolean
+        get() = sp.getBoolean(KEY_QWEN_ENABLED, false)
+        set(v) = sp.edit().putBoolean(KEY_QWEN_ENABLED, v).apply()
+
     var ankiDeckId: Long
         get() = sp.getLong(KEY_ANKI_DECK_ID, -1L)
         set(v) = sp.edit().putLong(KEY_ANKI_DECK_ID, v).apply()
@@ -486,6 +507,14 @@ class Prefs(context: Context) {
         get() = sp.getBoolean(KEY_DEBUG_SAVE_OCR_SEED, false)
         set(v) = sp.edit().putBoolean(KEY_DEBUG_SAVE_OCR_SEED, v).apply()
 
+    /** Debug-only: log every candidate line's grouping decision during OCR
+     *  with the previous group's bounds, the candidate's bounds + text, and
+     *  the numeric reason it merged (or didn't). Use to diagnose why rows
+     *  fail to combine — see [OcrManager.wouldGroup]. */
+    var debugLogGrouping: Boolean
+        get() = sp.getBoolean(KEY_DEBUG_LOG_GROUPING, false)
+        set(v) = sp.edit().putBoolean(KEY_DEBUG_LOG_GROUPING, v).apply()
+
     /** Set to true after the user dismisses the target-pack migration dialog. */
     var targetPackMigrationDismissed: Boolean
         get() = sp.getBoolean(KEY_TARGET_PACK_MIGRATION_DISMISSED, false)
@@ -574,6 +603,8 @@ class Prefs(context: Context) {
         private const val KEY_DEEPL_KEY      = "deepl_api_key"
         const val KEY_DEEPL_ENABLED          = "deepl_enabled"
         const val KEY_LINGVA_ENABLED         = "lingva_enabled"
+        const val KEY_TRANSLATEGEMMA_ENABLED = "translategemma_enabled"
+        const val KEY_QWEN_ENABLED           = "qwen_enabled"
         private const val KEY_LEGACY_THEME_INDEX    = "theme_index"
         private const val KEY_THEME_MODE            = "theme_mode"
         private const val KEY_ACCENT_NAME           = "accent_name"
@@ -595,6 +626,7 @@ class Prefs(context: Context) {
         private const val KEY_DEBUG_SHOW_DETECTION_LOG      = "debug_show_detection_log"
         private const val KEY_DEBUG_LIVE_MODE                = "debug_live_mode"
         private const val KEY_DEBUG_SAVE_OCR_SEED            = "debug_save_ocr_seed"
+        private const val KEY_DEBUG_LOG_GROUPING             = "debug_log_grouping"
         private const val KEY_HOTKEY_TRANSLATION           = "hotkey_translation"
         private const val KEY_HOTKEY_FURIGANA              = "hotkey_furigana"
         private const val KEY_LAST_UPDATE_CHECK            = "last_update_check"

@@ -54,3 +54,4 @@ app/src/androidTest/assets/ocr_golden/**/*.notes.md
 # OS
 Thumbs.db
 skills-lock.json
+**/.cxx/

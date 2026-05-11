@@ -18,6 +18,10 @@
     <string name="accessibility_dialog_open">Open Accessibility Settings</string>
     <string name="status_accessibility_needed">Enable PlayTranslate in Accessibility Settings first</string>
 
+    <!-- Quick Settings tile -->
+    <string name="tile_label">PlayTranslate</string>
+    <string name="tile_subtitle_a11y_required">Enable accessibility</string>
+
     <!-- Status messages -->
     <string name="status_idle">Tap Translate to capture the game screen</string>
     <string name="status_hold_hint">Long-press Regions or Auto for quick-select menus</string>
@@ -93,6 +97,18 @@
     <string name="lang_state_extracting">Extracting…</string>
     <string name="lang_state_failed">Failed — retry</string>
     <string name="lang_size_mb">%1$d MB</string>
+
+    <!-- Pack-upgrade flow (launch-time staleness scan + Settings cell) -->
+    <string name="pack_upgrade_title">Language Pack Updates Available</string>
+    <string name="pack_upgrade_button_now">Update Now</string>
+    <string name="pack_upgrade_button_later">Update Later</string>
+    <string name="pack_upgrade_progress_title">Updating language packs</string>
+    <string name="pack_upgrade_progress_format">Downloading %1$s…</string>
+    <string name="pack_upgrade_progress_format_with_bytes">Downloading %1$s… %2$s of %3$s</string>
+    <string name="pack_upgrade_priming_models">Loading translation models…</string>
+    <string name="pack_upgrade_label_source">Game Language (%1$s)</string>
+    <string name="pack_upgrade_label_target">Your Language (%1$s)</string>
+    <string name="lang_section_update_packs_title">Update language packs</string>
     <string name="settings_display_hint">Select the display that shows the game. Usually Display 0 is the main/top screen.</string>
     <string name="settings_no_displays_found">No displays found</string>
     <string name="hint_deepl_key">Paste your DeepL API key here</string>
@@ -198,8 +214,9 @@
     <string name="deepl_settings_get_key_subtitle">The free plan includes 500,000 characters per month, but requires a credit card to sign up</string>
     <string name="deepl_settings_about">DeepL is a translation service known for high-quality output, especially in European languages.</string>
 
-    <!-- Translation Service section footer in Settings -->
+    <!-- Translation Service section footers in Settings -->
     <string name="tr_service_order_footer">Translations try each enabled service in the order shown, falling back when one is unavailable.</string>
+    <string name="tr_service_offline_footer">Offline translations are used as a fallback when online translations are unavailable. MLKit translations are bad, but the other options can be very slow and taxing, be weary of using them for auto translation.</string>
 
     <!-- Translation Service per-backend status line (line 2) -->
     <string name="tr_service_status_loading">Checking usage…</string>
@@ -208,6 +225,58 @@
 
     <!-- Backend quality labels (line 1 second half) -->
     <string name="tr_service_quality_bad">Bad quality</string>
+    <string name="tr_service_quality_okay">Okay quality</string>
     <string name="tr_service_quality_good">Good quality</string>
     <string name="tr_service_quality_better">Better quality</string>
+
+    <!-- Backend speed labels (line 1 third part — offline backends only) -->
+    <string name="tr_service_speed_very_slow">Very slow</string>
+    <string name="tr_service_speed_slow">Slow</string>
+    <string name="tr_service_speed_fast">Fast</string>
+
+    <!-- TranslateGemma backend (downloadable on-device 4B model) -->
+    <string name="translategemma_display_name">TranslateGemma</string>
+    <string name="translategemma_status_not_downloaded">Requires %1$s memory, %2$s on disk</string>
+    <string name="translategemma_status_downloaded_disabled">Downloaded but disabled (%1$s on disk)</string>
+    <string name="translategemma_status_ready">Requires %1$s memory, %2$s on disk</string>
+    <string name="translategemma_status_downloading">Downloading… %1$s of %2$s</string>
+    <string name="translategemma_status_verifying">Verifying download…</string>
+    <string name="translategemma_status_loading_model">Loading model…</string>
+    <string name="translategemma_disable_title">Disable TranslateGemma?</string>
+    <string name="translategemma_disable_message">The %1$s model is downloaded. You can keep it for later or delete it to free up space.</string>
+    <string name="translategemma_disable_keep">Disable only</string>
+    <string name="translategemma_disable_delete">Delete model</string>
+    <string name="translategemma_disable_cancel">Cancel</string>
+    <string name="translategemma_download_failed">Download failed: %1$s</string>
+    <string name="translategemma_insufficient_memory">This device doesn\'t have enough memory to run TranslateGemma.</string>
+    <string name="translategemma_insufficient_storage">Not enough free storage. TranslateGemma needs %1$s free.</string>
+    <string name="translategemma_metered_warning_title">Download on cellular?</string>
+    <string name="translategemma_metered_warning_message">TranslateGemma is %1$s. Continue on cellular?</string>
+    <string name="translategemma_download_paused">Download paused. Reopen Settings to resume.</string>
+
+    <string name="qwen_display_name">Qwen 2.5 1.5B</string>
+    <string name="qwen_status_not_downloaded">Requires %1$s memory, %2$s on disk</string>
+    <string name="qwen_status_downloaded_disabled">Downloaded but disabled (%1$s on disk)</string>
+    <string name="qwen_status_ready">Requires %1$s memory, %2$s on disk</string>
+    <string name="qwen_status_downloading">Downloading… %1$s of %2$s</string>
+    <string name="qwen_status_verifying">Verifying download…</string>
+    <string name="qwen_status_loading_model">Loading model…</string>
+    <string name="qwen_disable_title">Disable Qwen?</string>
+    <string name="qwen_disable_message">The %1$s model is downloaded. You can keep it for later or delete it to free up space.</string>
+    <string name="qwen_disable_keep">Disable only</string>
+    <string name="qwen_disable_delete">Delete model</string>
+    <string name="qwen_disable_cancel">Cancel</string>
+    <string name="qwen_download_failed">Download failed: %1$s</string>
+    <string name="qwen_insufficient_memory">This device doesn\'t have enough memory to run Qwen.</string>
+    <string name="qwen_insufficient_storage">Not enough free storage. Qwen needs %1$s free.</string>
+    <string name="qwen_metered_warning_title">Download on cellular?</string>
+    <string name="qwen_metered_warning_message">Qwen 2.5 1.5B is %1$s. Continue on cellular?</string>
+    <string name="qwen_download_paused">Download paused. Reopen Settings to resume.</string>
+
+    <!-- Status line shown on a TG / Qwen row when the device's hardware can't
+         run on-device LLMs. The row stays visible (so the user understands
+         which feature is disabled and why) but the toggle switch is hidden
+         and the row is not interactive. -->
+    <string name="llm_hardware_unsupported_arm64">Not supported on this device (requires an arm64 CPU)</string>
+    <string name="llm_hardware_unsupported_ram">Not supported on this device (requires at least %1$d GB RAM)</string>
 </resources>
