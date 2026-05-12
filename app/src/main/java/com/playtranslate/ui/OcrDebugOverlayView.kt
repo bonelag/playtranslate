@@ -43,6 +43,7 @@ class OcrDebugOverlayView(context: Context) : View(context) {
     private var cropOffsetY = 0
     private var screenshotW = 1
     private var screenshotH = 1
+    private val screenLocation = IntArray(2)
 
     fun setBoxes(
         boxes: OcrManager.OcrDebugBoxes,
@@ -58,11 +59,12 @@ class OcrDebugOverlayView(context: Context) : View(context) {
     }
 
     private fun mapRect(r: Rect, scaleFactor: Float): RectF {
-        return BoundingBoxMapper.mapRect(r, this, scaleFactor, cropOffsetX, cropOffsetY)
+        return BoundingBoxMapper.mapRect(r, screenLocation, scaleFactor, cropOffsetX, cropOffsetY)
     }
 
     override fun onDraw(canvas: Canvas) {
         val boxes = debugBoxes ?: return
+        getLocationOnScreen(screenLocation)
         val sf = boxes.scaleFactor
 
         // Individual TextBlock boxes (red)

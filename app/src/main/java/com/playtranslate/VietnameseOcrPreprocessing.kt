@@ -50,12 +50,6 @@ object VietnameseOcrPreprocessing : OcrPreprocessingRecipe {
      *  strokes survive the contrast curve without being crushed to 0 or 255. */
     private const val SIGMOID_K = 4f
 
-    // ── Pre-allocated resources ─────────────────────────────────────────
-
-    private val grayMatrix = ColorMatrix().apply { setSaturation(0f) }
-
-    private val paint = Paint(Paint.FILTER_BITMAP_FLAG)
-
     // ── OcrPreprocessingRecipe ──────────────────────────────────────────
 
     override fun apply(bitmap: Bitmap, isDarkBackground: Boolean): Bitmap {
@@ -63,7 +57,10 @@ object VietnameseOcrPreprocessing : OcrPreprocessingRecipe {
         val (scale, w, h) = upscaleParams(bitmap)
 
         // 2. Scale + grayscale
-        paint.colorFilter = ColorMatrixColorFilter(grayMatrix)
+        val grayMatrix = ColorMatrix().apply { setSaturation(0f) }
+        val paint = Paint(Paint.FILTER_BITMAP_FLAG).apply {
+            colorFilter = ColorMatrixColorFilter(grayMatrix)
+        }
         val out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
         val canvas = Canvas(out)
         if (scale != 1f) canvas.scale(scale, scale)

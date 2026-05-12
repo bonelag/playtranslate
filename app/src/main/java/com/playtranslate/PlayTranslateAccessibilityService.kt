@@ -434,14 +434,14 @@ class PlayTranslateAccessibilityService : AccessibilityService() {
             // tearing down the overlay window (which causes a 1-2 frame flash).
             var liveRegion: RegionEntry = region
             var liveLabel: String = displayLabel
+            private val screenLocation = IntArray(2)
 
             private fun viewRegion(): RegionEntry {
-                val location = IntArray(2)
-                getLocationOnScreen(location)
+                getLocationOnScreen(screenLocation)
                 return RegionCoordinateMapper.displayRegionToViewRegion(
                     region = liveRegion,
-                    viewLeft = location[0],
-                    viewTop = location[1],
+                    viewLeft = screenLocation[0],
+                    viewTop = screenLocation[1],
                     viewWidth = width,
                     viewHeight = height,
                     displayWidth = displaySize.x,

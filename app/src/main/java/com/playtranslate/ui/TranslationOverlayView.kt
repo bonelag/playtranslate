@@ -190,8 +190,10 @@ class TranslationOverlayView(
         canvas.restoreToCount(layer)
     }
 
+    private val screenLocation = IntArray(2)
+
     private fun mapRect(r: Rect): RectF {
-        return BoundingBoxMapper.mapRect(r, this, cropOffsetX, cropOffsetY)
+        return BoundingBoxMapper.mapRect(r, screenLocation, cropOffsetX, cropOffsetY)
     }
 
     private fun rebuildChildren() {
@@ -210,6 +212,7 @@ class TranslationOverlayView(
 
         val displayW = width.toFloat()
         val displayH = height.toFloat()
+        getLocationOnScreen(screenLocation)
 
         // Map OCR bounds to screen coordinates
         val screenRects = boxes.map { box ->

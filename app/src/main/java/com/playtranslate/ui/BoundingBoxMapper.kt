@@ -2,7 +2,6 @@ package com.playtranslate.ui
 
 import android.graphics.Rect
 import android.graphics.RectF
-import android.view.View
 
 /**
  * Maps OCR bitmap-space bounding boxes to screen-space coordinates,
@@ -27,8 +26,7 @@ object BoundingBoxMapper {
      * Maps a single [Rect] from bitmap coordinates to screen coordinates.
      *
      * @param r         OCR bounding box in bitmap space
-     * @param view      the overlay [View] that will draw this box — used to
-     *                  resolve its screen position via [View.getLocationOnScreen]
+     * @param viewLocation overlay view location from [android.view.View.getLocationOnScreen]
      * @param scaleFactor  OCR downscale factor applied by ML Kit (1 = no scaling)
      * @param cropOffsetX  left crop offset in bitmap pixels
      * @param cropOffsetY  top crop offset in bitmap pixels
@@ -37,23 +35,20 @@ object BoundingBoxMapper {
      */
     fun mapRect(
         r: Rect,
-        view: View,
+        viewLocation: IntArray,
         scaleFactor: Float,
         cropOffsetX: Int,
         cropOffsetY: Int,
     ): RectF {
-        val location = IntArray(2)
-        view.getLocationOnScreen(location)
-
         val physicalLeft   = r.left   / scaleFactor + cropOffsetX
         val physicalTop    = r.top    / scaleFactor + cropOffsetY
         val physicalRight  = r.right  / scaleFactor + cropOffsetX
         val physicalBottom = r.bottom / scaleFactor + cropOffsetY
 
-        val left   = physicalLeft   - location[0]
-        val top    = physicalTop    - location[1]
-        val right  = physicalRight  - location[0]
-        val bottom = physicalBottom - location[1]
+        val left   = physicalLeft   - viewLocation[0]
+        val top    = physicalTop    - viewLocation[1]
+        val right  = physicalRight  - viewLocation[0]
+        val bottom = physicalBottom - viewLocation[1]
 
         return RectF(left, top, right, bottom)
     }
@@ -65,29 +60,26 @@ object BoundingBoxMapper {
      * case for TranslationOverlayView (its incoming boxes are pre-scaled).
      *
      * @param r         bounding box in bitmap space (1:1)
-     * @param view      the overlay [View]
+     * @param viewLocation overlay view location from [android.view.View.getLocationOnScreen]
      * @param cropOffsetX  left crop offset
      * @param cropOffsetY  top crop offset
      * @return [RectF] in the view's local coordinate system
      */
     fun mapRect(
         r: Rect,
-        view: View,
+        viewLocation: IntArray,
         cropOffsetX: Int,
         cropOffsetY: Int,
     ): RectF {
-        val location = IntArray(2)
-        view.getLocationOnScreen(location)
-
         val physicalLeft   = r.left   + cropOffsetX
         val physicalTop    = r.top    + cropOffsetY
         val physicalRight  = r.right  + cropOffsetX
         val physicalBottom = r.bottom + cropOffsetY
 
-        val left   = physicalLeft   - location[0]
-        val top    = physicalTop    - location[1]
-        val right  = physicalRight  - location[0]
-        val bottom = physicalBottom - location[1]
+        val left   = physicalLeft   - viewLocation[0]
+        val top    = physicalTop    - viewLocation[1]
+        val right  = physicalRight  - viewLocation[0]
+        val bottom = physicalBottom - viewLocation[1]
 
         return RectF(left.toFloat(), top.toFloat(), right.toFloat(), bottom.toFloat())
     }
