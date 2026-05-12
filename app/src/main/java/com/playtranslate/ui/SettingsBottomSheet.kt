@@ -16,6 +16,8 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.fragment.app.DialogFragment
 import androidx.lifecycle.lifecycleScope
 import com.playtranslate.AnkiManager
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import com.playtranslate.Prefs
 import com.playtranslate.PlayTranslateAccessibilityService
 import com.playtranslate.capturableDisplays
@@ -287,6 +289,72 @@ class SettingsBottomSheet : DialogFragment() {
                     picker.onDeckSelected = onDeckSelected
                     picker.show(childFragmentManager, AnkiDeckPickerDialog.TAG)
                 }
+                override fun showAnkiCardTypePicker(onPicked: () -> Unit) {
+                    // Settings doesn't know mode; use SENTENCE as the
+                    // default for Basic-shape detection. Mapping dialog
+                    // lets the user override per template anyway.
+                    val picker = AnkiCardTypePickerDialog.newInstance(CardMode.SENTENCE)
+                    picker.onCardTypePicked = { _, _ -> onPicked() }
+                    picker.show(childFragmentManager, AnkiCardTypePickerDialog.TAG)
+                }
+                override fun showAnkiCardTypeMapping(onSaved: () -> Unit) {
+                    val sheet = this@SettingsBottomSheet
+                    val ctx = sheet.requireContext()
+                    val prefs = Prefs(ctx)
+                    val pickedId = prefs.ankiModelId
+                    if (pickedId == -1L) return  // shouldn't be reachable; row's hidden
+                    sheet.viewLifecycleOwner.lifecycleScope.launch {
+                        val models = withContext(Dispatchers.IO) { AnkiManager(ctx).getModels() }
+                        if (models.isEmpty()) {
+                            // Empty list always means transient query /
+                            // permission failure — a working AnkiDroid
+                            // install always has built-in Basic + Cloze.
+                            // Don't destructively reset prefs; just
+                            // surface the error and let the user retry.
+                            // Same guard as dispatchSendToAnki.
+                            android.widget.Toast.makeText(
+                                ctx, R.string.anki_models_unavailable,
+                                android.widget.Toast.LENGTH_LONG,
+                            ).show()
+                            return@launch
+                        }
+                        val picked = models.firstOrNull { it.id == pickedId }
+                        if (picked == null) {
+                            // Model genuinely disappeared (models is non-
+                            // empty, our id isn't in it). Fall back to
+                            // default and Toast.
+                            prefs.ankiModelId = -1L
+                            prefs.ankiModelName = ""
+                            android.widget.Toast.makeText(
+                                ctx, R.string.anki_card_type_stale_fallback,
+                                android.widget.Toast.LENGTH_SHORT,
+                            ).show()
+                            onSaved()
+                            return@launch
+                        }
+                        if (AnkiCardTypeMapper.isBasicShape(picked.fieldNames)) {
+                            // Basic-shape templates bypass the mapping
+                            // system entirely — dispatchSendToAnki routes
+                            // them through assembleBasicNote which
+                            // derives Front/Back from the send mode and
+                            // ignores any saved mapping. Don't open the
+                            // mapping dialog; explain instead.
+                            android.widget.Toast.makeText(
+                                ctx, R.string.anki_card_type_basic_no_mapping,
+                                android.widget.Toast.LENGTH_LONG,
+                            ).show()
+                            return@launch
+                        }
+                        val dialog = AnkiFieldMappingDialog.newInstance(
+                            modelId = picked.id,
+                            modelName = picked.name,
+                            fieldNames = picked.fieldNames,
+                            mode = CardMode.SENTENCE,
+                        )
+                        dialog.onSaved = { _, _ -> onSaved() }
+                        dialog.show(childFragmentManager, AnkiFieldMappingDialog.TAG)
+                    }
+                }
                 override fun getScrollY(): Int = settingsScrollView.scrollY
             }
         )
@@ -357,9 +425,35 @@ class SettingsBottomSheet : DialogFragment() {
 
     // ── Re-inflate (used for theme changes in dialog mode) ──────────────
 
+    /**
+     * Swaps the bottom-sheet's entire content view for a freshly-inflated
+     * [R.layout.dialog_settings]. Used for theme changes (MainActivity)
+     * and display hot-plug (this class's display listener).
+     *
+     * Skipped when:
+     *  - The fragment isn't attached or currentView has been detached.
+     *  - The parent is a FragmentContainerView. AndroidX's FCV refuses
+     *    raw View children — only Fragment-managed views. Showing any
+     *    child DialogFragment in this session (deck / card-type /
+     *    field-mapping / source picker) replaces the sheet's content
+     *    parent with an FCV, and that container persists for the rest
+     *    of the session — even after the dialog dismisses. So a
+     *    simple "is a child dialog currently shown" check isn't
+     *    enough; we have to look at what the parent actually is.
+     *
+     * The fresh layout is picked up next time Settings opens (its
+     * onViewCreated re-runs against a clean view tree).
+     */
     fun reinflateContent() {
+        if (!isAdded) return
         val old = currentView ?: return
         val parent = old.parent as? ViewGroup ?: return
+        if (parent is androidx.fragment.app.FragmentContainerView) {
+            android.util.Log.d(TAG,
+                "reinflateContent skipped — parent is FragmentContainerView " +
+                    "(a child DialogFragment was shown earlier this session)")
+            return
+        }
         val index = parent.indexOfChild(old)
         parent.removeView(old)
         val newView = LayoutInflater.from(requireActivity())

@@ -298,6 +298,90 @@ class Prefs(context: Context) {
         get() = sp.getString(KEY_ANKI_DECK_NAME, "") ?: ""
         set(v) = sp.edit().putString(KEY_ANKI_DECK_NAME, v).apply()
 
+    /**
+     * The user-selected AnkiDroid note type id. `-1L` (the default) is a
+     * sentinel meaning "use the legacy PlayTranslate v004 model" — that
+     * path bypasses the per-field mapping system entirely. Any other
+     * value means the structured path looks up
+     * [getAnkiFieldMapping] and writes per-field content sources.
+     */
+    var ankiModelId: Long
+        get() = sp.getLong(KEY_ANKI_MODEL_ID, -1L)
+        set(v) = sp.edit().putLong(KEY_ANKI_MODEL_ID, v).apply()
+
+    /** Display label for the chosen card type. Empty when using the
+     *  Default (PlayTranslate) sentinel. Refreshed by the section's
+     *  healing pass when the model is renamed in AnkiDroid. */
+    var ankiModelName: String
+        get() = sp.getString(KEY_ANKI_MODEL_NAME, "") ?: ""
+        set(v) = sp.edit().putString(KEY_ANKI_MODEL_NAME, v).apply()
+
+    /**
+     * Returns the saved field mapping for [modelId], or empty when no
+     * mapping has been configured. Empty also signals "user hasn't
+     * wired this card type up yet" — the send-time guard checks this
+     * before shipping a note.
+     */
+    fun getAnkiFieldMapping(modelId: Long): Map<String, com.playtranslate.ui.ContentSource> {
+        val raw = sp.getString(KEY_ANKI_FIELD_MAPPINGS, null) ?: return emptyMap()
+        return try {
+            val root = JSONObject(raw)
+            val obj = root.optJSONObject(modelId.toString()) ?: return emptyMap()
+            val result = mutableMapOf<String, com.playtranslate.ui.ContentSource>()
+            val keys = obj.keys()
+            while (keys.hasNext()) {
+                val k = keys.next()
+                val v = obj.optString(k)
+                val source = resolveContentSourceName(v)
+                result[k] = source
+            }
+            result
+        } catch (_: Exception) {
+            emptyMap()
+        }
+    }
+
+    /**
+     * Resolves a persisted [com.playtranslate.ui.ContentSource] enum-name
+     * string, including legacy names that were collapsed into the
+     * surviving sources. The two short-lived format-flavoured variants
+     * (`SENTENCE_ANKI_FURIGANA`, `SENTENCE_MIGAKU_FURIGANA`,
+     * `EXPRESSION_ANKI_FURIGANA`, `EXPRESSION_MIGAKU_FURIGANA`) all
+     * map to the bracketed `*_FURIGANA` source — they always carried
+     * furigana payload, so the plain `EXPRESSION`/`SENTENCE` source
+     * would lose information.
+     */
+    private fun resolveContentSourceName(name: String): com.playtranslate.ui.ContentSource {
+        val direct = com.playtranslate.ui.ContentSource.values().firstOrNull { it.name == name }
+        if (direct != null) return direct
+        return when (name) {
+            "SENTENCE_ANKI_FURIGANA", "SENTENCE_MIGAKU_FURIGANA"
+                -> com.playtranslate.ui.ContentSource.SENTENCE_FURIGANA
+            "EXPRESSION_ANKI_FURIGANA", "EXPRESSION_MIGAKU_FURIGANA"
+                -> com.playtranslate.ui.ContentSource.EXPRESSION_FURIGANA
+            else -> com.playtranslate.ui.ContentSource.NONE
+        }
+    }
+
+    /**
+     * Replaces the saved mapping for [modelId]. Pass an empty map to
+     * clear the entry (useful when healing detects a deleted model).
+     */
+    fun setAnkiFieldMapping(modelId: Long, mapping: Map<String, com.playtranslate.ui.ContentSource>) {
+        val raw = sp.getString(KEY_ANKI_FIELD_MAPPINGS, null)
+        val root = if (raw != null) {
+            try { JSONObject(raw) } catch (_: Exception) { JSONObject() }
+        } else JSONObject()
+        if (mapping.isEmpty()) {
+            root.remove(modelId.toString())
+        } else {
+            val obj = JSONObject()
+            mapping.forEach { (k, v) -> obj.put(k, v.name) }
+            root.put(modelId.toString(), obj)
+        }
+        sp.edit().putString(KEY_ANKI_FIELD_MAPPINGS, root.toString()).apply()
+    }
+
     var showTransliteration: Boolean
         get() = sp.getBoolean(KEY_SHOW_TRANSLITERATION, false)
         set(v) = sp.edit().putBoolean(KEY_SHOW_TRANSLITERATION, v).apply()
@@ -597,8 +681,11 @@ class Prefs(context: Context) {
         private const val KEY_SELECTED_REGION_ID = "selected_region_id"
         private const val KEY_SELECTED_REGION_BY_DISPLAY = "selected_region_by_display"
         private const val KEY_ICON_POSITION_BY_DISPLAY   = "icon_position_by_display"
-        private const val KEY_ANKI_DECK_ID   = "anki_deck_id"
-        private const val KEY_ANKI_DECK_NAME = "anki_deck_name"
+        private const val KEY_ANKI_DECK_ID         = "anki_deck_id"
+        private const val KEY_ANKI_DECK_NAME       = "anki_deck_name"
+        private const val KEY_ANKI_MODEL_ID        = "anki_model_id"
+        private const val KEY_ANKI_MODEL_NAME      = "anki_model_name"
+        private const val KEY_ANKI_FIELD_MAPPINGS  = "anki_field_mappings"   // JSON
         private const val KEY_REGION_LIST    = "region_list"
         private const val KEY_DEEPL_KEY      = "deepl_api_key"
         const val KEY_DEEPL_ENABLED          = "deepl_enabled"

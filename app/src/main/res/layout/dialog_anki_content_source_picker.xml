@@ -11,7 +11,6 @@
         android:layout_width="match_parent"
         android:layout_height="?attr/actionBarSize"
         android:background="?attr/ptBg"
-        app:title="Select Anki Deck"
         app:navigationIcon="@drawable/ic_arrow_back"
         app:navigationIconTint="?attr/ptText"
         app:titleTextColor="?attr/ptText" />
@@ -26,7 +25,7 @@
         android:layout_height="match_parent">
 
         <LinearLayout
-            android:id="@+id/deckListContainer"
+            android:id="@+id/contentSourceListContainer"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:orientation="vertical"

@@ -173,7 +173,6 @@
     <string name="anki_deck_row_empty">Pick a deck</string>
     <string name="anki_deck_label_format">Deck: %1$s</string>
     <string name="anki_save_button_label">Save Anki Card</string>
-    <string name="anki_group_deck">Anki Deck</string>
     <string name="anki_group_original">Original</string>
     <string name="anki_group_translation">Translation</string>
     <string name="anki_group_words">Words on card</string>
@@ -184,6 +183,92 @@
     <string name="anki_word_remove_content_description">Remove from card</string>
     <string name="anki_screenshot_remove_content_description">Remove screenshot</string>
     <string name="anki_pick_deck_title">Pick a deck</string>
+
+    <!-- Card Type picker + field mapping -->
+    <string name="anki_section_header">Anki</string>
+    <string name="anki_card_type_row_label">Card Type</string>
+    <string name="anki_card_type_row_empty">Default (PlayTranslate)</string>
+    <string name="anki_card_type_pick_title">Select Card Type</string>
+    <string name="anki_card_type_no_models">No card types found in AnkiDroid</string>
+    <string name="anki_card_type_stale_fallback">Card type no longer exists; using default</string>
+    <string name="anki_card_type_section_default">Default</string>
+    <string name="anki_card_type_section_custom">Card Types</string>
+    <string name="anki_card_type_edit_mapping_row_label">Edit field mapping</string>
+
+    <string name="anki_field_mapping_title">Configure %1$s</string>
+    <string name="anki_field_mapping_save">Save</string>
+    <string name="anki_field_mapping_unconfigured">Configure fields for this card type before sending</string>
+    <string name="anki_sort_field_empty">Map a value to “%1$s” — Anki uses this field to identify the note, and empty values cause duplicate-rejection errors on send.</string>
+    <string name="anki_models_unavailable">Couldn\'t reach AnkiDroid to look up card types. Try again in a moment.</string>
+    <string name="anki_card_type_basic_no_mapping">Basic card types don\'t need a field mapping — Front and Back are filled automatically based on whether you\'re saving a word or a sentence.</string>
+    <string name="anki_content_source_pick_title">Map \"%1$s\"</string>
+
+    <!-- ContentSource labels (dropdown options). Names persist in prefs,
+         so re-labeling here is safe but renaming enum constants is not.
+         The `*_desc` variants appear as the second-line subtitle in the
+         source picker; they include a concrete example of what PT
+         writes into the field. `<b>` markers are rendered via
+         HtmlCompat so the example shows what the user will actually
+         see on the card. -->
+    <string name="anki_content_none">Empty</string>
+    <string name="anki_content_none_desc">Sends nothing — the Anki field stays empty.</string>
+
+    <string name="anki_content_expression">Word / headword</string>
+    <string name="anki_content_expression_desc">The dictionary form of the highlighted word, no brackets. Example: 聞く</string>
+
+    <string name="anki_content_expression_furigana">Word / headword with furigana</string>
+    <string name="anki_content_expression_furigana_desc">The dictionary form with per-kanji furigana brackets, for fields rendered through \{\{furigana:\}\}. Example: 聞[き]く</string>
+
+    <string name="anki_content_reading">Word reading (kana)</string>
+    <string name="anki_content_reading_desc">The pure-kana reading of the highlighted word. Example: きく</string>
+
+    <string name="anki_content_sentence">Source sentence</string>
+    <string name="anki_content_sentence_desc">The source sentence with the highlighted word bolded. Example: 友達に<b>聞いた</b></string>
+
+    <string name="anki_content_sentence_furigana">Source sentence with furigana</string>
+    <string name="anki_content_sentence_furigana_desc">The source sentence with per-kanji furigana brackets, for fields rendered through \{\{furigana:\}\}. Example: 友達[ともだち]に<b>聞[き]いた</b></string>
+
+    <string name="anki_content_sentence_translation">Translated sentence</string>
+    <string name="anki_content_sentence_translation_desc">The translation of the source sentence in your selected target language.</string>
+
+    <string name="anki_content_definition">Definition</string>
+    <string name="anki_content_definition_desc">The dictionary definition(s) of the highlighted word, formatted as HTML.</string>
+
+    <string name="anki_content_examples">Example sentences</string>
+    <string name="anki_content_examples_desc">Tatoeba example sentences for the highlighted word, when available.</string>
+
+    <string name="anki_content_picture">Screenshot</string>
+    <string name="anki_content_picture_desc">A screenshot of the game screen, wrapped in &lt;img&gt; markup ready for a Picture / Screenshot field.</string>
+
+    <string name="anki_content_frequency">Frequency stars</string>
+    <string name="anki_content_frequency_desc">Frequency rating of the highlighted word as stars. Example: ★★★</string>
+
+    <string name="anki_content_part_of_speech">Part of speech</string>
+    <string name="anki_content_part_of_speech_desc">Part-of-speech tag for the highlighted word (word-mode cards only). Example: noun</string>
+
+    <string name="anki_content_words_table">Words list (sentence cards)</string>
+    <string name="anki_content_words_table_desc">A formatted list of every word PlayTranslate detected in the sentence, with readings and definitions.</string>
+
+    <!-- Card-type state flags. The "(x)" suffix discloses the literal
+         value the flag emits when it fires — visible reminder that
+         these go into Mustache section-gate fields, not regular
+         content fields. -->
+    <string name="anki_content_flag_vocabulary">Vocabulary card marker (x)</string>
+    <string name="anki_content_flag_vocabulary_desc">Emits \"x\" on word-mode sends only — use for template fields like Migaku\'s “Is Vocabulary Card”.</string>
+
+    <string name="anki_content_flag_sentence">Sentence card marker (x)</string>
+    <string name="anki_content_flag_sentence_desc">Emits \"x\" on sentence-mode sends only — use for template fields like Lapis\'s or JPMN\'s “IsSentenceCard”.</string>
+
+    <string name="anki_content_flag_targeted_sentence">Targeted sentence card marker (x)</string>
+    <string name="anki_content_flag_targeted_sentence_desc">Emits \"x\" on sentence sends that have a highlighted target word — use for JPMN\'s “IsTargetedSentenceCard”.</string>
+
+    <string name="anki_content_flag_always_on">Always-on marker (x)</string>
+    <string name="anki_content_flag_always_on_desc">Always emits \"x\". Use for template fields you want unconditionally enabled.</string>
+
+    <!-- Section headers for the source picker. -->
+    <string name="anki_content_section_content">Content</string>
+    <string name="anki_content_section_flag">Card type flag</string>
+
     <string name="cd_back">Back</string>
 
     <!-- Appearance — theme mode + accent picker -->
