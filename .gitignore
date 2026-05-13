@@ -1,6 +1,7 @@
 # Local build config (may contain API keys)
 local.properties
-
+.specify
+specs
 # Build outputs
 build/
 app/build/

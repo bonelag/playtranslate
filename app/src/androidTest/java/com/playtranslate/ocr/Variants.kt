@@ -1,7 +1,9 @@
 package com.playtranslate.ocr
 
 import com.playtranslate.InvertMode
+import com.playtranslate.LatinOcrPreprocessing
 import com.playtranslate.OcrPreprocessingRecipe
+import com.playtranslate.VietnameseHarshOcrPreprocessing
 
 /**
  * Catalog of preprocessing recipes the golden-set sweep evaluates. Add or
@@ -30,6 +32,9 @@ internal object Variants {
         // directly. Useful as a floor — if a preprocessing recipe is worse
         // than raw on a screen, preprocessing is hurting more than helping.
         NamedRecipe("raw", OcrPreprocessingRecipe.Raw),
+
+        NamedRecipe("latin-current", LatinOcrPreprocessing),
+        NamedRecipe("vi-harsh", VietnameseHarshOcrPreprocessing),
 
         // Production recipe (matches OcrPreprocessingRecipe.Default).
         // Sigmoid k=7 with auto-invert — chosen after the harness measured it

@@ -146,7 +146,7 @@ class OcrGoldenSetTest {
                     val result = runBlocking {
                         OcrManager.instance.recognise(
                             bitmap = bitmap,
-                            sourceLang = "ja",
+                            sourceLang = case.sourceLang,
                             screenshotWidth = bitmap.width,
                             recipe = recipe
                         )
@@ -192,7 +192,8 @@ class OcrGoldenSetTest {
             return
         }
         val failures = mutableListOf<String>()
-        for (case in cases) {
+        val japaneseCases = cases.filter { it.sourceLang == "ja" }
+        for (case in japaneseCases) {
             val bitmap = loadBitmap(testCtx, "$ASSET_DIR/${case.imageAsset}")
             try {
                 val result = runBlocking {
@@ -214,7 +215,7 @@ class OcrGoldenSetTest {
         }
         if (failures.isNotEmpty()) {
             org.junit.Assert.fail(
-                "Production recipe dropped expected characters on ${failures.size}/${cases.size} screen(s):\n" +
+                "Production recipe dropped expected characters on ${failures.size}/${japaneseCases.size} screen(s):\n" +
                     failures.joinToString("\n  ", prefix = "  ")
             )
         }
@@ -222,7 +223,12 @@ class OcrGoldenSetTest {
 
     // ── Loaders ──────────────────────────────────────────────────────────
 
-    private data class GoldenCase(val id: String, val imageAsset: String, val expected: String)
+    private data class GoldenCase(
+        val id: String,
+        val imageAsset: String,
+        val expected: String,
+        val sourceLang: String,
+    )
 
     private fun loadGoldenCases(context: Context): List<GoldenCase> {
         val files = context.assets.list(ASSET_DIR).orEmpty().toSet()
@@ -235,7 +241,12 @@ class OcrGoldenSetTest {
                 return@mapNotNull null
             }
             val expected = context.assets.open("$ASSET_DIR/$txt").bufferedReader().use { it.readText() }
-            GoldenCase(basename, png, expected)
+            val sourceLang = when {
+                basename.startsWith("vi-", ignoreCase = true) -> "vi"
+                basename.startsWith("vi_", ignoreCase = true) -> "vi"
+                else -> "ja"
+            }
+            GoldenCase(basename, png, expected, sourceLang)
         }
     }
 

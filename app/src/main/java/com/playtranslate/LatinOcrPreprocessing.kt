@@ -33,7 +33,142 @@ import android.graphics.Paint
  * single-line recipe-selection call in [OcrManager.recognise] and
  * [OcrManager.recogniseWithPositions] so the diff stays small.
  */
-object VietnameseOcrPreprocessing : OcrPreprocessingRecipe {
+object VietnameseHarshOcrPreprocessing : OcrPreprocessingRecipe {
+    private const val TARGET_MIN_DIM = 1700
+    private const val MAX_DIM = 3800
+    private const val MAX_UPSCALE = 4.5f
+    private const val SIGMOID_K = 5f
+
+    override fun apply(bitmap: Bitmap, isDarkBackground: Boolean): Bitmap {
+        val (scale, w, h) = upscaleParams(bitmap)
+        val grayMatrix = ColorMatrix().apply { setSaturation(0f) }
+        val paint = Paint(Paint.FILTER_BITMAP_FLAG).apply {
+            colorFilter = ColorMatrixColorFilter(grayMatrix)
+        }
+        val out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        Canvas(out).apply {
+            if (scale != 1f) this.scale(scale, scale)
+            drawBitmap(bitmap, 0f, 0f, paint)
+        }
+
+        flattenLocalBackground(out)
+        val invert = estimateLightTextOnDark(out)
+        val baseLut = buildSigmoidLut(SIGMOID_K)
+        val lut = if (invert) IntArray(256) { 255 - baseLut[it] } else baseLut
+        applyGrayLut(out, lut)
+
+        return out
+    }
+
+    private fun upscaleParams(bitmap: Bitmap): Triple<Float, Int, Int> {
+        val minDim = minOf(bitmap.width, bitmap.height)
+        var scale = if (minDim < TARGET_MIN_DIM)
+            (TARGET_MIN_DIM.toFloat() / minDim).coerceAtMost(MAX_UPSCALE)
+        else 1f
+        if (bitmap.width * scale > MAX_DIM || bitmap.height * scale > MAX_DIM) {
+            scale = minOf(
+                MAX_DIM.toFloat() / bitmap.width,
+                MAX_DIM.toFloat() / bitmap.height
+            )
+        }
+        return Triple(scale, (bitmap.width * scale).toInt(), (bitmap.height * scale).toInt())
+    }
+
+    private fun flattenLocalBackground(bitmap: Bitmap) {
+        val width = bitmap.width
+        val height = bitmap.height
+        val pixels = IntArray(width * height)
+        bitmap.getPixels(pixels, 0, width, 0, 0, width, height)
+        val integral = LongArray((width + 1) * (height + 1))
+        for (y in 0 until height) {
+            var rowSum = 0L
+            val row = y * width
+            val integralRow = (y + 1) * (width + 1)
+            val prevIntegralRow = y * (width + 1)
+            for (x in 0 until width) {
+                rowSum += (pixels[row + x] and 0xff).toLong()
+                integral[integralRow + x + 1] = integral[prevIntegralRow + x + 1] + rowSum
+            }
+        }
+
+        val radius = (minOf(width, height) / 18).coerceIn(18, 96)
+        val outPixels = IntArray(width * height)
+        for (y in 0 until height) {
+            val y0 = (y - radius).coerceAtLeast(0)
+            val y1 = (y + radius).coerceAtMost(height - 1)
+            for (x in 0 until width) {
+                val x0 = (x - radius).coerceAtLeast(0)
+                val x1 = (x + radius).coerceAtMost(width - 1)
+                val area = (x1 - x0 + 1) * (y1 - y0 + 1)
+                val sum = integral[(y1 + 1) * (width + 1) + x1 + 1] -
+                    integral[y0 * (width + 1) + x1 + 1] -
+                    integral[(y1 + 1) * (width + 1) + x0] +
+                    integral[y0 * (width + 1) + x0]
+                val localMean = (sum / area).toInt()
+                val v = (128 + ((pixels[y * width + x] and 0xff) - localMean) * 3 / 2).coerceIn(0, 255)
+                outPixels[y * width + x] = (0xff shl 24) or (v shl 16) or (v shl 8) or v
+            }
+        }
+        bitmap.setPixels(outPixels, 0, width, 0, 0, width, height)
+    }
+
+    private fun estimateLightTextOnDark(bitmap: Bitmap): Boolean {
+        val width = bitmap.width
+        val height = bitmap.height
+        val hist = IntArray(256)
+        val step = (minOf(width, height) / 96).coerceAtLeast(1)
+        var count = 0
+        var y = 0
+        while (y < height) {
+            var x = 0
+            while (x < width) {
+                hist[bitmap.getPixel(x, y) and 0xff]++
+                count++
+                x += step
+            }
+            y += step
+        }
+        fun percentile(p: Float): Int {
+            val target = (count * p).toInt()
+            var acc = 0
+            for (i in hist.indices) {
+                acc += hist[i]
+                if (acc >= target) return i
+            }
+            return 255
+        }
+        val p10 = percentile(0.10f)
+        val p50 = percentile(0.50f)
+        val p90 = percentile(0.90f)
+        return p50 < 128 && p90 - p50 > p50 - p10
+    }
+
+    private fun sharpenWeak(src: Bitmap): Bitmap {
+        val width = src.width
+        val height = src.height
+        val pixels = IntArray(width * height)
+        src.getPixels(pixels, 0, width, 0, 0, width, height)
+        val outPixels = pixels.copyOf()
+        for (y in 1 until height - 1) {
+            var p = y * width + 1
+            for (x in 1 until width - 1) {
+                val cV = pixels[p] and 0xff
+                val tV = pixels[p - width] and 0xff
+                val bV = pixels[p + width] and 0xff
+                val lV = pixels[p - 1] and 0xff
+                val rV = pixels[p + 1] and 0xff
+                val v = ((10 * cV - tV - bV - lV - rV) / 6).coerceIn(0, 255)
+                outPixels[p] = (0xff shl 24) or (v shl 16) or (v shl 8) or v
+                p++
+            }
+        }
+        val result = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+        result.setPixels(outPixels, 0, width, 0, 0, width, height)
+        return result
+    }
+}
+
+object LatinOcrPreprocessing : OcrPreprocessingRecipe {
 
     // ── Tuning constants ────────────────────────────────────────────────
 
@@ -167,7 +302,7 @@ object VietnameseOcrPreprocessing : OcrPreprocessingRecipe {
 // ── Language-based recipe selection ─────────────────────────────────────
 
 /** Languages that benefit from the diacritic-optimized preprocessing path. */
-private val LATIN_DIACRITIC_LANGS = setOf(
+private val LATIN_OCR_LANGS = setOf(
     "vi", "en", "fr", "es", "pt", "tr", "ro", "id",
     "it", "de", "nl", "sv", "da", "no", "fi", "ca",
     "hu", "cs", "sk", "sl", "hr", "sq", "lt", "lv",
@@ -178,14 +313,14 @@ private val LATIN_DIACRITIC_LANGS = setOf(
 /**
  * Returns the optimal [OcrPreprocessingRecipe] for the given [sourceLang]
  * (ML Kit translation code). Latin-script languages with diacritics get
- * [VietnameseOcrPreprocessing]; all others fall back to the default recipe.
+ * [LatinOcrPreprocessing]; all others fall back to the default recipe.
  *
  * Called from [OcrManager.recognise] and [OcrManager.recogniseWithPositions].
  */
 fun selectOcrRecipe(sourceLang: String): OcrPreprocessingRecipe {
-    return if (sourceLang in LATIN_DIACRITIC_LANGS) {
-        VietnameseOcrPreprocessing
-    } else {
-        OcrPreprocessingRecipe.Default
+    return when {
+        sourceLang == "vi" -> VietnameseHarshOcrPreprocessing
+        sourceLang in LATIN_OCR_LANGS -> LatinOcrPreprocessing
+        else -> OcrPreprocessingRecipe.Default
     }
 }
