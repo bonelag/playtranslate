@@ -1363,6 +1363,7 @@ class CaptureService : Service() {
             activeRegionForDisplay(displayId),
             sourceLang,
             ocrManager,
+            getStatusBarHeightForDisplay(displayId),
             PlayTranslateAccessibilityService.instance?.getFloatingIconRect(displayId),
             Prefs(this).compactOverlayIcon
         )

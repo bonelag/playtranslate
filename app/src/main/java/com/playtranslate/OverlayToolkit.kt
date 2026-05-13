@@ -485,6 +485,7 @@ object OverlayToolkit {
         activeRegion: RegionEntry,
         sourceLang: String,
         ocrManager: OcrManager,
+        statusBarHeight: Int,
         iconRect: Rect?,
         compactIcon: Boolean
     ): OcrPipelineResult? {
