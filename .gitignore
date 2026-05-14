@@ -2,6 +2,7 @@
 local.properties
 .specify
 specs
+release.jks
 # Build outputs
 build/
 app/build/

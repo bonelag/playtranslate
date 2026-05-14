@@ -1,0 +1,60 @@
+name: Build and Release APK
+
+on:
+  workflow_dispatch:
+
+env:
+  KEY_ALIAS: "bonelag"
+  KEY_PASSWORD: "bonelag"
+  STORE_PASSWORD: "bonelag"
+  KEYSTORE_BASE64: "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"
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '17'
+
+      - name: Make gradlew executable
+        run: chmod +x ./gradlew
+
+      - name: Extract version name
+        id: get_version
+        run: |
+          VERSION=$(grep -oP 'versionName\s*=\s*"\K[^"]+' app/build.gradle.kts)
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "tag=v$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Remove default debug signing config for release
+        run: |
+          sed -i 's/signingConfig = signingConfigs.getByName("debug")//g' app/build.gradle.kts
+
+      - name: Build Unsigned APK
+        run: ./gradlew assembleRelease
+
+      - name: Sign APK
+        run: |
+          echo "$KEYSTORE_BASE64" | base64 --decode > release.jks
+          BUILD_TOOLS_VERSION=$(ls $ANDROID_HOME/build-tools | sort -rn | head -1)
+          $ANDROID_HOME/build-tools/$BUILD_TOOLS_VERSION/apksigner sign --ks release.jks --ks-key-alias "$KEY_ALIAS" --ks-pass pass:"$STORE_PASSWORD" --key-pass pass:"$KEY_PASSWORD" --out app/build/outputs/apk/release/PlayTranslate-${{ steps.get_version.outputs.tag }}.apk app/build/outputs/apk/release/app-release-unsigned.apk
+
+      - name: Upload Release
+        uses: ncipollo/release-action@v1
+        with:
+          artifacts: "app/build/outputs/apk/release/PlayTranslate-${{ steps.get_version.outputs.tag }}.apk"
+          tag: ${{ steps.get_version.outputs.tag }}
+          name: "PlayTranslate ${{ steps.get_version.outputs.tag }}"
+          allowUpdates: true
+          replacesArtifacts: true
+          token: ${{ secrets.GITHUB_TOKEN }}
