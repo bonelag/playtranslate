@@ -97,8 +97,20 @@ class SettingsRenderer(
          *  Implementer shows the download progress dialog, runs the shared
          *  [com.playtranslate.translation.llm.OnDeviceLlmDownloader] configured
          *  for TG, and on success flips [Prefs.translateGemmaEnabled] = true
-         *  (which fires the pref-change listener → status refresh + reconcile). */
+         *  (which fires the pref-change listener → status refresh + reconcile).
+         *
+         *  Implementer is responsible for running the pre-download availMem
+         *  gate (OverlayAlert with Check-again / Cancel) before kicking off
+         *  the actual download. */
         fun startTranslateGemmaDownload()
+
+        /** Tap on the TranslateGemma row when the model is already downloaded
+         *  but the switch is currently off. Implementer runs the pre-toggle
+         *  availMem gate (OverlayAlert with Check-again / Delete model / Cancel)
+         *  and on success flips [Prefs.translateGemmaEnabled] = true. The
+         *  renderer optimistically flips the switch on; the Cancel / Delete
+         *  branches must revert it via [refreshTranslategemmaSwitch]. */
+        fun enableInstalledTranslateGemma()
 
         /** Tap on the TranslateGemma row when it's currently enabled.
          *  Implementer shows the 3-option AlertDialog (Disable only / Delete
@@ -111,6 +123,11 @@ class SettingsRenderer(
          *  [startTranslateGemmaDownload] for the Qwen-configured
          *  [com.playtranslate.translation.llm.OnDeviceLlmDownloader]. */
         fun startQwenDownload()
+
+        /** Tap on the Qwen row when the model is already downloaded but the
+         *  switch is currently off. Mirrors [enableInstalledTranslateGemma]
+         *  for Qwen; revert via [refreshQwenSwitch] on Cancel / Delete. */
+        fun enableInstalledQwen()
 
         /** Tap on the Qwen row when it's currently enabled. Mirrors
          *  [showTranslateGemmaDisableDialog] for Qwen — the Cancel branch must
@@ -145,6 +162,9 @@ class SettingsRenderer(
     private val rowCompactIcon: View = root.findViewById(R.id.rowCompactIcon)
     private val switchCompactIcon: MaterialSwitch = rowCompactIcon.findViewById(R.id.switchRowToggle)
     private val dividerCompactIcon: View = root.findViewById(R.id.dividerCompactIcon)
+
+    private val rowAddQuickTile: View = root.findViewById(R.id.rowAddQuickTile)
+    private val dividerAddQuickTile: View = root.findViewById(R.id.dividerAddQuickTile)
 
     private val overlayModeSection: View = root.findViewById(R.id.overlayModeSection)
     private val overlayModeToggleContainer: FrameLayout = root.findViewById(R.id.overlayModeToggleContainer)
@@ -360,14 +380,61 @@ class SettingsRenderer(
         }
         rowCompactIcon.setOnClickListener { switchCompactIcon.toggle() }
 
-        // Show compact row only when overlay icon is on
-        updateCompactIconVisibility()
+        setupAddQuickTileRow()
     }
 
     private fun updateCompactIconVisibility() {
         val showCompact = prefs.showOverlayIcon && PlayTranslateAccessibilityService.isEnabled(ctx)
         rowCompactIcon.visibility = if (showCompact) View.VISIBLE else View.GONE
         dividerCompactIcon.visibility = if (showCompact) View.VISIBLE else View.GONE
+    }
+
+    /** "Add Quick Settings tile" row — only present on API 33+ (where
+     *  [android.app.StatusBarManager.requestAddTileService] exists) and only
+     *  while the user hasn't already confirmed adding the tile (tracked in
+     *  [Prefs.quickTileAdded] from the request callback). Pre-Tiramisu and
+     *  post-add the row stays hidden, including its leading divider, so the
+     *  Minimize Icon row remains the last entry in the card. */
+    private fun setupAddQuickTileRow() {
+        val apiSupported = android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU
+        val visible = apiSupported && !prefs.quickTileAdded
+        rowAddQuickTile.visibility = if (visible) View.VISIBLE else View.GONE
+        dividerAddQuickTile.visibility = if (visible) View.VISIBLE else View.GONE
+        if (!visible) return
+
+        rowAddQuickTile.findViewById<TextView>(R.id.tvRowTitle).text =
+            "Add Quick Settings tile"
+        val subtitle = rowAddQuickTile.findViewById<TextView>(R.id.tvRowSubtitle)
+        subtitle.text = "Toggle PlayTranslate from your status bar"
+        subtitle.visibility = View.VISIBLE
+        rowAddQuickTile.findViewById<ImageView>(R.id.ivRowIcon)
+            ?.setImageResource(R.drawable.ic_add)
+        rowAddQuickTile.setOnClickListener { requestAddQuickTile() }
+    }
+
+    @androidx.annotation.RequiresApi(android.os.Build.VERSION_CODES.TIRAMISU)
+    private fun requestAddQuickTile() {
+        val statusBarManager = ctx.getSystemService(android.app.StatusBarManager::class.java)
+            ?: return
+        val component = android.content.ComponentName(ctx, PlayTranslateTileService::class.java)
+        val icon = android.graphics.drawable.Icon.createWithResource(ctx, R.drawable.ic_qs_tile)
+        val label = ctx.getString(R.string.tile_label)
+        statusBarManager.requestAddTileService(
+            component,
+            label,
+            icon,
+            ContextCompat.getMainExecutor(ctx),
+        ) { result ->
+            when (result) {
+                android.app.StatusBarManager.TILE_ADD_REQUEST_RESULT_TILE_ADDED,
+                android.app.StatusBarManager.TILE_ADD_REQUEST_RESULT_TILE_ALREADY_ADDED -> {
+                    prefs.quickTileAdded = true
+                    setupAddQuickTileRow()
+                }
+                // TILE_NOT_ADDED / error codes: keep the row visible so the
+                // user can try again.
+            }
+        }
     }
 
     /** Tints the on-screen-controls card when the overlay switch is off so
@@ -838,7 +905,7 @@ class SettingsRenderer(
             BackendQuality.Bad    -> ctx.getString(R.string.tr_service_quality_bad)    to Tone.Danger
             BackendQuality.Okay   -> ctx.getString(R.string.tr_service_quality_okay)   to null
             BackendQuality.Good   -> ctx.getString(R.string.tr_service_quality_good)   to null
-            BackendQuality.Better -> ctx.getString(R.string.tr_service_quality_better) to Tone.Accent
+            BackendQuality.Better -> ctx.getString(R.string.tr_service_quality_better) to null
         }
         appendMaybeColored(builder, qualityText, qualityTone)
 
@@ -847,7 +914,7 @@ class SettingsRenderer(
             val (speedText, speedTone) = when (speed) {
                 BackendSpeed.VerySlow -> ctx.getString(R.string.tr_service_speed_very_slow) to Tone.Danger
                 BackendSpeed.Slow     -> ctx.getString(R.string.tr_service_speed_slow)      to Tone.Warning
-                BackendSpeed.Fast     -> ctx.getString(R.string.tr_service_speed_fast)      to Tone.Accent
+                BackendSpeed.Fast     -> ctx.getString(R.string.tr_service_speed_fast)      to null
             }
             appendMaybeColored(builder, speedText, speedTone)
         }
@@ -1060,12 +1127,15 @@ class SettingsRenderer(
                 val installed = com.playtranslate.translation.translategemma
                     .TranslateGemmaModel.isInstalled(ctx)
                 if (installed) {
-                    // Already downloaded; just enable.
-                    prefs.translateGemmaEnabled = true
+                    // Optimistic flip; the bottom sheet runs the availMem gate
+                    // and either flips the pref on success or reverts via
+                    // refreshTranslategemmaSwitch() on Cancel / Delete.
                     switch.isChecked = true
+                    callbacks.enableInstalledTranslateGemma()
                 } else {
-                    // Need to download. The download flow flips the pref on success
-                    // (which fires the SP listener → switch refresh).
+                    // Need to download. The download flow runs the availMem
+                    // gate, then flips the pref on success (which fires the SP
+                    // listener → switch refresh).
                     callbacks.startTranslateGemmaDownload()
                 }
             }
@@ -1096,8 +1166,10 @@ class SettingsRenderer(
                 val installed = com.playtranslate.translation.qwen
                     .QwenModel.isInstalled(ctx)
                 if (installed) {
-                    prefs.qwenEnabled = true
+                    // Optimistic flip; the bottom sheet runs the availMem gate
+                    // and either flips the pref or reverts via refreshQwenSwitch().
                     switch.isChecked = true
+                    callbacks.enableInstalledQwen()
                 } else {
                     callbacks.startQwenDownload()
                 }

@@ -494,79 +494,34 @@ class OcrManager private constructor() {
         return hGroups + vGroups
     }
 
-    /** Groups pre-sorted lines using orientation-aware proximity rules. */
+    /** Groups pre-sorted lines using orientation-aware proximity rules.
+     *  Thin adapter around [groupBoxesOnePass]: extracts boxes + effective
+     *  align-lefts from each [Text.Line], runs the index-level grouping, and
+     *  remaps groups back to Text.Line lists. The algorithm lives on the
+     *  companion so unit tests can exercise it with synthetic rects without
+     *  fabricating ML Kit objects. */
     private fun groupLinesOnePass(
         sortedLines: List<Text.Line>,
         orientation: TextOrientation
     ): List<List<Text.Line>> {
         if (sortedLines.isEmpty()) return emptyList()
-        val logDecisions = debugLogGroupingEnabled
-        val groups = mutableListOf<MutableList<Text.Line>>()
-        for (line in sortedLines) {
-            val lineBox = line.boundingBox ?: continue
-            val lastGroup = groups.lastOrNull()
-            if (lastGroup != null) {
-                val prevBox = lastGroup.last().boundingBox
-                // Use the *union* of all prior line edges across the
-                // wrap axis (left+right for horizontal, top+bottom for
-                // vertical) so the group's center stays on the paragraph
-                // axis as line widths vary. Mixing a union edge with the
-                // last line's opposite edge pulled groupRect.centerX/Y off
-                // the real axis and broke center-aligned wrapped text.
-                val groupRect: Rect
-                val groupAlignLeft: Int?
-                val candidateAlignLeft: Int?
-                if (orientation == TextOrientation.VERTICAL) {
-                    val groupTop = lastGroup.mapNotNull { it.boundingBox?.top }.minOrNull() ?: 0
-                    val groupBottom = lastGroup.mapNotNull { it.boundingBox?.bottom }.maxOrNull() ?: 0
-                    groupRect = Rect(prevBox?.left ?: 0, groupTop, prevBox?.right ?: 0, groupBottom)
-                    groupAlignLeft = null
-                    candidateAlignLeft = null
-                } else {
-                    val groupLeft = lastGroup.mapNotNull { it.boundingBox?.left }.minOrNull() ?: 0
-                    val groupRight = lastGroup.mapNotNull { it.boundingBox?.right }.maxOrNull() ?: 0
-                    groupRect = Rect(groupLeft, prevBox?.top ?: 0, groupRight, prevBox?.bottom ?: 0)
-                    // Per-line effective lefts compensate for hanging
-                    // punctuation outdent (e.g. 「, ·) — see
-                    // [effectiveAlignLeft]. Used only by the leftAligned
-                    // sub-check; centerX still uses groupRect's actual
-                    // edges so center-aligned wrapped text is unaffected.
-                    groupAlignLeft = lastGroup.mapNotNull { effectiveAlignLeft(it) }.minOrNull()
-                    candidateAlignLeft = effectiveAlignLeft(line)
-                }
-                // wouldGroup is the canonical predicate — used unconditionally
-                // so the debug-log toggle is purely observational. groupDecision
-                // is called only to produce a reason string for the log; if it
-                // ever diverges from wouldGroup the log wording becomes
-                // misleading but grouping behavior stays consistent.
-                val merged = wouldGroup(groupRect, lineBox, orientation, groupAlignLeft, candidateAlignLeft)
-                if (logDecisions) {
-                    val decision = groupDecision(groupRect, lineBox, orientation, groupAlignLeft, candidateAlignLeft)
-                    val prevSnippet = lastGroup.last().text.take(24).replace('\n', ' ')
-                    val candSnippet = line.text.take(24).replace('\n', ' ')
-                    val verdict = if (merged) "MERGE" else "SPLIT"
-                    android.util.Log.d(
-                        "DetectionLog",
-                        "[group:${orientation.name[0]}] $verdict prev=${rectStr(groupRect)} \"$prevSnippet\" cand=${rectStr(lineBox)} \"$candSnippet\" :: ${decision.reason}"
-                    )
-                }
-                if (merged) {
-                    lastGroup += line
-                    continue
-                }
-            } else if (logDecisions) {
-                val candSnippet = line.text.take(24).replace('\n', ' ')
-                android.util.Log.d(
-                    "DetectionLog",
-                    "[group:${orientation.name[0]}] FIRST cand=${rectStr(lineBox)} \"$candSnippet\""
-                )
-            }
-            groups += mutableListOf(line)
+        // Drop lines without a bounding box up front so the index-level
+        // function can assume each input has one. Matches the pre-extraction
+        // behavior, where `line.boundingBox ?: continue` skipped them.
+        val kept = sortedLines.filter { it.boundingBox != null }
+        if (kept.isEmpty()) return emptyList()
+        val boxes = kept.map { it.boundingBox!! }
+        val alignLefts: List<Int?> = if (orientation == TextOrientation.HORIZONTAL) {
+            kept.map { effectiveAlignLeft(it) }
+        } else {
+            List(kept.size) { null }
         }
-        return groups
+        val texts = if (debugLogGroupingEnabled) kept.map { it.text } else null
+        val indexGroups = groupBoxesOnePass(
+            boxes, alignLefts, orientation, debugLogGroupingEnabled, texts
+        )
+        return indexGroups.map { idxs -> idxs.map { kept[it] } }
     }
-
-    private fun rectStr(r: Rect): String = "[L=${r.left} T=${r.top} R=${r.right} B=${r.bottom}]"
 
     private data class SplitGroup(
         val lines: List<Text.Line>,
@@ -761,23 +716,33 @@ class OcrManager private constructor() {
 
         /**
          * Which question is the caller asking? Two semantically distinct uses
-         * of "do these rects belong together," each needing a different rule
-         * for the intersection short-circuit.
+         * of "do these rects belong together," each tuned for its own question.
          *
          * [SAME_PASS_LAYOUT] — clustering rects produced by a single OCR pass
          * into paragraphs. ML Kit per-line detection has already separated
          * these as distinct lines, so any pixel intersection is incidental
          * (ascender/descender slivers, glyph-box padding) and is NOT evidence
          * of grouping. Decisions rest on inline (same-line gap) and block
-         * (next-line + alignment + height-match) checks alone.
+         * (next-line + alignment + height-match) checks alone, with the
+         * strict block-axis thresholds (`blockGapMultiplier`=0.8,
+         * `sizeRatioCap`=0.30) that keep typographically distinct elements
+         * (headings vs body, captions vs body) from collapsing into one
+         * paragraph.
          *
          * [CROSS_FRAME_SAME_REGION] — matching a fresh OCR rect against a rect
          * from a previous frame's overlay state, to decide if they represent
          * the same on-screen region. Stable regions may shift a few pixels or
          * be partially occluded between frames, so substantial rect overlap
-         * is evidence of same-region identity even when heights diverge.
-         * Sliver-only overlaps still fall through to the layout checks — see
-         * [hasSubstantialOverlap].
+         * is evidence of same-region identity even when heights diverge —
+         * see [hasSubstantialOverlap]. Sliver-only overlaps fall through to
+         * the layout checks, which run with looser thresholds
+         * (`blockGapMultiplier`=0.9, `sizeRatioCap`=0.50) — body paragraphs
+         * whose wraps differ in glyph-tight bbox height across cycles
+         * (hiragana-dominant trailing line vs kanji-dominant body line,
+         * digit-only short last line, etc.) shouldn't get split back apart
+         * across cycles when they grouped fine within a frame. The 0.50
+         * height cap still cleanly rejects heading-scale (≥1.5×) elements,
+         * which is the real "different element" guard the gate is here for.
          */
         enum class GroupingMode { SAME_PASS_LAYOUT, CROSS_FRAME_SAME_REGION }
 
@@ -906,6 +871,35 @@ class OcrManager private constructor() {
         }
 
         /**
+         * Block-axis gap multiplier used by the block check in [wouldGroup] /
+         * [groupDecision]. Cross-frame is looser (0.9× vs 0.8×) because it's
+         * asking "is this fresh OCR in the same on-screen region as a prior-
+         * frame overlay?" — body paragraphs with generous leading and short
+         * trailing lines sit right at the 0.8× cliff and shouldn't get split
+         * back apart across cycles when they grouped fine within a frame.
+         */
+        private fun blockGapMultiplier(mode: GroupingMode): Float =
+            if (mode == GroupingMode.CROSS_FRAME_SAME_REGION) 0.9f else 0.8f
+
+        /**
+         * Cap on `(hi - lo) / lo` for the inline-axis size ratio (height for
+         * horizontal text, width for vertical). The compared values are
+         * per-line (per-column for vertical) — see [wouldGroup]'s
+         * `aLineCount` / `bLineCount` — so a multi-line group's stacked
+         * extent doesn't trip this gate; only an actual per-line scale
+         * difference does.
+         *
+         * Cross-frame uses 0.50 vs 0.30 same-pass to absorb ML Kit's
+         * glyph-tight bbox variance — hiragana-dominant body wraps can be
+         * 30–40% shorter than kanji-dominant lines of the same paragraph.
+         * The 0.50 ceiling still cleanly rejects heading-scale (≥1.5×)
+         * elements, which is the real "different element" guard the gate
+         * is here for.
+         */
+        private fun sizeRatioCap(mode: GroupingMode): Double =
+            if (mode == GroupingMode.CROSS_FRAME_SAME_REGION) 0.50 else 0.30
+
+        /**
          * Would two rects be grouped as the same text block?
          * Up to three checks: intersection (cross-frame only), inline (same
          * line/column), block (next line/column in paragraph with alignment).
@@ -928,6 +922,19 @@ class OcrManager private constructor() {
          * When null (default), the rect's own [Rect.left] is used, preserving
          * legacy behavior for all bare-rect callers (e.g. [Classification]).
          *
+         * [aLineCount] / [bLineCount] tell the predicate how many text lines
+         * each rect spans across the wrap axis (line count for horizontal,
+         * column count for vertical). When passed, the reference dimension
+         * (refH/refW) is computed as the rect's per-line height (or per-column
+         * width) instead of its raw extent — so a 2-line group's height is
+         * normalized to a single-line equivalent before gap/align/ratio
+         * thresholds apply. Default 1 preserves legacy behavior for callers
+         * comparing single-line ML Kit lines or [groupBoxesOnePass]'s
+         * last-line-only `groupRect`. Cross-frame callers in [Classification]
+         * pass the cached/fresh group's line counts so a 1-line cached box
+         * and a 2-line fresh OCR group don't fail the size-ratio cap on
+         * stacked-line height alone.
+         *
          * Hot path: called from [Classification] for every live-overlay /
          * pinhole-detection pair, so the boolean version intentionally
          * skips the reason-string allocation that [groupDecision] does. The
@@ -942,11 +949,22 @@ class OcrManager private constructor() {
             aAlignLeft: Int? = null,
             bAlignLeft: Int? = null,
             mode: GroupingMode = GroupingMode.SAME_PASS_LAYOUT,
+            aLineCount: Int = 1,
+            bLineCount: Int = 1,
         ): Boolean {
             if (orientation == TextOrientation.VERTICAL) {
-                return wouldGroupVertical(a, b, mode)
+                return wouldGroupVertical(a, b, mode, aLineCount, bLineCount)
             }
-            val refH = maxOf(a.height(), b.height())
+            val aLn = aLineCount.coerceAtLeast(1)
+            val bLn = bLineCount.coerceAtLeast(1)
+            // Coerce normalized heights to at least 1 when the input rect is
+            // positive — integer division can otherwise collapse a positive
+            // multi-line rect's per-line height to 0, which would trip the
+            // `lo <= 0 → compatible` branch below and silently bypass the
+            // size-ratio guard.
+            val aH = if (a.height() <= 0) 0 else maxOf(a.height() / aLn, 1)
+            val bH = if (b.height() <= 0) 0 else maxOf(b.height() / bLn, 1)
+            val refH = maxOf(aH, bH)
             if (refH <= 0) return false
             if (mode == GroupingMode.CROSS_FRAME_SAME_REGION && hasSubstantialOverlap(a, b)) return true
 
@@ -956,29 +974,56 @@ class OcrManager private constructor() {
                 val dx = if (a.right <= b.left) b.left - a.right
                          else if (b.right <= a.left) a.left - b.right
                          else 0
-                if (dx < (refH * 1.5f).toInt()) return true
+                if (dx < (refH * 1.5f).toInt()) {
+                    // Heights must be similar — inline is for same-line
+                    // text continuation, not for a small fresh fragment
+                    // whose centerY happens to fall inside a tall
+                    // multi-line cached box's full y range. Without this,
+                    // any tiny OCR fragment adjacent to a multi-line
+                    // overlay inline-matches it on dx alone and stales
+                    // the legitimate cached translation. Uses the same
+                    // size-ratio cap the block check below already
+                    // applies, so a true same-line continuation (same
+                    // font, same height) still matches.
+                    val lo = minOf(aH, bH)
+                    val hi = maxOf(aH, bH)
+                    if (lo <= 0 || (hi - lo).toDouble() / lo <= sizeRatioCap(mode)) return true
+                }
             }
 
             val dy = if (a.bottom <= b.top) b.top - a.bottom
                      else if (b.bottom <= a.top) a.top - b.bottom
                      else 0
-            if (dy < (refH * 0.8f).toInt()) {
+            if (dy < (refH * blockGapMultiplier(mode)).toInt()) {
                 val alignTolerance = (refH * 0.5f).toInt()
                 val aLeft = aAlignLeft ?: a.left
                 val bLeft = bAlignLeft ?: b.left
                 val leftAligned = kotlin.math.abs(aLeft - bLeft) <= alignTolerance
                 val centerAligned = kotlin.math.abs(a.centerX() - b.centerX()) <= alignTolerance
                 if (leftAligned || centerAligned) {
-                    val lo = minOf(a.height(), b.height())
-                    val hi = maxOf(a.height(), b.height())
-                    if (lo <= 0 || (hi - lo).toDouble() / lo <= 0.30) return true
+                    val lo = minOf(aH, bH)
+                    val hi = maxOf(aH, bH)
+                    if (lo <= 0 || (hi - lo).toDouble() / lo <= sizeRatioCap(mode)) return true
                 }
             }
             return false
         }
 
-        private fun wouldGroupVertical(a: Rect, b: Rect, mode: GroupingMode): Boolean {
-            val refW = maxOf(a.width(), b.width())
+        private fun wouldGroupVertical(
+            a: Rect,
+            b: Rect,
+            mode: GroupingMode,
+            aLineCount: Int = 1,
+            bLineCount: Int = 1,
+        ): Boolean {
+            val aLn = aLineCount.coerceAtLeast(1)
+            val bLn = bLineCount.coerceAtLeast(1)
+            // See [wouldGroup] horizontal path — same coerce-to-1 invariant
+            // so a positive multi-column rect can't normalize to width 0
+            // and bypass the size-ratio guard.
+            val aW = if (a.width() <= 0) 0 else maxOf(a.width() / aLn, 1)
+            val bW = if (b.width() <= 0) 0 else maxOf(b.width() / bLn, 1)
+            val refW = maxOf(aW, bW)
             if (refW <= 0) return false
             if (mode == GroupingMode.CROSS_FRAME_SAME_REGION && hasSubstantialOverlap(a, b)) return true
 
@@ -988,21 +1033,30 @@ class OcrManager private constructor() {
                 val dy = if (a.bottom <= b.top) b.top - a.bottom
                          else if (b.bottom <= a.top) a.top - b.bottom
                          else 0
-                if (dy < (refW * 1.5f).toInt()) return true
+                if (dy < (refW * 1.5f).toInt()) {
+                    // Widths must be similar (vertical's height-ratio analogue) —
+                    // see horizontal wouldGroup for rationale. Without this, a
+                    // narrow fresh column fragment whose centerX falls inside a
+                    // wide multi-column cached box's x range inline-matches on
+                    // dy alone and stales the cached translation.
+                    val lo = minOf(aW, bW)
+                    val hi = maxOf(aW, bW)
+                    if (lo <= 0 || (hi - lo).toDouble() / lo <= sizeRatioCap(mode)) return true
+                }
             }
 
             val dx = if (a.left <= b.right && b.right <= a.right) 0
                      else if (b.left <= a.right && a.right <= b.right) 0
                      else if (a.right <= b.left) b.left - a.right
                      else a.left - b.right
-            if (dx < (refW * 0.8f).toInt()) {
+            if (dx < (refW * blockGapMultiplier(mode)).toInt()) {
                 val alignTolerance = (refW * 0.5f).toInt()
                 val topAligned = kotlin.math.abs(a.top - b.top) <= alignTolerance
                 val centerAligned = kotlin.math.abs(a.centerY() - b.centerY()) <= alignTolerance
                 if (topAligned || centerAligned) {
-                    val lo = minOf(a.width(), b.width())
-                    val hi = maxOf(a.width(), b.width())
-                    if (lo <= 0 || (hi - lo).toDouble() / lo <= 0.30) return true
+                    val lo = minOf(aW, bW)
+                    val hi = maxOf(aW, bW)
+                    if (lo <= 0 || (hi - lo).toDouble() / lo <= sizeRatioCap(mode)) return true
                 }
             }
             return false
@@ -1015,7 +1069,9 @@ class OcrManager private constructor() {
          *
          *  [aAlignLeft] / [bAlignLeft] mirror [wouldGroup]'s overrides for
          *  hanging-punctuation compensation. [mode] selects the intersection
-         *  semantics — see [GroupingMode]. */
+         *  semantics — see [GroupingMode]. [aLineCount] / [bLineCount] mirror
+         *  [wouldGroup]'s per-line normalization — default 1 keeps legacy
+         *  bare-rect behavior. */
         fun groupDecision(
             a: Rect,
             b: Rect,
@@ -1023,10 +1079,12 @@ class OcrManager private constructor() {
             aAlignLeft: Int? = null,
             bAlignLeft: Int? = null,
             mode: GroupingMode = GroupingMode.SAME_PASS_LAYOUT,
+            aLineCount: Int = 1,
+            bLineCount: Int = 1,
         ): GroupDecision = if (orientation == TextOrientation.VERTICAL)
-            groupDecisionVertical(a, b, mode)
+            groupDecisionVertical(a, b, mode, aLineCount, bLineCount)
         else
-            groupDecisionHorizontal(a, b, aAlignLeft, bAlignLeft, mode)
+            groupDecisionHorizontal(a, b, aAlignLeft, bAlignLeft, mode, aLineCount, bLineCount)
 
         private fun groupDecisionHorizontal(
             a: Rect,
@@ -1034,8 +1092,17 @@ class OcrManager private constructor() {
             aAlignLeft: Int?,
             bAlignLeft: Int?,
             mode: GroupingMode,
+            aLineCount: Int = 1,
+            bLineCount: Int = 1,
         ): GroupDecision {
-            val refH = maxOf(a.height(), b.height())
+            val aLn = aLineCount.coerceAtLeast(1)
+            val bLn = bLineCount.coerceAtLeast(1)
+            // Mirror wouldGroup's coerce-to-1 invariant so the debug log
+            // path agrees on size-guard behavior for positive rects whose
+            // integer-divided per-line dim would otherwise be 0.
+            val aH = if (a.height() <= 0) 0 else maxOf(a.height() / aLn, 1)
+            val bH = if (b.height() <= 0) 0 else maxOf(b.height() / bLn, 1)
+            val refH = maxOf(aH, bH)
             if (refH <= 0) return GroupDecision.NotGrouped("refH=0 (degenerate rect)")
 
             // 1. Intersection: rects substantially overlap. Cross-frame only
@@ -1053,15 +1120,20 @@ class OcrManager private constructor() {
                      else if (b.right <= a.left) a.left - b.right
                      else 0
             val inlineGapThreshold = (refH * 1.5f).toInt()
-            if (sameLine && dx < inlineGapThreshold) {
-                return GroupDecision.Grouped("inline (dx=$dx < ${inlineGapThreshold}px, refH=$refH)")
+            val lnStr = if (aLn > 1 || bLn > 1) " ln=$aLn/$bLn" else ""
+            val inlineLo = minOf(aH, bH)
+            val inlineHi = maxOf(aH, bH)
+            val inlineHeightOk = inlineLo <= 0 || (inlineHi - inlineLo).toDouble() / inlineLo <= sizeRatioCap(mode)
+            if (sameLine && dx < inlineGapThreshold && inlineHeightOk) {
+                return GroupDecision.Grouped("inline (dx=$dx < ${inlineGapThreshold}px, refH=$refH$lnStr)")
             }
 
             // 3. Block: vertical continuation (next line in same paragraph)
             val dy = if (a.bottom <= b.top) b.top - a.bottom
                      else if (b.bottom <= a.top) a.top - b.bottom
                      else 0
-            val vgapThreshold = (refH * 0.8f).toInt()
+            val vgapThreshold = (refH * blockGapMultiplier(mode)).toInt()
+            val heightCap = sizeRatioCap(mode)
             val alignTolerance = (refH * 0.5f).toInt()
             val aLeft = aAlignLeft ?: a.left
             val bLeft = bAlignLeft ?: b.left
@@ -1070,8 +1142,8 @@ class OcrManager private constructor() {
             val shifted = aLeft != a.left || bLeft != b.left
             val leftStr = if (shifted) "leftΔ=$leftDiff(adj,raw=$rawLeftDiff)" else "leftΔ=$leftDiff"
             val centerDiff = kotlin.math.abs(a.centerX() - b.centerX())
-            val lo = minOf(a.height(), b.height())
-            val hi = maxOf(a.height(), b.height())
+            val lo = minOf(aH, bH)
+            val hi = maxOf(aH, bH)
             // Mirror wouldGroup: degenerate (lo<=0) treated as compatible
             // — without this the debug path would diverge for zero-height
             // line boxes and the log would explain a verdict the predicate
@@ -1082,7 +1154,7 @@ class OcrManager private constructor() {
             val leftAligned = leftDiff <= alignTolerance
             val centerAligned = centerDiff <= alignTolerance
             val alignOk = leftAligned || centerAligned
-            val heightOk = lo <= 0 || heightRatio <= 0.30
+            val heightOk = lo <= 0 || heightRatio <= heightCap
 
             if (vgapOk && alignOk && heightOk) {
                 val which = when {
@@ -1092,18 +1164,18 @@ class OcrManager private constructor() {
                 }
                 val hRatioStr = if (lo > 0) "%.2f".format(heightRatio) else "n/a"
                 return GroupDecision.Grouped(
-                    "block (dy=$dy<${vgapThreshold}px, align=$which $leftStr centerΔ=$centerDiff tol=${alignTolerance}px, hRatio=$hRatioStr, refH=$refH)"
+                    "block (dy=$dy<${vgapThreshold}px, align=$which $leftStr centerΔ=$centerDiff tol=${alignTolerance}px, hRatio=$hRatioStr, refH=$refH$lnStr)"
                 )
             }
 
             val fails = buildList {
                 if (!vgapOk) add("vgap dy=$dy ≥ ${vgapThreshold}px")
                 if (!alignOk) add("align: $leftStr centerΔ=$centerDiff > tol=${alignTolerance}px")
-                if (!heightOk) add("height: lo=$lo hi=$hi ratio=${"%.2f".format(heightRatio)} > 0.30")
+                if (!heightOk) add("height: lo=$lo hi=$hi ratio=${"%.2f".format(heightRatio)} > ${"%.2f".format(heightCap)}")
                 if (sameLine && dx >= inlineGapThreshold) add("inline gap dx=$dx ≥ ${inlineGapThreshold}px")
             }
             return GroupDecision.NotGrouped(
-                "block " + fails.joinToString("; ").ifEmpty { "no sub-check matched" } + " (refH=$refH)"
+                "block " + fails.joinToString("; ").ifEmpty { "no sub-check matched" } + " (refH=$refH$lnStr)"
             )
         }
 
@@ -1114,8 +1186,20 @@ class OcrManager private constructor() {
          *   or center-Y-aligned, right-to-left flow)
          * - Reference dimension is width (column thickness) not height.
          */
-        private fun groupDecisionVertical(a: Rect, b: Rect, mode: GroupingMode): GroupDecision {
-            val refW = maxOf(a.width(), b.width())
+        private fun groupDecisionVertical(
+            a: Rect,
+            b: Rect,
+            mode: GroupingMode,
+            aLineCount: Int = 1,
+            bLineCount: Int = 1,
+        ): GroupDecision {
+            val aLn = aLineCount.coerceAtLeast(1)
+            val bLn = bLineCount.coerceAtLeast(1)
+            // Mirror wouldGroupVertical's coerce-to-1 invariant — see
+            // groupDecisionHorizontal for rationale.
+            val aW = if (a.width() <= 0) 0 else maxOf(a.width() / aLn, 1)
+            val bW = if (b.width() <= 0) 0 else maxOf(b.width() / bLn, 1)
+            val refW = maxOf(aW, bW)
             if (refW <= 0) return GroupDecision.NotGrouped("refW=0 (degenerate rect)")
 
             if (mode == GroupingMode.CROSS_FRAME_SAME_REGION && hasSubstantialOverlap(a, b)) {
@@ -1129,20 +1213,25 @@ class OcrManager private constructor() {
                      else if (b.bottom <= a.top) a.top - b.bottom
                      else 0
             val inlineGapThreshold = (refW * 1.5f).toInt()
-            if (sameColumn && dy < inlineGapThreshold) {
-                return GroupDecision.Grouped("inline (dy=$dy < ${inlineGapThreshold}px, refW=$refW)")
+            val lnStr = if (aLn > 1 || bLn > 1) " ln=$aLn/$bLn" else ""
+            val inlineLo = minOf(aW, bW)
+            val inlineHi = maxOf(aW, bW)
+            val inlineWidthOk = inlineLo <= 0 || (inlineHi - inlineLo).toDouble() / inlineLo <= sizeRatioCap(mode)
+            if (sameColumn && dy < inlineGapThreshold && inlineWidthOk) {
+                return GroupDecision.Grouped("inline (dy=$dy < ${inlineGapThreshold}px, refW=$refW$lnStr)")
             }
 
             val dx = if (a.left <= b.right && b.right <= a.right) 0
                      else if (b.left <= a.right && a.right <= b.right) 0
                      else if (a.right <= b.left) b.left - a.right
                      else a.left - b.right
-            val hgapThreshold = (refW * 0.8f).toInt()
+            val hgapThreshold = (refW * blockGapMultiplier(mode)).toInt()
+            val widthCap = sizeRatioCap(mode)
             val alignTolerance = (refW * 0.5f).toInt()
             val topDiff = kotlin.math.abs(a.top - b.top)
             val centerDiff = kotlin.math.abs(a.centerY() - b.centerY())
-            val lo = minOf(a.width(), b.width())
-            val hi = maxOf(a.width(), b.width())
+            val lo = minOf(aW, bW)
+            val hi = maxOf(aW, bW)
             // Mirror wouldGroupVertical's degenerate-rect handling (see
             // groupDecisionHorizontal for the rationale).
             val widthRatio = if (lo > 0) (hi - lo).toDouble() / lo else 0.0
@@ -1151,7 +1240,7 @@ class OcrManager private constructor() {
             val topAligned = topDiff <= alignTolerance
             val centerAligned = centerDiff <= alignTolerance
             val alignOk = topAligned || centerAligned
-            val widthOk = lo <= 0 || widthRatio <= 0.30
+            val widthOk = lo <= 0 || widthRatio <= widthCap
 
             if (hgapOk && alignOk && widthOk) {
                 val which = when {
@@ -1161,18 +1250,18 @@ class OcrManager private constructor() {
                 }
                 val wRatioStr = if (lo > 0) "%.2f".format(widthRatio) else "n/a"
                 return GroupDecision.Grouped(
-                    "block (dx=$dx<${hgapThreshold}px, align=$which topΔ=$topDiff centerΔ=$centerDiff tol=${alignTolerance}px, wRatio=$wRatioStr, refW=$refW)"
+                    "block (dx=$dx<${hgapThreshold}px, align=$which topΔ=$topDiff centerΔ=$centerDiff tol=${alignTolerance}px, wRatio=$wRatioStr, refW=$refW$lnStr)"
                 )
             }
 
             val fails = buildList {
                 if (!hgapOk) add("hgap dx=$dx ≥ ${hgapThreshold}px")
                 if (!alignOk) add("align: topΔ=$topDiff centerΔ=$centerDiff > tol=${alignTolerance}px")
-                if (!widthOk) add("width: lo=$lo hi=$hi ratio=${"%.2f".format(widthRatio)} > 0.30")
+                if (!widthOk) add("width: lo=$lo hi=$hi ratio=${"%.2f".format(widthRatio)} > ${"%.2f".format(widthCap)}")
                 if (sameColumn && dy >= inlineGapThreshold) add("inline gap dy=$dy ≥ ${inlineGapThreshold}px")
             }
             return GroupDecision.NotGrouped(
-                "block " + fails.joinToString("; ").ifEmpty { "no sub-check matched" } + " (refW=$refW)"
+                "block " + fails.joinToString("; ").ifEmpty { "no sub-check matched" } + " (refW=$refW$lnStr)"
             )
         }
 
@@ -1249,5 +1338,128 @@ class OcrManager private constructor() {
             // Angle brackets used as decorative dialogue borders
             '<', '>', '＜', '＞', '〈', '〉', '《', '》', '«', '»'
         )
+
+        internal fun rectStr(r: Rect): String =
+            "[L=${r.left} T=${r.top} R=${r.right} B=${r.bottom}]"
+
+        /**
+         * Index-level grouping pass. Pure function over rectangles + per-line
+         * effective align-lefts, factored out of [groupLinesOnePass] so unit
+         * tests can drive the algorithm without fabricating ML Kit objects.
+         *
+         * Walks groups most-recent-first and joins the candidate into the
+         * first group that passes [wouldGroup]. Checking every existing group
+         * (not just the latest) reconnects body lines when a foreign-column
+         * line (e.g. right-column sidebar entry) interleaves between two
+         * body lines in top-Y sort order and breaks the simple "last group
+         * is always the right candidate" assumption.
+         *
+         * - [boxes] : line bounding boxes, in sort order (top-to-bottom for
+         *   horizontal, right-to-left for vertical).
+         * - [alignLefts] : per-line effective left edge, with hanging-
+         *   punctuation outdent compensated (see [effectiveAlignLeft]).
+         *   Pass `null` per entry to skip compensation; must be the same
+         *   length as [boxes].
+         * - [texts] : optional per-line text, only used to populate the
+         *   debug-log snippets. Pass `null` when logging is off.
+         *
+         * Returns a list of groups, each group being the indices into
+         * [boxes] that ended up together, in encounter order.
+         */
+        internal fun groupBoxesOnePass(
+            boxes: List<Rect>,
+            alignLefts: List<Int?>,
+            orientation: TextOrientation,
+            logDecisions: Boolean = false,
+            texts: List<String>? = null,
+        ): List<List<Int>> {
+            require(boxes.size == alignLefts.size) {
+                "boxes and alignLefts must match length"
+            }
+            require(texts == null || texts.size == boxes.size) {
+                "texts must match boxes length when provided"
+            }
+            if (boxes.isEmpty()) return emptyList()
+            val groups = mutableListOf<MutableList<Int>>()
+            val orientChar = orientation.name[0]
+            for (idx in boxes.indices) {
+                val lineBox = boxes[idx]
+                if (groups.isEmpty()) {
+                    if (logDecisions) {
+                        val snippet = (texts?.get(idx) ?: "").take(24).replace('\n', ' ')
+                        android.util.Log.d(
+                            "DetectionLog",
+                            "[group:$orientChar] FIRST cand=${rectStr(lineBox)} \"$snippet\""
+                        )
+                    }
+                    groups += mutableListOf(idx)
+                    continue
+                }
+
+                val candidateAlignLeft =
+                    if (orientation == TextOrientation.VERTICAL) null else alignLefts[idx]
+                var merged = false
+                for (gi in groups.indices.reversed()) {
+                    val candidateGroup = groups[gi]
+                    val prevBox = boxes[candidateGroup.last()]
+                    // Use the *union* of all prior line edges across the
+                    // wrap axis (left+right for horizontal, top+bottom for
+                    // vertical) so the group's center stays on the paragraph
+                    // axis as line widths vary. Mixing a union edge with the
+                    // last line's opposite edge pulled groupRect.centerX/Y
+                    // off the real axis and broke center-aligned wrapped text.
+                    val groupRect: Rect
+                    val groupAlignLeft: Int?
+                    if (orientation == TextOrientation.VERTICAL) {
+                        val groupTop = candidateGroup.minOf { boxes[it].top }
+                        val groupBottom = candidateGroup.maxOf { boxes[it].bottom }
+                        groupRect = Rect(prevBox.left, groupTop, prevBox.right, groupBottom)
+                        groupAlignLeft = null
+                    } else {
+                        val groupLeft = candidateGroup.minOf { boxes[it].left }
+                        val groupRight = candidateGroup.maxOf { boxes[it].right }
+                        groupRect = Rect(groupLeft, prevBox.top, groupRight, prevBox.bottom)
+                        // Per-line effective lefts compensate for hanging
+                        // punctuation outdent (e.g. 「, ·). Used only by the
+                        // leftAligned sub-check; centerX still uses
+                        // groupRect's actual edges so center-aligned wrapped
+                        // text is unaffected.
+                        groupAlignLeft = candidateGroup.mapNotNull { alignLefts[it] }.minOrNull()
+                    }
+                    // wouldGroup is the canonical predicate — used
+                    // unconditionally so the debug-log toggle is purely
+                    // observational. groupDecision is called only to
+                    // produce a reason string for the log; if it ever
+                    // diverges from wouldGroup the log wording becomes
+                    // misleading but grouping behavior stays consistent.
+                    val groupMerged = wouldGroup(
+                        groupRect, lineBox, orientation, groupAlignLeft, candidateAlignLeft
+                    )
+                    if (logDecisions) {
+                        val decision = groupDecision(
+                            groupRect, lineBox, orientation, groupAlignLeft, candidateAlignLeft
+                        )
+                        val prevSnippet =
+                            (texts?.get(candidateGroup.last()) ?: "").take(24).replace('\n', ' ')
+                        val candSnippet =
+                            (texts?.get(idx) ?: "").take(24).replace('\n', ' ')
+                        val verdict = if (groupMerged) "MERGE" else "SPLIT"
+                        android.util.Log.d(
+                            "DetectionLog",
+                            "[group:$orientChar] $verdict g$gi prev=${rectStr(groupRect)} \"$prevSnippet\" cand=${rectStr(lineBox)} \"$candSnippet\" :: ${decision.reason}"
+                        )
+                    }
+                    if (groupMerged) {
+                        candidateGroup += idx
+                        merged = true
+                        break
+                    }
+                }
+                if (!merged) {
+                    groups += mutableListOf(idx)
+                }
+            }
+            return groups
+        }
     }
 }

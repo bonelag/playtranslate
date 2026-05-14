@@ -36,8 +36,9 @@ abstract class OnDeviceLlmBackend(
     /** Transient per-call floor checked at translate time inside
      *  [LlamaTranslator]. If `availMem` drops below this value a translate
      *  call throws a transient exception and the registry's waterfall
-     *  falls through to the next backend. */
-    protected abstract val availMemFloorBytes: Long
+     *  falls through to the next backend. Public so Settings can read it
+     *  for the pre-toggle availMem gate (mirrors [totalMemFloorBytes]). */
+    abstract val availMemFloorBytes: Long
 
     /** Permanent device-level floor: the minimum `MemoryInfo.totalMem` we
      *  require to even consider this backend installable on this device.
@@ -50,12 +51,12 @@ abstract class OnDeviceLlmBackend(
 
     final override val requiresInternet: Boolean = false
     // false matches the abstraction (users opt into TG/Qwen; they aren't
-    // "degraded"). Known side effect: when an on-device LLM produces a
-    // translation because an online backend transiently failed, the result
-    // gets cached and outlasts the recovery — see the "Note discipline"
-    // comment in CaptureService.translateGroupsSeparately. A clean fix
-    // would split the cache-suppression and "⚠ Offline" semantics of this
-    // flag; not worth the plumbing for the small staleness window today.
+    // "degraded"). When an on-device LLM produces a translation because an
+    // online backend transiently failed, the result gets cached and
+    // outlasts the recovery — narrow staleness window we accept. The
+    // inverse case (LLM displaced by transient memory, fallback returns a
+    // result) is handled separately via WaterfallResult.displacedLlmId →
+    // CaptureService.translateGroupsSeparately cache-skip.
     final override val isDegradedFallback: Boolean = false
 
     final override fun isUsable(source: String, target: String): Boolean {
@@ -109,6 +110,18 @@ abstract class OnDeviceLlmBackend(
         val mi = ActivityManager.MemoryInfo()
         am.getMemoryInfo(mi)
         return mi.totalMem >= totalMemFloorBytes
+    }
+
+    /** Read live [ActivityManager.MemoryInfo.availMem]. The [status] getter
+     *  uses this to decide whether to show the "Low memory" badge — there
+     *  is no stored "we got displaced recently" flag, so the badge
+     *  reflects current conditions, not history. Cheap (microseconds)
+     *  and called only when the Settings row refreshes. */
+    private fun hasEnoughAvailMemory(): Boolean {
+        val am = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+        val mi = ActivityManager.MemoryInfo()
+        am.getMemoryInfo(mi)
+        return mi.availMem >= availMemFloorBytes
     }
 
     /**
@@ -171,6 +184,17 @@ abstract class OnDeviceLlmBackend(
                     BackendStatus.Info(
                         context.getString(statusStringIds.disabled, sizeStr),
                         Tone.Neutral,
+                    )
+                !hasEnoughAvailMemory() ->
+                    // Live availMem is below the per-call floor right now,
+                    // so a translate attempt would throw transient and fall
+                    // through. No stored "we got displaced" flag — the
+                    // badge reflects current conditions, so it self-clears
+                    // the next time the row is refreshed after memory
+                    // recovers.
+                    BackendStatus.Info(
+                        context.getString(R.string.llm_status_low_memory_badge),
+                        Tone.Warning,
                     )
                 else ->
                     BackendStatus.Info(

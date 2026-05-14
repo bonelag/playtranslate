@@ -113,12 +113,12 @@ object SentenceAnkiHtmlBuilder {
             append("<div class=\"gl-back\">")
             if (imageFilename != null) {
                 append("<div style=\"text-align:center;margin:12px 0;\">")
-                append("<img src=\"$imageFilename\" style=\"max-width:100%;border-radius:6px;\">")
+                append("<img src=\"${htmlEscape(imageFilename)}\" style=\"max-width:100%;border-radius:6px;\">")
                 append("</div>")
             }
             append("<div style=\"text-align:center;font-size:1.5em;margin:12px 4px;line-height:2.2em;\">$furigana</div>")
             append("<div class=\"gl-secondary\" style=\"text-align:center;font-size:1.2em;margin:12px 4px;\">")
-            append(english.replace(Regex("[\\n\\r]+"), "<br>"))
+            append(htmlEscape(english).replace(Regex("[\\n\\r]+"), "<br>"))
             append("</div>")
             if (wordsHtml.isNotEmpty()) {
                 append("<hr>")
@@ -133,7 +133,16 @@ object SentenceAnkiHtmlBuilder {
         newlineAsBr: Boolean, highlightedWords: Set<String> = emptySet(),
         sourceLangId: SourceLangId = SourceLangId.JA
     ): String {
-        if (wordMap.isEmpty()) return text
+        if (wordMap.isEmpty()) {
+            // Even with no annotations, the output flows into Anki card
+            // markup — characters from the source text must be escaped.
+            val sb = StringBuilder(text.length)
+            for (c in text) {
+                if (c == '\n') sb.append(if (newlineAsBr) "<br>" else " ")
+                else sb.appendEscaped(c)
+            }
+            return sb.toString()
+        }
         val sortedWords = wordMap.entries
             .filter { it.key.isNotEmpty() }
             .sortedByDescending { it.key.length }
@@ -155,9 +164,10 @@ object SentenceAnkiHtmlBuilder {
                 if (isBold) sb.append("<span style=\"font-weight:800;\">")
                 val hasCjk = w.any { it in '\u4e00'..'\u9fff' || it in '\u3400'..'\u4dbf' }
                 if (useRuby && hasCjk && r.isNotEmpty() && r != w) {
-                    sb.append("<ruby>$w<rt>$r</rt></ruby>")
+                    sb.append("<ruby>").append(htmlEscape(w))
+                        .append("<rt>").append(htmlEscape(r)).append("</rt></ruby>")
                 } else {
-                    sb.append(w)
+                    sb.append(htmlEscape(w))
                 }
                 if (isBold) sb.append("</span>")
                 i += w.length
@@ -181,9 +191,10 @@ object SentenceAnkiHtmlBuilder {
                             val subHasCjk = sub.any { it in '\u4e00'..'\u9fff' || it in '\u3400'..'\u4dbf' }
                             if (isBold) sb.append("<span style=\"font-weight:800;\">")
                             if (subHasCjk && r.isNotEmpty() && r != sub) {
-                                sb.append("<ruby>$sub<rt>$r</rt></ruby>")
+                                sb.append("<ruby>").append(htmlEscape(sub))
+                                    .append("<rt>").append(htmlEscape(r)).append("</rt></ruby>")
                             } else {
-                                sb.append(sub)
+                                sb.append(htmlEscape(sub))
                             }
                             if (isBold) sb.append("</span>")
                             i = end
@@ -194,7 +205,7 @@ object SentenceAnkiHtmlBuilder {
                     if (deinflected) continue
                 }
             }
-            sb.append(c)
+            sb.appendEscaped(c)
             i++
         }
         return sb.toString()
@@ -236,10 +247,10 @@ object SentenceAnkiHtmlBuilder {
             }
             val hit = targets.firstOrNull { text.startsWith(it, i) }
             if (hit != null) {
-                sb.append("<b>").append(hit).append("</b>")
+                sb.append("<b>").append(htmlEscape(hit)).append("</b>")
                 i += hit.length
             } else {
-                sb.append(c)
+                sb.appendEscaped(c)
                 i++
             }
         }
@@ -248,15 +259,16 @@ object SentenceAnkiHtmlBuilder {
 
     /**
      * Emits the SENTENCE_FURIGANA field value: Anki-native furigana
-     * brackets (`kanji[reading]`) for Japanese with each kanji bracket
-     * **isolated by `<wbr>` separators**. Plain text passthrough for
-     * everything else.
+     * brackets (`kanji[reading]` for JA, `hanzi[pinyin]` for ZH) with
+     * each bracket **isolated by `<wbr>` separators**. Plain text
+     * passthrough for languages without a reading-annotation path.
      *
      * The goal is to match the semantics of PT's existing furigana
      * display (DictionaryManager.tokenizeForFurigana / FuriganaSpan
      * in TranslationResultFragment): furigana floats above ONLY the
      * kanji surface, never the okurigana. Tap \u805e in \u805e\u3044\u305f \u2192 see \u304d
-     * (not \u304d\u3044, not \u304d\u3044\u305f).
+     * (not \u304d\u3044, not \u304d\u3044\u305f). The ZH path is analogous: pinyin
+     * floats above each hanzi, never above adjacent punctuation/Latin.
      *
      * **Why `<wbr>` is the right separator.** Two downstream
      * consumers each need a boundary signal between bracket-words
@@ -269,8 +281,8 @@ object SentenceAnkiHtmlBuilder {
      *     anchor because the trailing `>` in the tag is excluded
      *     from the `[^ >]` character class \u2014 the regex can't span
      *     across a `<wbr>` into the next bracket's base. So inserting
-     *     `<wbr>` between bracket-words gives each kanji its own
-     *     correct ruby base without inserting a visible space.
+     *     `<wbr>` between bracket-words gives each kanji/hanzi its
+     *     own correct ruby base without inserting a visible space.
      *
      *  2. **Migaku's `support.html` parser** treats everything from
      *     a kanji bracket until the next whitespace as the "word",
@@ -282,19 +294,19 @@ object SentenceAnkiHtmlBuilder {
      *     Migaku's popup \u2014 to be verified on the user's device.)
      *
      * `<wbr>` renders as zero-width in HTML, so the rendered card
-     * has natural Japanese text with no visible inter-word spaces \u2014
+     * has natural CJK text with no visible inter-word spaces \u2014
      * works cleanly on Lapis, JPMN, custom templates, and Migaku
      * alike (assuming Migaku's DOM-awareness pans out).
      *
      * Examples:
-     *  - \u805e\u3044\u305f       \u2192 `\u805e[\u304d]<wbr>\u3044\u305f`
-     *  - \u53cb\u9054\u306b\u805e\u3044\u305f \u2192 `\u53cb\u9054[\u3068\u3082\u3060\u3061]<wbr>\u306b<wbr>\u805e[\u304d]<wbr>\u3044\u305f`
-     *  - \u4eca\u5ea6\u306fC      \u2192 `\u4eca\u5ea6[\u3053\u3093\u3069]<wbr>\u306fC`
-     *  - \u53d6\u308a\u51fa\u3059     \u2192 `\u53d6[\u3068]<wbr>\u308a<wbr>\u51fa[\u3060]<wbr>\u3059`
+     *  - JA \u805e\u3044\u305f         \u2192 `\u805e[\u304d]<wbr>\u3044\u305f`
+     *  - JA \u53cb\u9054\u306b\u805e\u3044\u305f   \u2192 `\u53cb\u9054[\u3068\u3082\u3060\u3061]<wbr>\u306b<wbr>\u805e[\u304d]<wbr>\u3044\u305f`
+     *  - JA \u53d6\u308a\u51fa\u3059       \u2192 `\u53d6[\u3068]<wbr>\u308a<wbr>\u51fa[\u3060]<wbr>\u3059`
+     *  - ZH \u4eca\u5929\u5929\u6c14\u5f88\u597d \u2192 `\u4eca[j\u012bn]<wbr>\u5929[ti\u0101n]<wbr>\u5929[ti\u0101n]<wbr>\u6c14[q\u00ec]<wbr>\u5f88[h\u011bn]<wbr>\u597d[h\u01ceo]`
+     *  - ZH \u4f60\u597d\uff0c\u4e16\u754c\uff01 \u2192 `\u4f60[n\u01d0]<wbr>\u597d[h\u01ceo]<wbr>\uff0c<wbr>\u4e16[sh\u00ec]<wbr>\u754c[ji\u00e8]<wbr>\uff01`
      *
-     * Non-Japanese languages: plain text passthrough (newlines \u2192
-     * `<br>`). ZH pinyin annotation would need a different
-     * per-character source (follow-up).
+     * Languages without a reading-annotation path: plain text
+     * passthrough (newlines \u2192 `<br>`).
      */
     fun buildSentenceFurigana(
         text: String,
@@ -302,20 +314,49 @@ object SentenceAnkiHtmlBuilder {
         highlightedWords: Set<String> = emptySet(),
         sourceLangId: SourceLangId = SourceLangId.JA,
     ): String {
-        if (sourceLangId != SourceLangId.JA) return plainBody(text)
+        val isJa = sourceLangId == SourceLangId.JA
+        val isZh = sourceLangId == SourceLangId.ZH || sourceLangId == SourceLangId.ZH_HANT
+        if (!isJa && !isZh) return plainBody(text)
         val targets = resolveHighlightTargets(words, highlightedWords)
-        // Anchor kanji-bearing Kuromoji tokens to their start offsets
-        // in the source text. We walk the source character-by-character
-        // below; this index tells us "at position i, expand the next N
-        // chars into a furigana bracket using the cached reading."
-        // Pure-kana tokens, whitespace, and punctuation are NOT indexed
-        // and just get copied through from the source. That keeps the
-        // builder source-text-canonical (matching buildSentencePlain)
-        // and removes the dependency on Kuromoji emitting whitespace as
-        // tokens — newlines turn into `<br>` because we see them
-        // directly in `text`, not because Kuromoji happened to surface
-        // them.
-        val kanjiTokenAt = indexKanjiTokensByStart(text)
+        // JA: anchor kanji-bearing Kuromoji tokens to their start
+        // offsets in the source text. We walk char-by-char below;
+        // this index tells us "at position i, expand the next N chars
+        // into a furigana bracket using the cached reading."
+        // Pure-kana tokens, whitespace, and punctuation are NOT
+        // indexed and just get copied through from the source. That
+        // keeps the builder source-text-canonical (matching
+        // buildSentencePlain) and removes the dependency on Kuromoji
+        // emitting whitespace as tokens — newlines turn into `<br>`
+        // because we see them directly in `text`, not because
+        // Kuromoji happened to surface them.
+        val kanjiTokenAt = if (isJa) indexKanjiTokensByStart(text) else emptyMap()
+        // ZH: no Kuromoji equivalent, and `words` carries no
+        // positional metadata. Greedy-longest-prefix match against
+        // the WordEntry list (whatever HanLP-segmented lookups
+        // happened to hit during display) gives us the same effect
+        // as the JA token index without needing sentence-time
+        // segmentation here. Hanzi that didn't get a dictionary hit
+        // pass through plain.
+        //
+        // Pipeline invariant we rely on: `words` for ZH is
+        // surface-unique with surface-deterministic readings. The
+        // Map-keyed cache in LastSentenceCache.lookupWords (Map keyed
+        // by displayWord) dedupes by surface, and
+        // ChineseDictionaryManager.lookup is surface-keyed and
+        // returns the primary CC-CEDICT reading without context. So
+        // every occurrence of a given surface in `text` necessarily
+        // resolves to the same reading — `firstOrNull` against a
+        // longest-first list is safe even though it has no offset
+        // knowledge. The day we add context-aware per-position
+        // reading resolution (heteronyms like 中 zhōng/zhòng) this
+        // walk needs to switch to an offset-indexed token list
+        // mirroring the JA path.
+        val zhWords = if (isZh) {
+            words.asSequence()
+                .filter { it.word.isNotEmpty() && it.reading.isNotEmpty() }
+                .sortedByDescending { it.word.length }
+                .toList()
+        } else emptyList()
         val sb = StringBuilder()
         var i = 0
         // Inclusive char offset where the active <b> span should close;
@@ -333,20 +374,23 @@ object SentenceAnkiHtmlBuilder {
                     boldCloseAt = i + hit.length
                 }
             }
-            val token = kanjiTokenAt[i]
-            if (token != null) {
-                emitFuriganaParts(sb, token.surface, token.reading!!)
-                i += token.surface.length
+            val advanced = if (isJa) {
+                val token = kanjiTokenAt[i]
+                if (token != null) {
+                    emitFuriganaParts(sb, token.surface, token.reading!!)
+                    i += token.surface.length
+                    true
+                } else false
             } else {
-                val c = text[i]
-                if (c == '\n' || c == '\r') {
-                    sb.append("<br>")
-                    i++
-                    while (i < text.length && (text[i] == '\n' || text[i] == '\r')) i++
-                } else {
-                    sb.append(c)
-                    i++
-                }
+                val match = zhWords.firstOrNull { text.startsWith(it.word, i) }
+                if (match != null) {
+                    emitPinyinParts(sb, match.word, match.reading)
+                    i += match.word.length
+                    true
+                } else false
+            }
+            if (!advanced) {
+                i = appendOneCharOrBr(sb, text, i)
             }
             if (boldCloseAt in 0..i) {
                 sb.append("</b>")
@@ -357,6 +401,23 @@ object SentenceAnkiHtmlBuilder {
         val out = stripBoundarySeparators(sb.toString())
         Log.d(TAG, "buildSentenceFurigana: in='$text' out='$out'")
         return out
+    }
+
+    /**
+     * Appends one character of [text] starting at [i] to [sb],
+     * collapsing a run of `\n`/`\r` into a single `<br>`. Returns the
+     * new cursor position.
+     */
+    private fun appendOneCharOrBr(sb: StringBuilder, text: String, i: Int): Int {
+        val c = text[i]
+        if (c == '\n' || c == '\r') {
+            sb.append("<br>")
+            var j = i + 1
+            while (j < text.length && (text[j] == '\n' || text[j] == '\r')) j++
+            return j
+        }
+        sb.appendEscaped(c)
+        return i + 1
     }
 
     /**
@@ -392,9 +453,59 @@ object SentenceAnkiHtmlBuilder {
         for (part in Deinflector.splitFurigana(surface, reading)) {
             val r = part.reading
             if (r != null) {
-                sb.append(WBR).append(part.text).append('[').append(r).append(']').append(WBR)
+                sb.append(WBR).append(htmlEscape(part.text))
+                    .append('[').append(htmlEscape(r)).append(']').append(WBR)
             } else {
                 appendPlain(sb, part.text)
+            }
+        }
+    }
+
+    /**
+     * Chinese counterpart of [emitFuriganaParts]: emits per-hanzi
+     * `<wbr>{c}[{syllable}]<wbr>` brackets when the reading's
+     * whitespace-separated syllable count matches the word's hanzi
+     * count. Non-hanzi chars (punctuation, embedded Latin) pass through
+     * plain.
+     *
+     * Mismatched count (érhuà like 好玩儿/`hǎo wánr`, embedded digits,
+     * irregular CC-CEDICT entries) falls back to a single
+     * `<wbr>{word}[{reading}]<wbr>` bracket — still rendered as a
+     * centered-block ruby by Anki's `{{furigana:}}` filter, just not
+     * per-character aligned.
+     *
+     * Examples:
+     *  - 今天 + "jīn tiān" → `今[jīn]<wbr>天[tiān]`
+     *  - 好玩儿 + "hǎo wánr" → `好玩儿[hǎo wánr]` (count mismatch)
+     */
+    private fun emitPinyinParts(sb: StringBuilder, word: String, reading: String) {
+        if (reading.isEmpty() || !word.any(::isKanjiChar)) {
+            appendPlain(sb, word)
+            return
+        }
+        val syllables = reading.trim().split(Regex("\\s+"))
+        val hanziCount = word.count(::isKanjiChar)
+        if (hanziCount != syllables.size) {
+            sb.append(WBR).append(htmlEscape(word))
+                .append('[').append(htmlEscape(reading)).append(']').append(WBR)
+            return
+        }
+        var si = 0
+        // Adjacent hanzi share a single boundary `<wbr>` rather than
+        // emitting `<wbr>...<wbr><wbr>...<wbr>` (which is functionally
+        // equivalent but uglier in raw HTML). Track whether the
+        // previous emit already left a trailing `<wbr>` we can reuse.
+        var prevWasBracket = false
+        for (c in word) {
+            if (isKanjiChar(c)) {
+                if (!prevWasBracket) sb.append(WBR)
+                sb.appendEscaped(c).append('[')
+                    .append(htmlEscape(syllables[si])).append(']').append(WBR)
+                si++
+                prevWasBracket = true
+            } else {
+                sb.appendEscaped(c)
+                prevWasBracket = false
             }
         }
     }
@@ -422,24 +533,31 @@ object SentenceAnkiHtmlBuilder {
 
     /**
      * Emits the EXPRESSION field value for word-mode (single-word)
-     * sends: per-kanji furigana brackets with the same `<wbr>`
-     * isolation rule as [buildSentenceFurigana]. The caller already
-     * knows the headword's dictionary form + reading so we skip
-     * Kuromoji and per-kanji-split via [Deinflector.splitFurigana].
+     * sends: per-kanji furigana brackets (JA) or per-hanzi pinyin
+     * brackets (ZH/ZH_HANT) with the same `<wbr>` isolation rule as
+     * [buildSentenceFurigana]. The caller already knows the headword's
+     * dictionary form + reading so we skip Kuromoji and per-kanji-split
+     * via [Deinflector.splitFurigana] for JA; ZH alignment is a direct
+     * zip of hanzi chars with whitespace-separated pinyin syllables.
      *
      * Examples:
-     *  - \u805e\u304f     \u2192 `\u805e[\u304d]<wbr>\u304f`
-     *  - \u53d6\u308a\u51fa\u3059 \u2192 `\u53d6[\u3068]<wbr>\u308a<wbr>\u51fa[\u3060]<wbr>\u3059`
+     *  - JA \u805e\u304f     \u2192 `\u805e[\u304d]<wbr>\u304f`
+     *  - JA \u53d6\u308a\u51fa\u3059 \u2192 `\u53d6[\u3068]<wbr>\u308a<wbr>\u51fa[\u3060]<wbr>\u3059`
+     *  - ZH \u4eca\u5929     \u2192 `\u4eca[j\u012bn]<wbr>\u5929[ti\u0101n]`
      */
     fun buildExpressionFurigana(
         word: String,
         reading: String,
         sourceLangId: SourceLangId = SourceLangId.JA,
     ): String {
-        if (sourceLangId != SourceLangId.JA || reading.isEmpty()) return word
-        if (!word.any(::isKanjiChar)) return word
+        if (reading.isEmpty()) return htmlEscape(word)
+        val isJa = sourceLangId == SourceLangId.JA
+        val isZh = sourceLangId == SourceLangId.ZH || sourceLangId == SourceLangId.ZH_HANT
+        if (!isJa && !isZh) return htmlEscape(word)
+        if (!word.any(::isKanjiChar)) return htmlEscape(word)
         val sb = StringBuilder()
-        emitFuriganaParts(sb, word, reading)
+        if (isJa) emitFuriganaParts(sb, word, reading)
+        else emitPinyinParts(sb, word, reading)
         val out = stripBoundarySeparators(sb.toString())
         Log.d(TAG, "buildExpressionFurigana: word='$word' reading='$reading' out='$out'")
         return out
@@ -476,7 +594,7 @@ object SentenceAnkiHtmlBuilder {
                 i++
                 while (i < text.length && (text[i] == '\n' || text[i] == '\r')) i++
             } else {
-                sb.append(c)
+                sb.appendEscaped(c)
                 i++
             }
         }
@@ -500,26 +618,31 @@ object SentenceAnkiHtmlBuilder {
         val sb = StringBuilder()
         words.forEach { entry ->
             val isHighlighted = entry.word in highlightedWords
+            val safeWord = htmlEscape(entry.word)
             if (isHighlighted) {
                 sb.append("<div ${styler("gl-hl-bg", "margin-bottom:14px;border-radius:6px;padding:8px 10px;")}>")
-                sb.append("<div ${styler("gl-hl", "")}><b>${entry.word}</b></div>")
+                sb.append("<div ${styler("gl-hl", "")}><b>").append(safeWord).append("</b></div>")
             } else {
                 sb.append("<div ${styler(null, "margin-bottom:14px;")}>")
-                sb.append("<div><b>${entry.word}</b></div>")
+                sb.append("<div><b>").append(safeWord).append("</b></div>")
             }
             if (entry.reading.isNotEmpty() || entry.freqScore > 0) {
                 sb.append("<div ${styler(null, "font-size:0.85em;")}>")
                 if (entry.reading.isNotEmpty()) {
-                    sb.append("<span ${styler("gl-hint", "")}>${entry.reading}</span>")
+                    sb.append("<span ${styler("gl-hint", "")}>")
+                        .append(htmlEscape(entry.reading)).append("</span>")
                 }
                 if (entry.freqScore > 0) {
+                    // starsString emits only the ★ glyph repeated, so it's
+                    // HTML-safe by construction.
                     sb.append(" <span ${styler(null, "color:#606060;")}>${starsString(entry.freqScore)}</span>")
                 }
                 sb.append("</div>")
             }
             val extra = if (isHighlighted) "margin-left:10px;font-weight:bold;" else "margin-left:10px;"
             entry.meaning.split("\n").filter { it.isNotBlank() }.forEach { line ->
-                sb.append("<div ${styler("gl-secondary", extra)}>$line</div>")
+                sb.append("<div ${styler("gl-secondary", extra)}>")
+                    .append(htmlEscape(line)).append("</div>")
             }
             sb.append("</div>")
         }

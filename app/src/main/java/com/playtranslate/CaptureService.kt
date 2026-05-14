@@ -49,6 +49,7 @@ import android.hardware.display.DisplayManager
 import com.playtranslate.dictionary.DictionaryManager
 import com.playtranslate.language.SourceLanguageProfiles
 import com.playtranslate.translation.TranslationBackendRegistry
+import com.playtranslate.ui.DegradedWarningKind
 import com.playtranslate.ui.TranslationOverlayView
 
 private const val TAG = "CaptureService"
@@ -266,19 +267,47 @@ class CaptureService : Service() {
     }
     internal fun emitHoldLoading(loading: Boolean) { _holdLoading.value = loading }
 
-    /** Observable degraded translation state (ML Kit fallback). */
-    val degradedState = MutableLiveData(false)
-    val translationDegraded: Boolean get() = degradedState.value == true
+    /** Observable translation-degradation state — one [DegradedWarningKind]
+     *  drives every consumer:
+     *   - floating icon *color* (yellow when [kind] != [DegradedWarningKind.None]
+     *     and in live mode),
+     *   - floating icon *menu pill label* (None hides, Offline / LowMemory
+     *     pick their respective strings),
+     *   - inline result note (CaptureService.translate selects the matching
+     *     `R.string.note_*` based on the same enum).
+     *  Set atomically by [setDegraded] from the translate site (so the
+     *  whole translation outcome maps to one state value, not two
+     *  independently-mutable bits). */
+    val degradationState: MutableLiveData<DegradedWarningKind> =
+        MutableLiveData(DegradedWarningKind.None)
+
+    /** Convenience: any kind other than [DegradedWarningKind.None] counts
+     *  as "translation degraded" for icon-color and legacy boolean APIs. */
+    val translationDegraded: Boolean
+        get() = degradationState.value != DegradedWarningKind.None
 
     private val mainHandler = Handler(Looper.getMainLooper())
 
-    internal fun setDegraded(degraded: Boolean) {
-        if (translationDegraded == degraded) return
-        degradedState.postValue(degraded)
+    /** Set the degradation kind. [DegradedWarningKind.None] is the reset
+     *  state used by live-mode teardown, the source==target OCR-only
+     *  bypass, and overlay close — anything that means "no warning
+     *  applies right now." */
+    internal fun setDegraded(kind: DegradedWarningKind) {
+        if (degradationState.value == kind) return
+        degradationState.postValue(kind)
         // Post to main thread: setDegraded is called from background coroutines,
-        // and syncIconState sets View properties. Posting also ensures postValue's
-        // update has been applied before we read degradedState.value.
+        // and syncIconState sets View properties. Posting also ensures the
+        // postValue update has been applied before syncIconState reads it.
         mainHandler.post { syncIconState() }
+    }
+
+    /** Sugar for "no warning" — used by reset paths that don't care to spell
+     *  out [DegradedWarningKind.None] inline. */
+    internal fun setDegraded(degraded: Boolean) {
+        setDegraded(
+            if (degraded) DegradedWarningKind.Offline
+            else DegradedWarningKind.None
+        )
     }
 
     /** Push current service state to every floating icon. Called automatically
@@ -637,7 +666,7 @@ class CaptureService : Service() {
             val ocrResult = try {
                 state.value = CaptureState.InProgress(getString(R.string.status_ocr))
                 val result = ocrManager.recognise(ocrBitmap, sourceLang, screenshotWidth = raw.width)
-                if (result != null && BuildConfig.DEBUG && Prefs(this@CaptureService).debugSaveOcrSeed) {
+                if (BuildConfig.DEBUG && Prefs(this@CaptureService).debugSaveOcrSeed) {
                     OcrSeedWriter.writeSeed(this@CaptureService, ocrBitmap, result)
                 }
                 result
@@ -1358,6 +1387,11 @@ class CaptureService : Service() {
      *  Every per-display parameter (active region, icon rect to black out) is
      *  resolved for [displayId]. Caller still owns [raw]. */
     internal suspend fun runOcr(raw: Bitmap, displayId: Int): OverlayToolkit.OcrPipelineResult? {
+        val prefs = Prefs(this)
+        val seedWriter: ((Bitmap, OcrManager.OcrResult?) -> Unit)? =
+            if (BuildConfig.DEBUG && prefs.debugSaveOcrSeed) {
+                { bitmap, result -> OcrSeedWriter.writeSeed(this, bitmap, result) }
+            } else null
         return OverlayToolkit.runOcrPipeline(
             raw,
             activeRegionForDisplay(displayId),
@@ -1365,7 +1399,8 @@ class CaptureService : Service() {
             ocrManager,
             getStatusBarHeightForDisplay(displayId),
             PlayTranslateAccessibilityService.instance?.getFloatingIconRect(displayId),
-            Prefs(this).compactOverlayIcon
+            prefs.compactOverlayIcon,
+            seedWriter = seedWriter
         )
     }
 
@@ -1564,7 +1599,7 @@ class CaptureService : Service() {
             val ocrBitmap = blackoutFloatingIcon(bitmap, displayId, left, top)
             val ocrResult = try {
                 val result = ocrManager.recognise(ocrBitmap, sourceLang, screenshotWidth = raw.width)
-                if (result != null && BuildConfig.DEBUG && Prefs(this@CaptureService).debugSaveOcrSeed) {
+                if (BuildConfig.DEBUG && Prefs(this@CaptureService).debugSaveOcrSeed) {
                     OcrSeedWriter.writeSeed(this@CaptureService, ocrBitmap, result)
                 }
                 result
@@ -1652,10 +1687,16 @@ class CaptureService : Service() {
      * every downstream call so key-derivation and translator selection agree
      * even if another code path mutates Prefs mid-batch.
      *
-     * Cache write policy: online backend results (DeepL and Lingva) are
-     * cached; ML Kit fallback is not (signalled by a non-null note — only
-     * the ML Kit branch sets one). ML Kit is skipped so online services can
-     * reclaim the slot when they recover.
+     * Cache write policy: online backend results (DeepL and Lingva) and
+     * fully-successful on-device LLM results (TG, Qwen) are cached. Two
+     * categories are skipped:
+     *   - ML Kit degraded fallback (signalled by a non-null note set in
+     *     [translate]) — so online services can reclaim the slot on recovery.
+     *   - On-device LLM displacement (signalled by a non-null
+     *     [TranslateOutcome.displacedLlmId]) — when TG or Qwen threw a
+     *     transient low-memory exception and the waterfall fell through to
+     *     a lower-priority backend, the fallback's output shouldn't outlast
+     *     the memory pressure window.
      */
     internal suspend fun translateGroupsSeparately(groupTexts: List<String>): List<Pair<String, String?>> {
         val target = snapshotTranslationTarget()
@@ -1663,7 +1704,11 @@ class CaptureService : Service() {
         // OCR-only bypass: when source and target language are the same,
         // skip translation entirely — OCR output is the final result.
         // This handles all paths: one-shot hold, live mode, and in-app panel.
+        // Clear degraded state too — bypass means we aren't going through a
+        // backend, so any stale "Offline"/"degraded" badge from a prior
+        // fallback should drop.
         if (target.source == target.target) {
+            setDegraded(false)
             return groupTexts.map { Pair(it, null) }
         }
 
@@ -1678,19 +1723,37 @@ class CaptureService : Service() {
             // children cancel with it instead of continuing on
             // serviceScope and writing to translationCache / degradedState
             // after the session has already been marked Cancelled.
-            val results = coroutineScope {
+            val outcomes = coroutineScope {
                 uncached.map { (_, key) ->
                     async { translate(key.text, target) }
                 }.awaitAll()
             }
 
-            uncached.zip(results).forEach { (indexedKey, result) ->
-                if (result.second == null) {
-                    translationCache[indexedKey.value] = result
+            // Set the icon/menu state ONCE from the worst outcome in the
+            // batch. Each child's `translate` no longer touches the global
+            // state, so a clean group that happens to finish after a
+            // displaced sibling can't clear the warning. A fully-cached
+            // batch (outcomes empty) deliberately doesn't update state —
+            // matches the pre-refactor behavior where cache hits left the
+            // previous state in place.
+            val aggregateKind = outcomes.maxByOrNull { it.kind.severity() }?.kind
+                ?: DegradedWarningKind.None
+            setDegraded(aggregateKind)
+
+            uncached.zip(outcomes).forEach { (indexedKey, outcome) ->
+                // Cache write policy: skip when an on-device LLM was displaced
+                // by transient low memory (outcome.displacedLlmId != null).
+                // Without this, a single low-memory moment freezes the
+                // fallback's output in the cache, so the next call returns
+                // the same lower-quality result even after memory recovers.
+                // The existing note-based skip (ML Kit degraded fallback)
+                // still applies in parallel.
+                if (outcome.note == null && outcome.displacedLlmId == null) {
+                    translationCache[indexedKey.value] = outcome.text to outcome.note
                 }
             }
 
-            uncached.map { it.value }.zip(results).toMap()
+            uncached.map { it.value }.zip(outcomes.map { it.text to it.note }).toMap()
         } else emptyMap()
 
         return keys.map { key ->
@@ -1708,8 +1771,11 @@ class CaptureService : Service() {
     }
 
     /** On-demand translation for a single text string (used by edit overlay, drag-sentence, etc.). */
-    suspend fun translateOnce(text: String): Pair<String, String?> =
-        translate(text, snapshotTranslationTarget())
+    suspend fun translateOnce(text: String): Pair<String, String?> {
+        val outcome = translate(text, snapshotTranslationTarget())
+        setDegraded(outcome.kind)
+        return outcome.text to outcome.note
+    }
 
     /**
      * Run the translation waterfall and synthesise an inline note when
@@ -1730,15 +1796,71 @@ class CaptureService : Service() {
      * [translateGroupsSeparately] — online backends can then reclaim the
      * cache slot on recovery.
      */
-    private suspend fun translate(text: String, target: TranslationTarget): Pair<String, String?> {
+    /** Internal translation outcome. Carries the user-visible (text, note)
+     *  pair plus the [WaterfallResult.displacedLlmId] cache-skip signal and
+     *  the per-call [kind] used to aggregate degradation state across the
+     *  groups in a batch. The signal is internal to this service — public
+     *  methods ([translateOnce], [translateGroupsSeparately]) flatten back
+     *  to `(text, note)` so callers outside the cache layer don't grow a
+     *  dependency on the registry's displacement type. */
+    private data class TranslateOutcome(
+        val text: String,
+        val note: String?,
+        val kind: DegradedWarningKind,
+        val displacedLlmId: com.playtranslate.translation.BackendId?,
+    )
+
+    /** Order DegradedWarningKind by severity so a batch's worst outcome
+     *  drives the icon/menu state, regardless of completion order. */
+    private fun DegradedWarningKind.severity(): Int = when (this) {
+        DegradedWarningKind.None -> 0
+        DegradedWarningKind.Offline -> 1
+        DegradedWarningKind.LowMemory -> 2
+    }
+
+    private suspend fun translate(text: String, target: TranslationTarget): TranslateOutcome {
+        // OCR-only bypass: when source and target language are the same, skip
+        // translation entirely. This is the universal choke point — every
+        // translation path (batched groups via translateGroupsSeparately, plus
+        // every translateOnce caller: edit overlay, drag-sentence, sentence
+        // tab) flows through here. The earlier bypass in
+        // translateGroupsSeparately is a redundant early-return for the
+        // group/cache path.
+        if (target.source == target.target) {
+            return TranslateOutcome(text, null, DegradedWarningKind.None, null)
+        }
+
         ensureLanguageManagersFor(target)
         val result = TranslationBackendRegistry.translate(text, target.source, target.target)
-        setDegraded(result.isDegraded)
-        val note = if (result.isDegraded) {
-            if (isNetworkAvailable()) getString(R.string.note_mlkit_service_unavailable)
-            else getString(R.string.note_mlkit_no_internet)
-        } else null
-        return result.text to note
+        // Per-group kind. Displacement that bottomed out at ML Kit is the
+        // LowMemory kind; ML Kit chosen for network/service reasons is
+        // Offline. Displacement that stayed in the offline tier (Qwen
+        // picked up after TG) is None — the result is high-quality offline
+        // output, so we don't visually flag it; the Settings row's
+        // live availMem check carries that signal on its own.
+        //
+        // We do NOT call setDegraded here — that would let one group's
+        // outcome clobber a sibling group's worse outcome in a batched
+        // translation. Aggregation happens once per batch in
+        // [translateGroupsSeparately] / per call in [translateOnce].
+        val kind = when {
+            !result.isDegraded -> DegradedWarningKind.None
+            result.displacedLlmId != null -> DegradedWarningKind.LowMemory
+            else -> DegradedWarningKind.Offline
+        }
+        // The inline note adds one more bit of detail that the icon doesn't
+        // need — when the cause is "Offline", distinguish network-not-
+        // present from service-unavailable. Both surface as the Offline
+        // pill on the floating icon.
+        val note = when (kind) {
+            DegradedWarningKind.None -> null
+            DegradedWarningKind.LowMemory ->
+                getString(R.string.note_low_memory_fallback)
+            DegradedWarningKind.Offline ->
+                if (isNetworkAvailable()) getString(R.string.note_mlkit_service_unavailable)
+                else getString(R.string.note_mlkit_no_internet)
+        }
+        return TranslateOutcome(result.text, note, kind, result.displacedLlmId)
     }
 
     /**

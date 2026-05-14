@@ -104,6 +104,14 @@ static llama_context *init_context(llama_model *model, const int n_ctx = DEFAULT
     ctx_params.n_ubatch = BATCH_SIZE;
     ctx_params.n_threads = n_threads;
     ctx_params.n_threads_batch = n_threads;
+    // PlayTranslate: Flash Attention forced off 2026-05-14. Auto-on correlated
+    // with degenerate "8888..." Q4_0 output on vivo V2507A (Dimensity 9400+,
+    // Android 16). Paired with the armv9-variant block in
+    // third-party/llama.cpp/ggml/src/CMakeLists.txt — these are co-suspects
+    // covering the same SVE2-correlated failure mode. If we ever isolate the
+    // bug to one specific path, re-enable the other. See
+    // memory/project_sme_armv9_2_bug.md.
+    ctx_params.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_DISABLED;
     auto *context = llama_init_from_model(g_model, ctx_params);
     if (context == nullptr) {
         LOGe("%s: llama_new_context_with_model() returned null)", __func__);
@@ -650,8 +658,22 @@ Java_com_arm_aichat_internal_InferenceEngineImpl_generateNextToken(
     // Populate the batch with new token, then decode
     common_batch_clear(g_batch);
     common_batch_add(g_batch, new_token_id, current_position, {0}, true);
-    if (llama_decode(g_context, g_batch) != 0) {
-        LOGe("%s: llama_decode() failed for generated token", __func__);
+    const int decode_result = llama_decode(g_context, g_batch);
+    if (decode_result != 0) {
+        // Surface the failure to Kotlin as a thrown RuntimeException so the
+        // generation Flow rejects instead of completing silently. Returning
+        // nullptr alone is the EOG/stop-position signal; conflating it with
+        // decode failure would let the engine fall back to ModelReady and
+        // cache a truncated translation. Mirrors the int!=0 -> throw pattern
+        // used by processSystemPrompt / nativeProcessRawSuffix on the Kotlin side.
+        LOGe("%s: llama_decode() failed for generated token: %d", __func__, decode_result);
+        jclass runtimeException = env->FindClass("java/lang/RuntimeException");
+        if (runtimeException != nullptr) {
+            char msg[96];
+            snprintf(msg, sizeof(msg),
+                     "llama_decode() failed during generation: %d", decode_result);
+            env->ThrowNew(runtimeException, msg);
+        }
         return nullptr;
     }
 

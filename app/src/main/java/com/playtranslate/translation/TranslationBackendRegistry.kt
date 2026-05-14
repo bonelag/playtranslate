@@ -1,6 +1,8 @@
 package com.playtranslate.translation
 
 import android.util.Log
+import com.playtranslate.translation.llm.OnDeviceLlmBackend
+import com.playtranslate.translation.translategemma.TranslateGemmaTransientException
 import kotlinx.coroutines.CancellationException
 
 /**
@@ -98,6 +100,12 @@ object TranslationBackendRegistry {
         if (ordered.isEmpty()) {
             throw IllegalStateException("TranslationBackendRegistry has no backends — was init() called?")
         }
+        // First on-device LLM (if any) that threw TranslateGemmaTransientException
+        // during this call. Propagated into the eventual WaterfallResult so the
+        // caller can skip caching the fallback's output — without this, a
+        // single low-memory moment would freeze a lower-quality result in the
+        // cache until the next pref change.
+        var displacedLlmId: BackendId? = null
         for (backend in ordered) {
             if (!backend.isUsable(source, target)) continue
             try {
@@ -106,10 +114,18 @@ object TranslationBackendRegistry {
                     text = translated,
                     backend = backend,
                     isDegraded = backend.isDegradedFallback,
+                    displacedLlmId = displacedLlmId,
                 )
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
+                if (e is TranslateGemmaTransientException && backend is OnDeviceLlmBackend) {
+                    // Record the *first* displaced LLM in this call so the
+                    // caller can skip caching the fallback's output. Multi-
+                    // LLM displacement in the same call is rare; the first
+                    // one is the most useful signal.
+                    if (displacedLlmId == null) displacedLlmId = backend.id
+                }
                 Log.w(TAG, "Backend ${backend.id} failed (${e.javaClass.simpleName}: ${e.message}), falling back")
             }
         }
