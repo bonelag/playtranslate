@@ -1,4 +1,4 @@
-# PlayTranslate
+# PlayTranslate (Fork - Unofficial)
 
 A real-time game translation Android app, built for both language learners and people who just want to play. Supports 21 game languages and 59 user languages!
 
