@@ -1,13 +1,13 @@
 package com.playtranslate
 
-import com.playtranslate.ui.TranslationOverlayView
+import com.playtranslate.ui.TextBox
 
 /**
  * Cached overlay state for hold-to-preview and dedup re-show.
  * Includes both the overlay boxes and their positioning context.
  */
 data class CachedOverlayState(
-    val boxes: List<TranslationOverlayView.TextBox>,
+    val boxes: List<TextBox>,
     val cropLeft: Int,
     val cropTop: Int,
     val screenshotW: Int,
@@ -58,6 +58,12 @@ interface LiveMode {
 
     /** Refresh: clear state and re-capture (e.g., user pressed Reload). */
     fun refresh()
+
+    /** User-initiated dismiss: hide the on-screen overlay and re-baseline so
+     *  the next capture is clean. Triggered by a tap on a touchable per-box
+     *  overlay window. Defaults to [refresh] for modes with no overlay to
+     *  dismiss; the overlay modes override it. */
+    fun dismiss() = refresh()
 
     /** Current cached overlay state for hold-to-preview. Null if nothing cached. */
     fun getCachedState(): CachedOverlayState?

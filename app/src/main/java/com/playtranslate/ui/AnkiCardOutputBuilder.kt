@@ -37,6 +37,18 @@ object AnkiCardOutputBuilder {
         else "<img src=\"${htmlEscape(imageFilename)}\" style=\"max-width:100%;\">"
 
     /**
+     * Wraps an AnkiDroid-side media filename in Anki's `[sound:…]` tag.
+     *
+     * Unlike [pictureHtml] this emits no HTML and does not escape: Anki
+     * parses `[sound:filename]` as a directive before HTML rendering, and
+     * the filename is one AnkiDroid itself assigned (media-safe). The tag
+     * is identical for the legacy and structured paths — both write it
+     * verbatim into a field, where AnkiDroid turns it into a play button.
+     */
+    private fun soundTag(audioFilename: String?): String =
+        if (audioFilename.isNullOrEmpty()) "" else "[sound:$audioFilename]"
+
+    /**
      * Builds outputs from a sentence sheet's current state. The caller
      * may supply pre-rendered [examplesHtml] (Tatoeba pairs for the
      * highlighted word) — usually available only when the send is
@@ -48,6 +60,14 @@ object AnkiCardOutputBuilder {
         cardData: SentenceAnkiContentFragment.CardData,
         imageFilename: String?,
         examplesHtml: String = "",
+        audioFilename: String? = null,
+        /** Per-target-word audio filenames keyed by word. Threaded into
+         *  [SentenceAnkiHtmlBuilder.buildWordsHtmlWith] so each word's row
+         *  in WORDS_TABLE gets a `[sound:…]` tag. [CardOutputs.wordAudio]
+         *  stays empty — it's a single-string field that maps to one
+         *  Anki field via [ContentSource.WORD_AUDIO] and can't carry
+         *  per-word tags meaningfully. */
+        wordAudioFilenames: Map<String, String> = emptyMap(),
     ): CardOutputs {
         val firstHighlighted = cardData.words.firstOrNull {
             it.word in cardData.selectedWords
@@ -115,7 +135,20 @@ object AnkiCardOutputBuilder {
             sortedWords,
             cardData.selectedWords,
             styler = inlineStyler,
+            wordAudioFilenames = wordAudioFilenames,
         )
+        // Mapped audio fields (`ExpressionAudio`, `WordAudio`, `Word Audio`
+        // in Lapis/JPMN/Migaku) bind to `ContentSource.WORD_AUDIO`, which
+        // reads this field. For sentence mode with multiple target words,
+        // concatenate every uploaded per-word sound tag so any template
+        // wiring an audio field gets a play button per target word.
+        // Sentence order (cardData.words is already in source order) so
+        // the buttons mirror the words' position in the sentence — the
+        // inline tags in WORDS_TABLE preserve the same order.
+        val wordAudioBlock = cardData.words
+            .asSequence()
+            .filter { it.word in cardData.selectedWords && it.word in wordAudioFilenames }
+            .joinToString("") { "[sound:${wordAudioFilenames[it.word]}]" }
         return CardOutputs(
             expression = expression,
             expressionFurigana = expressionFurigana,
@@ -124,6 +157,8 @@ object AnkiCardOutputBuilder {
             sentenceFurigana = sentenceFuriganaHtml,
             sentenceTranslation = translationHtml,
             picture = pictureHtml(imageFilename),
+            wordAudio = wordAudioBlock,
+            sentenceAudio = soundTag(audioFilename),
             definition = definition,
             examples = examplesHtml,
             frequency = frequency,
@@ -163,6 +198,7 @@ object AnkiCardOutputBuilder {
         examplesHtml: String = "",
         sourceLangId: com.playtranslate.language.SourceLangId =
             com.playtranslate.language.SourceLangId.JA,
+        audioFilename: String? = null,
     ): CardOutputs = CardOutputs(
         // EXPRESSION: plain headword text — for fields rendered raw
         // via `{{Expression}}` (Lapis vocab-card front, Hint, etc.).
@@ -178,6 +214,8 @@ object AnkiCardOutputBuilder {
         sentenceFurigana = "",
         sentenceTranslation = "",
         picture = pictureHtml(imageFilename),
+        wordAudio = soundTag(audioFilename),
+        sentenceAudio = "",
         definition = definitionHtml,
         examples = examplesHtml,
         // starsString emits only ★ glyphs — safe.

@@ -1,6 +1,7 @@
 package com.playtranslate
 
 import android.graphics.Bitmap
+import com.playtranslate.capture.CaptureBackendResolver
 import com.playtranslate.language.SourceLanguageEngines
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
@@ -80,8 +81,8 @@ class OneShotManager(private val service: CaptureService) {
         val targets = activeJobs.keys.toList()
         activeJobs.values.forEach { it.cancel() }
         activeJobs.clear()
-        val a11y = PlayTranslateAccessibilityService.instance ?: return
-        for (id in targets) a11y.hideTranslationOverlayForDisplay(id)
+        val overlayUi = CaptureBackendResolver.activeOverlayUi ?: return
+        for (id in targets) overlayUi.hideTranslationOverlayForDisplay(id)
     }
 
     /** Replace the running set in preparation for a NEW cycle group.
@@ -94,8 +95,8 @@ class OneShotManager(private val service: CaptureService) {
         val toHide = activeJobs.keys - newTargets
         activeJobs.values.forEach { it.cancel() }
         activeJobs.clear()
-        val a11y = PlayTranslateAccessibilityService.instance ?: return
-        for (id in toHide) a11y.hideTranslationOverlayForDisplay(id)
+        val overlayUi = CaptureBackendResolver.activeOverlayUi ?: return
+        for (id in toHide) overlayUi.hideTranslationOverlayForDisplay(id)
     }
 
 
@@ -129,8 +130,7 @@ class OneShotManager(private val service: CaptureService) {
 
             // 4. Save screenshot for Anki — per-display filename so a
             //    concurrent live cycle on another display can't clobber it.
-            val screenshotPath = PlayTranslateAccessibilityService.instance
-                ?.screenshotManager?.saveToCache(raw, displayId)
+            val screenshotPath = service.captureSaveToCache(raw, displayId)
 
             // 5. Build boxes via processor (factory decides furigana vs translation)
             val processor = createProcessor(cycle.forceMode)
@@ -138,7 +138,7 @@ class OneShotManager(private val service: CaptureService) {
                 // Shimmer placeholder callback. Gen-check so a superseded
                 // cycle can't paint over the new generation's overlay.
                 if (cycle.generation == currentGeneration) {
-                    service.showLiveOverlay(intermediate, cropLeft, cropTop, screenshotW, screenshotH, force = true, displayId = displayId)
+                    service.showLiveOverlay(intermediate, cropLeft, cropTop, screenshotW, screenshotH, force = true, oneShot = true, displayId = displayId)
                 }
             }
 
@@ -146,7 +146,7 @@ class OneShotManager(private val service: CaptureService) {
 
             // 6. Show final overlay
             if (boxes.isNotEmpty()) {
-                service.showLiveOverlay(boxes, cropLeft, cropTop, screenshotW, screenshotH, force = true, displayId = displayId)
+                service.showLiveOverlay(boxes, cropLeft, cropTop, screenshotW, screenshotH, force = true, oneShot = true, displayId = displayId)
             }
 
             // 7. Send translation to in-app panel — only the panel-target
@@ -176,11 +176,11 @@ class OneShotManager(private val service: CaptureService) {
     }
 
     private fun showNoTextPill(displayId: Int) {
-        val a11y = PlayTranslateAccessibilityService.instance
+        val overlayUi = CaptureBackendResolver.activeOverlayUi
         val dm = service.getSystemService(android.hardware.display.DisplayManager::class.java)
         val display = dm?.getDisplay(displayId)
-        if (a11y != null && display != null) {
-            a11y.showNoTextPill(display, service.noTextMessage(displayId))
+        if (overlayUi != null && display != null) {
+            overlayUi.showNoTextPill(display, service.noTextMessage(displayId))
         }
     }
 }

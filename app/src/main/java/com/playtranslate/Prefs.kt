@@ -101,6 +101,19 @@ class Prefs(context: Context) {
             return resolved ?: SourceLangId.JA
         }
 
+    /** The user's preferred TTS voice for [lang], by [android.speech.tts.Voice]
+     *  name, or null to use the engine default. Voices are stored per language
+     *  because a voice is locale-specific. */
+    fun ttsVoiceName(lang: SourceLangId): String? =
+        sp.getString("tts_voice_${lang.code}", null)
+
+    fun setTtsVoiceName(lang: SourceLangId, voiceName: String?) {
+        sp.edit().apply {
+            if (voiceName == null) remove("tts_voice_${lang.code}")
+            else putString("tts_voice_${lang.code}", voiceName)
+        }.apply()
+    }
+
     /**
      * Set of displays the user has selected to translate. Insertion order
      * is preserved (LinkedHashSet) so "primary" disambiguators (hotkey
@@ -269,26 +282,95 @@ class Prefs(context: Context) {
         get() = sp.getBoolean(KEY_LINGVA_ENABLED, true)
         set(v) = sp.edit().putBoolean(KEY_LINGVA_ENABLED, v).apply()
 
-    /** User's explicit "use TranslateGemma?" toggle. Default false because the
-     *  backend requires a separate ~2.5 GB model download. The download flow
-     *  flips this to true on success; toggling it off opens a dialog with
-     *  "Disable only" / "Delete model" / "Cancel" choices.
-     *
-     *  The on-disk model file is the source of truth for "is the model
-     *  installed?" — see TranslateGemmaModel.isInstalled() — so we deliberately
-     *  do NOT track installation state in prefs. */
-    var translateGemmaEnabled: Boolean
-        get() = sp.getBoolean(KEY_TRANSLATEGEMMA_ENABLED, false)
-        set(v) = sp.edit().putBoolean(KEY_TRANSLATEGEMMA_ENABLED, v).apply()
+    /** Gemini API key from AI Studio (https://aistudio.google.com/app/apikey).
+     *  Empty by default — users must enter their own key in Settings. */
+    var geminiApiKey: String
+        get() = sp.getString(KEY_GEMINI_KEY, "") ?: ""
+        set(v) = sp.edit().putString(KEY_GEMINI_KEY, v).apply()
 
-    /** User-controlled toggle for the on-device Qwen 2.5 1.5B backend. Default
-     *  off; flipped on by the download flow's Success outcome (or by tapping
-     *  the row when the model file is already on disk). The disable dialog
-     *  flips it back off. File existence is checked separately via
-     *  [com.playtranslate.translation.qwen.QwenModel.isInstalled]. */
-    var qwenEnabled: Boolean
-        get() = sp.getBoolean(KEY_QWEN_ENABLED, false)
-        set(v) = sp.edit().putBoolean(KEY_QWEN_ENABLED, v).apply()
+    /** User's explicit "use Gemini?" toggle. Independent of [geminiApiKey]
+     *  presence — disabling Gemini preserves the saved key so a later
+     *  re-enable can prepopulate the entry field. Default false; no
+     *  auto-enable migration (unlike DeepL) since Gemini is a paid API
+     *  the user must opt into deliberately. */
+    var geminiEnabled: Boolean
+        get() = sp.getBoolean(KEY_GEMINI_ENABLED, false)
+        set(v) = sp.edit().putBoolean(KEY_GEMINI_ENABLED, v).apply()
+
+    /** Gemini model id. The picker in Settings stores a curated id; the
+     *  "Custom…" entry persists any user-typed string. */
+    var geminiModel: String
+        get() = sp.getString(KEY_GEMINI_MODEL, DEFAULT_GEMINI_MODEL) ?: DEFAULT_GEMINI_MODEL
+        set(v) = sp.edit().putString(KEY_GEMINI_MODEL, v).apply()
+
+    /** OpenAI API key from https://platform.openai.com/api-keys. */
+    var openaiApiKey: String
+        get() = sp.getString(KEY_OPENAI_KEY, "") ?: ""
+        set(v) = sp.edit().putString(KEY_OPENAI_KEY, v).apply()
+
+    /** User's explicit "use OpenAI?" toggle. See [geminiEnabled] for the
+     *  no-auto-enable rationale. */
+    var openaiEnabled: Boolean
+        get() = sp.getBoolean(KEY_OPENAI_ENABLED, false)
+        set(v) = sp.edit().putBoolean(KEY_OPENAI_ENABLED, v).apply()
+
+    /** OpenAI model id; "Custom…" entry persists arbitrary strings. */
+    var openaiModel: String
+        get() = sp.getString(KEY_OPENAI_MODEL, DEFAULT_OPENAI_MODEL) ?: DEFAULT_OPENAI_MODEL
+        set(v) = sp.edit().putString(KEY_OPENAI_MODEL, v).apply()
+
+    /** DeepSeek API key from https://platform.deepseek.com/api_keys. */
+    var deepseekApiKey: String
+        get() = sp.getString(KEY_DEEPSEEK_KEY, "") ?: ""
+        set(v) = sp.edit().putString(KEY_DEEPSEEK_KEY, v).apply()
+
+    /** User's explicit "use DeepSeek?" toggle. Default false; explicit
+     *  opt-in like every other paid LLM backend. */
+    var deepseekEnabled: Boolean
+        get() = sp.getBoolean(KEY_DEEPSEEK_ENABLED, false)
+        set(v) = sp.edit().putBoolean(KEY_DEEPSEEK_ENABLED, v).apply()
+
+    /** DeepSeek model id. The picker fetches the live list from
+     *  api.deepseek.com/v1/models; "Custom…" persists arbitrary strings. */
+    var deepseekModel: String
+        get() = sp.getString(KEY_DEEPSEEK_MODEL, DEFAULT_DEEPSEEK_MODEL) ?: DEFAULT_DEEPSEEK_MODEL
+        set(v) = sp.edit().putString(KEY_DEEPSEEK_MODEL, v).apply()
+
+    /** User-controlled toggle for the MNN-backed Qwen 2.5 1.5B (live-mode tier).
+     *  Default false — Settings flips this on after a successful download or
+     *  when the user enables an already-extracted install. File existence is
+     *  checked separately via
+     *  [com.playtranslate.translation.qwen.QwenMnnModel.isInstalled]. */
+    var qwenMnnEnabled: Boolean
+        get() = sp.getBoolean(KEY_QWEN_MNN_ENABLED, false)
+        set(v) = sp.edit().putBoolean(KEY_QWEN_MNN_ENABLED, v).apply()
+
+    /** User-controlled toggle for the MNN-backed Gemma 4 E2B (premium-quality
+     *  manual-lookup tier — replaces the legacy TranslateGemma 4B). Default
+     *  false; same enable/disable semantics as [qwenMnnEnabled]. File
+     *  existence checked via
+     *  [com.playtranslate.translation.gemma.GemmaE2BMnnModel.isInstalled]. */
+    var gemmaE2bEnabled: Boolean
+        get() = sp.getBoolean(KEY_GEMMA_E2B_ENABLED, false)
+        set(v) = sp.edit().putBoolean(KEY_GEMMA_E2B_ENABLED, v).apply()
+
+    /** User-controlled toggle for the MNN-backed Hunyuan-MT 1.5 1.8B —
+     *  translation-specialist tier (Tencent HY Community License, restricted
+     *  to outside EU/UK/SK; gated by [com.playtranslate.region.RegionPolicy]
+     *  before the Settings row is even shown). Default false; same
+     *  enable/disable semantics as [qwenMnnEnabled]. File existence checked
+     *  via [com.playtranslate.translation.hymt.HyMtModel.isInstalled]. */
+    var hyMtEnabled: Boolean
+        get() = sp.getBoolean(KEY_HYMT_ENABLED, false)
+        set(v) = sp.edit().putBoolean(KEY_HYMT_ENABLED, v).apply()
+
+    /** Persisted acknowledgement of the Hunyuan-MT 1.5 click-through legal
+     *  attestation dialog. Set to true after the user taps "Agree" the first
+     *  time they enable [hyMtEnabled]; subsequent enables skip the dialog.
+     *  Mirrors how Meta handles Llama ToS acceptance: one-time, persisted. */
+    var hyMtLegalAccepted: Boolean
+        get() = sp.getBoolean(KEY_HYMT_LEGAL_ACCEPTED, false)
+        set(v) = sp.edit().putBoolean(KEY_HYMT_LEGAL_ACCEPTED, v).apply()
 
     var ankiDeckId: Long
         get() = sp.getLong(KEY_ANKI_DECK_ID, -1L)
@@ -381,6 +463,21 @@ class Prefs(context: Context) {
         }
         sp.edit().putString(KEY_ANKI_FIELD_MAPPINGS, root.toString()).apply()
     }
+
+    /** Whether new word cards include synthesized word audio. Mirrors the
+     *  Audio-card switch in the word review sheet — toggling the switch
+     *  writes this, and the next card seeds the switch from it. There is
+     *  deliberately no Settings UI; the last-used state is the default. */
+    var ankiWordAudioEnabled: Boolean
+        get() = sp.getBoolean(KEY_ANKI_WORD_AUDIO, true)
+        set(v) = sp.edit().putBoolean(KEY_ANKI_WORD_AUDIO, v).apply()
+
+    /** Whether new sentence cards include synthesized sentence audio.
+     *  See [ankiWordAudioEnabled] — same last-used-state-is-the-default
+     *  behavior, for the sentence review surface. */
+    var ankiSentenceAudioEnabled: Boolean
+        get() = sp.getBoolean(KEY_ANKI_SENTENCE_AUDIO, true)
+        set(v) = sp.edit().putBoolean(KEY_ANKI_SENTENCE_AUDIO, v).apply()
 
     var showTransliteration: Boolean
         get() = sp.getBoolean(KEY_SHOW_TRANSLITERATION, false)
@@ -526,6 +623,75 @@ class Prefs(context: Context) {
             (sp.getString(KEY_DEEPL_KEY, "") ?: "").isNotBlank()) {
             sp.edit().putBoolean(KEY_DEEPL_ENABLED, true).apply()
         }
+
+        // Back-fill TTS-audio field mappings for non-default card types
+        // configured before v2.2.0 — see [migrateAnkiAudioFieldMappings].
+        migrateAnkiAudioFieldMappings()
+    }
+
+    /**
+     * One-shot back-fill of TTS-audio field mappings for non-default
+     * card types configured before v2.2.0.
+     *
+     * Until v2.2.0, [com.playtranslate.ui.ContentSource] had no audio
+     * sources, so [com.playtranslate.ui.AnkiCardTypeMapper]'s Lapis /
+     * JPMN / Migaku defaults left those templates' audio fields unmapped
+     * and the field-mapping dialog persisted them as `NONE`. A user who
+     * wired up one of those card types on v2.1.0 therefore carries a
+     * saved mapping that pins every audio field to `NONE` — and because
+     * [getAnkiFieldMapping] is authoritative once non-empty, the v2.2.0
+     * audio defaults never get a chance to fill them in. The send path
+     * then silently drops the synthesized audio: no field carries the
+     * `[sound:]` tag, the media upload still succeeds, and nothing
+     * reports the loss.
+     *
+     * This walks every saved mapping and rewrites any audio field still
+     * sitting at `NONE` to its
+     * [com.playtranslate.ui.AnkiCardTypeMapper.AUDIO_FIELD_DEFAULTS]
+     * source. It touches only fields already present in the saved JSON,
+     * and only those still at `NONE` — a field the user (or a
+     * fresh-v2.2.0 default) already mapped is left as-is. Gated on
+     * [KEY_ANKI_AUDIO_MAPPING_MIGRATED] so it runs exactly once: after
+     * it, a `NONE` on an audio field is a deliberate choice to keep.
+     */
+    private fun migrateAnkiAudioFieldMappings() {
+        if (sp.contains(KEY_ANKI_AUDIO_MAPPING_MIGRATED)) return
+
+        val raw = sp.getString(KEY_ANKI_FIELD_MAPPINGS, null)
+        if (raw != null) {
+            try {
+                val root = JSONObject(raw)
+                val audioDefaults = com.playtranslate.ui.AnkiCardTypeMapper.AUDIO_FIELD_DEFAULTS
+                val noneName = com.playtranslate.ui.ContentSource.NONE.name
+                var changed = false
+                val modelIds = root.keys()
+                while (modelIds.hasNext()) {
+                    val obj = root.optJSONObject(modelIds.next()) ?: continue
+                    for ((fieldName, source) in audioDefaults) {
+                        // Back-fill only a field the pre-v2.2.0 dialog
+                        // left at NONE. An absent field — the model
+                        // gained the audio slot in AnkiDroid after the
+                        // mapping was saved — is left for the mapping
+                        // dialog; that is a schema change, not a
+                        // v2.1.0→v2.2.0 upgrade gap.
+                        if (obj.has(fieldName) && obj.optString(fieldName) == noneName) {
+                            obj.put(fieldName, source.name)
+                            changed = true
+                        }
+                    }
+                }
+                if (changed) {
+                    sp.edit().putString(KEY_ANKI_FIELD_MAPPINGS, root.toString()).apply()
+                }
+            } catch (_: Exception) {
+                // Corrupt JSON — getAnkiFieldMapping already degrades it
+                // to an empty mapping, so there is nothing to migrate.
+                // Fall through and set the marker rather than re-parsing
+                // a broken blob on every launch.
+            }
+        }
+
+        sp.edit().putBoolean(KEY_ANKI_AUDIO_MAPPING_MIGRATED, true).apply()
     }
 
     /** Hotkey combo for hold-to-show translations. Empty = not set. Format: keyCodes joined by "+". */
@@ -555,11 +721,6 @@ class Prefs(context: Context) {
     var showOverlayIcon: Boolean
         get() = sp.getBoolean(KEY_SHOW_OVERLAY_ICON, true)
         set(v) = sp.edit().putBoolean(KEY_SHOW_OVERLAY_ICON, v).apply()
-
-    /** Compact mode: shows 1/3 of circle with arrow instead of full icon. */
-    var compactOverlayIcon: Boolean
-        get() = sp.getBoolean("compact_overlay_icon", false)
-        set(v) = sp.edit().putBoolean("compact_overlay_icon", v).apply()
 
     /** Set to true once StatusBarManager.requestAddTileService reports the
      *  PlayTranslate tile is added (or already added). Drives whether the
@@ -693,12 +854,42 @@ class Prefs(context: Context) {
         private const val KEY_ANKI_MODEL_ID        = "anki_model_id"
         private const val KEY_ANKI_MODEL_NAME      = "anki_model_name"
         private const val KEY_ANKI_FIELD_MAPPINGS  = "anki_field_mappings"   // JSON
+        private const val KEY_ANKI_WORD_AUDIO      = "anki_word_audio_enabled"
+        private const val KEY_ANKI_SENTENCE_AUDIO  = "anki_sentence_audio_enabled"
+        private const val KEY_ANKI_AUDIO_MAPPING_MIGRATED = "anki_audio_mapping_migrated"
         private const val KEY_REGION_LIST    = "region_list"
         private const val KEY_DEEPL_KEY      = "deepl_api_key"
         const val KEY_DEEPL_ENABLED          = "deepl_enabled"
         const val KEY_LINGVA_ENABLED         = "lingva_enabled"
-        const val KEY_TRANSLATEGEMMA_ENABLED = "translategemma_enabled"
-        const val KEY_QWEN_ENABLED           = "qwen_enabled"
+        const val KEY_QWEN_MNN_ENABLED   = "qwen_mnn_enabled"
+        const val KEY_GEMMA_E2B_ENABLED  = "gemma_e2b_enabled"
+        const val KEY_HYMT_ENABLED          = "hymt_enabled"
+        const val KEY_HYMT_LEGAL_ACCEPTED   = "hymt_legal_accepted"
+        const val KEY_GEMINI_KEY                    = "gemini_api_key"
+        const val KEY_GEMINI_ENABLED                = "gemini_enabled"
+        const val KEY_GEMINI_MODEL                  = "gemini_model"
+        const val KEY_OPENAI_KEY                    = "openai_api_key"
+        const val KEY_OPENAI_ENABLED                = "openai_enabled"
+        const val KEY_OPENAI_MODEL                  = "openai_model"
+        const val KEY_DEEPSEEK_KEY                  = "deepseek_api_key"
+        const val KEY_DEEPSEEK_ENABLED              = "deepseek_enabled"
+        const val KEY_DEEPSEEK_MODEL                = "deepseek_model"
+
+        /** Default selected model — chosen to match the first entry in
+         *  the picker after filtering + sorting (newest alias by
+         *  `created` timestamp for OpenAI; highest stable version's
+         *  alphabetical-first variant for Gemini). These are best
+         *  guesses; the picker's listModels log line shows the actual
+         *  top so we can adjust if wrong. */
+        const val DEFAULT_OPENAI_MODEL    = "chat-latest"
+        const val DEFAULT_GEMINI_MODEL    = "gemini-flash-lite-latest"
+        // DeepSeek doesn't ship a rolling -latest alias (per api-docs.
+        // deepseek.com). The legacy `deepseek-chat` / `deepseek-reasoner`
+        // aliases are scheduled for retirement on 2026-07-24, both
+        // currently route to v4-flash anyway. Pin directly to flash —
+        // mirrors the "small/fast/cheap" default we use on Gemini
+        // (flash-lite-latest).
+        const val DEFAULT_DEEPSEEK_MODEL  = "deepseek-v4-flash"
         private const val KEY_LEGACY_THEME_INDEX    = "theme_index"
         private const val KEY_THEME_MODE            = "theme_mode"
         private const val KEY_ACCENT_NAME           = "accent_name"

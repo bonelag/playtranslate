@@ -197,11 +197,20 @@ class TranslationResultViewModel : ViewModel() {
 
     /** Update the translation text on the current Ready result.
      *  Promotes Translating → Ready when the translation lands; the
-     *  caller-supplied [translated] becomes the result's translation. */
-    fun updateTranslation(translated: String) {
+     *  caller-supplied [translated] becomes the result's translation.
+     *  [backendDisplayName] replaces the backend identity so a re-translate
+     *  via a different backend doesn't leave the previous "Translated by …"
+     *  label glued to the new text. Defaults to null so error-path callers
+     *  ("" / "—") naturally clear the stale label that no longer matches. */
+    fun updateTranslation(translated: String, backendDisplayName: String? = null) {
         when (val cur = _result.value) {
             is ResultState.Ready -> {
-                _result.value = ResultState.Ready(cur.result.copy(translatedText = translated))
+                _result.value = ResultState.Ready(
+                    cur.result.copy(
+                        translatedText = translated,
+                        backendDisplayName = backendDisplayName,
+                    )
+                )
             }
             is ResultState.Translating -> {
                 _result.value = ResultState.Ready(
@@ -212,6 +221,7 @@ class TranslationResultViewModel : ViewModel() {
                         timestamp = "",
                         screenshotPath = null,
                         note = null,
+                        backendDisplayName = backendDisplayName,
                     )
                 )
             }
@@ -244,10 +254,13 @@ class TranslationResultViewModel : ViewModel() {
                 // LastSentenceCache stays in sync — same write target as
                 // before the hoist; only the writer changed (was fragment).
                 val ready = _result.value as? ResultState.Ready
-                LastSentenceCache.original = ready?.result?.originalText
-                LastSentenceCache.translation = ready?.result?.translatedText
-                LastSentenceCache.wordResults = data.rows.toLegacyMap()
-                LastSentenceCache.surfaceForms = data.surfaces
+                LastSentenceCache.setFromTranslationResult(
+                    original = ready?.result?.originalText,
+                    translation = ready?.result?.translatedText,
+                    translationSource = ready?.result?.backendDisplayName,
+                    wordResults = data.rows.toLegacyMap(),
+                    surfaceForms = data.surfaces,
+                )
             } catch (e: CancellationException) {
                 // Caller cancelled (e.g. new text arrived) — let the next
                 // emission drive state. Don't write Settled here.
@@ -482,3 +495,13 @@ data class RowState(
  *  consume for Anki field building. */
 fun List<RowState>.toLegacyMap(): Map<String, Triple<String, String, Int>> =
     associate { it.displayWord to Triple(it.reading, it.meaning, it.freqScore) }
+
+/** Surface-form map paired with [toLegacyMap]. Both extensions read
+ *  the same in-memory [RowState] list, so callers that snapshot both
+ *  in a single pass keep word→surface alignment intact — important
+ *  for one-tap card sends, which can't rely on reading
+ *  `LastSentenceCache.surfaceForms` separately (the cache is
+ *  process-global and may have rotated to a different sentence by
+ *  the time a downstream consumer reads it). */
+fun List<RowState>.toSurfaceMap(): Map<String, String> =
+    associate { it.displayWord to it.surface }

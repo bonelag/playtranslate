@@ -1,5 +1,7 @@
 package com.playtranslate
 
+import com.playtranslate.capture.CaptureBackendResolver
+
 import android.Manifest
 import com.playtranslate.applyTheme
 import com.playtranslate.themeColor
@@ -107,7 +109,6 @@ class MainActivity :
     private lateinit var pageWelcome: View
     private lateinit var pageNotif: View
     private lateinit var pageA11y: View
-    private lateinit var pageA11ySingle: View
     private lateinit var rowWelcomeGameLang: View
     private lateinit var rowWelcomeYourLang: View
     private lateinit var btnWelcomeContinue: Button
@@ -175,18 +176,66 @@ class MainActivity :
 
     private val displayListener = object : DisplayManager.DisplayListener {
         override fun onDisplayAdded(displayId: Int) { runOnUiThread {
+            dumpDisplayState("displayAdded:$displayId")
             if (!isFinishing) {
                 checkOnboardingState()
-                PlayTranslateAccessibilityService.instance?.reconcileFloatingIcons()
+                CaptureBackendResolver.activeOverlayUi?.reconcileFloatingIcons()
             }
         } }
         override fun onDisplayRemoved(displayId: Int) { runOnUiThread {
+            dumpDisplayState("displayRemoved:$displayId")
             if (!isFinishing) {
                 checkOnboardingState()
-                PlayTranslateAccessibilityService.instance?.reconcileFloatingIcons()
+                CaptureBackendResolver.activeOverlayUi?.reconcileFloatingIcons()
             }
         } }
-        override fun onDisplayChanged(displayId: Int) {}
+        override fun onDisplayChanged(displayId: Int) { runOnUiThread {
+            dumpDisplayState("displayChanged:$displayId")
+            if (!isFinishing) {
+                // Treat doze/un-doze as topology changes: capturableDisplays()
+                // filters on STATE_ON, so isSingleScreen() flips when a
+                // secondary display dims, and the onboarding/floating-icon
+                // state has to reconcile the same way it does on add/remove.
+                // Both handlers are idempotent — brightness changes and
+                // rotations that don't flip the predicates are no-ops.
+                checkOnboardingState()
+                CaptureBackendResolver.activeOverlayUi?.reconcileFloatingIcons()
+            }
+        } }
+    }
+
+    /**
+     * Diagnostic dump of the device's display topology and our windowing
+     * state. Lands in the user-facing logcat export (last 5000 lines) so
+     * support reports can confirm whether [Prefs.hasMultipleDisplays] is
+     * seeing the right thing on unusual devices (foldables, dual-screen,
+     * Surface Duo). Tag is fresh so it greps cleanly.
+     */
+    private fun dumpDisplayState(reason: String) {
+        try {
+            val dm = getSystemService(Context.DISPLAY_SERVICE) as DisplayManager
+            val displays = dm.displays
+            val presentation = dm.getDisplays(DisplayManager.DISPLAY_CATEGORY_PRESENTATION)
+            val winBounds = windowManager.currentWindowMetrics.bounds
+            android.util.Log.i(TAG_DISPLAY_DUMP,
+                "[$reason] displays=${displays.size} presentation=${presentation.size} " +
+                    "multiWindow=$isInMultiWindowMode " +
+                    "winBounds=${winBounds.width()}x${winBounds.height()}@(${winBounds.left},${winBounds.top}) " +
+                    "device='${Build.MANUFACTURER} ${Build.MODEL}' sdk=${Build.VERSION.SDK_INT}")
+            displays.forEach { d ->
+                val sz = android.graphics.Point().also { d.getRealSize(it) }
+                android.util.Log.i(TAG_DISPLAY_DUMP,
+                    "  id=${d.displayId} name='${d.name}' " +
+                        "flags=0x${Integer.toHexString(d.flags)} state=${d.state} " +
+                        "size=${sz.x}x${sz.y} valid=${d.isValid}")
+            }
+            presentation.forEach { d ->
+                android.util.Log.i(TAG_DISPLAY_DUMP,
+                    "  presentationCat id=${d.displayId} name='${d.name}'")
+            }
+        } catch (t: Throwable) {
+            android.util.Log.w(TAG_DISPLAY_DUMP, "[$reason] dump failed", t)
+        }
     }
 
     // ── State ─────────────────────────────────────────────────────────────
@@ -329,6 +378,7 @@ class MainActivity :
         startAndBindService()
         (getSystemService(Context.DISPLAY_SERVICE) as DisplayManager)
             .registerDisplayListener(displayListener, null)
+        dumpDisplayState("onCreate")
 
         // Pack-upgrade gate: scan installed packs against the bundled
         // catalog. If any are stale (catalog packVersion > on-disk
@@ -339,33 +389,49 @@ class MainActivity :
         // `~/.claude/plans/cheerful-yawning-donut.md` and the StalePack
         // ordering analysis from the plan review.
         maybePromptForPackUpgrade { skipTargetCodes ->
-            setupOnboarding()
-            // Only preload when the source pack is actually present.
-            // Fresh-install and data-wiped users route through the welcome
-            // flow to download a pack first; preloading before that would
-            // just log a PackMissing and is pointless.
-            if (LanguagePackStore.isInstalled(applicationContext, prefs.sourceLangId)) {
-                lifecycleScope.launch(Dispatchers.IO) {
-                    preloadEngineAndRecover(prefs.sourceLangId)
+            // Chain the legacy-engines-removed migration alert at the call
+            // site here (instead of inside maybePromptForPackUpgrade) so
+            // both helpers stay independent — pack-upgrade doesn't need to
+            // know about engine-tier migration, and a future deep-link
+            // that triggers pack-upgrade-only can call it directly.
+            maybePromptForLegacyEnginesRemoved {
+                setupOnboarding()
+                // Only preload when the source pack is actually present.
+                // Fresh-install and data-wiped users route through the welcome
+                // flow to download a pack first; preloading before that would
+                // just log a PackMissing and is pointless.
+                if (LanguagePackStore.isInstalled(applicationContext, prefs.sourceLangId)) {
+                    lifecycleScope.launch(Dispatchers.IO) {
+                        preloadEngineAndRecover(prefs.sourceLangId)
+                    }
                 }
+                // One-shot migration: if the user already has a non-English target but
+                // no target gloss pack installed, offer to download it. Skips any
+                // target the upgrade flow already handled (or is about to handle)
+                // to avoid two prompts addressing the same pack.
+                checkTargetPackMigration(skipTargetCodes)
             }
-            // One-shot migration: if the user already has a non-English target but
-            // no target gloss pack installed, offer to download it. Skips any
-            // target the upgrade flow already handled (or is about to handle)
-            // to avoid two prompts addressing the same pack.
-            checkTargetPackMigration(skipTargetCodes)
         }
 
         // Fragment event handlers live on TranslationResultHost (which
         // this activity already implements) — no separate sink wiring
         // needed.
 
-        // Restore previously selected tab (survives recreate for theme changes)
-        val restoredTab = Tab.entries.getOrElse(
-            savedInstanceState?.getInt("selected_tab", 0) ?: 0
-        ) { Tab.TRANSLATE }
-        selectTab(restoredTab)
-        when (restoredTab) {
+        // The tab to open on launch. A recreate (theme change) restores the
+        // tab the user was on. A cold launch opens Translate — except
+        // dual-screen on the MediaProjection backend, which opens Settings:
+        // that is where Turn On lives, and MediaProjection consent must be
+        // re-granted each session since it does not survive a process restart.
+        val initialTab = when {
+            savedInstanceState != null -> Tab.entries.getOrElse(
+                savedInstanceState.getInt("selected_tab", 0)
+            ) { Tab.TRANSLATE }
+            !isSingleScreen() &&
+                !CaptureBackendResolver.active().requiresAccessibilityService -> Tab.SETTINGS
+            else -> Tab.TRANSLATE
+        }
+        selectTab(initialTab)
+        when (initialTab) {
             Tab.SETTINGS -> openSettingsInline()
             Tab.REGIONS -> openRegionPickerInline()
             else -> {}
@@ -457,14 +523,14 @@ class MainActivity :
         // needed. (The old re-wire was a band-aid for
         // TranslationResultActivity nulling shared callback fields,
         // which it no longer does.)
-        PlayTranslateAccessibilityService.instance?.reconcileFloatingIcons()
+        CaptureBackendResolver.activeOverlayUi?.reconcileFloatingIcons()
         checkOnboardingState()
         maybeCheckForUpdates()
         if (onboardingContainer.visibility == View.VISIBLE) return
         if (isSingleScreen()) return
         initLiveHintText()
         updateRegionButton()
-        updateActionButtonState()
+        updateCaptureReadyStatus()
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
@@ -480,6 +546,7 @@ class MainActivity :
     override fun onMultiWindowModeChanged(isInMultiWindowMode: Boolean, newConfig: Configuration) {
         super.onMultiWindowModeChanged(isInMultiWindowMode, newConfig)
         MainActivity.isInMultiWindowMode = isInMultiWindowMode
+        dumpDisplayState("multiWindow=$isInMultiWindowMode")
         // Let a running live session adapt if the viewport predicate flipped.
         // No-op if live mode isn't active.
         CaptureService.instance?.onMultiWindowChanged()
@@ -487,6 +554,7 @@ class MainActivity :
 
     override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)
+        dumpDisplayState("configChanged")
         // Display swap may have happened without onPause/onResume because
         // our manifest swallows screenLayout|smallestScreenSize via
         // configChanges. The live foregroundDisplayId getter returns the
@@ -562,7 +630,6 @@ class MainActivity :
         pageWelcome          = findViewById(R.id.pageWelcome)
         pageNotif            = findViewById(R.id.pageNotif)
         pageA11y             = findViewById(R.id.pageA11y)
-        pageA11ySingle       = findViewById(R.id.pageA11ySingle)
         rowWelcomeGameLang   = findViewById(R.id.rowWelcomeGameLang)
         rowWelcomeYourLang   = findViewById(R.id.rowWelcomeYourLang)
         btnWelcomeContinue   = findViewById(R.id.btnWelcomeContinue)
@@ -683,9 +750,9 @@ class MainActivity :
     }
 
     private fun doStartLive() {
-        val a11y = PlayTranslateAccessibilityService.instance
-        val hadPopup = a11y?.isAnyDragLookupPopupShowing == true
-        a11y?.dismissAllDragLookupPopups()
+        val ui = CaptureBackendResolver.activeOverlayUi
+        val hadPopup = ui?.isAnyDragLookupPopupShowing == true
+        ui?.dismissAllDragLookupPopups()
         ensureConfigured()
         if (hadPopup) {
             window.decorView.postDelayed({ captureService?.startLive() }, 100)
@@ -910,16 +977,21 @@ class MainActivity :
         openSettingsInline()
     }
 
-    /** Add the settings fragment to the already-visible settings container. */
-    private fun openSettingsInline() {
-        val sheet = SettingsBottomSheet.newInstance(hideDismiss = false).apply {
+    /** Add the settings fragment to the already-visible settings container.
+     *  [anchor], if non-null, is passed through to [SettingsBottomSheet.newInstance]
+     *  so the freshly-bound sheet scrolls the corresponding section header
+     *  into view on its first layout pass — for deep-links like the
+     *  cold-launch Qwen-legacy nudge that want to land the user at a
+     *  specific section without creating a duplicate fragment. */
+    private fun openSettingsInline(anchor: com.playtranslate.ui.SettingsAnchor? = null) {
+        val sheet = SettingsBottomSheet.newInstance(hideDismiss = false, anchor = anchor).apply {
             setShowsDialog(false)
             onDisplayChanged = {
                 val wasLive = captureService?.isLive == true
                 // configureService() writes display/region; language managers
                 // self-heal via ensureLanguageManagersFor.
                 configureService()
-                PlayTranslateAccessibilityService.instance?.reconcileFloatingIcons()
+                CaptureBackendResolver.activeOverlayUi?.reconcileFloatingIcons()
                 if (wasLive) {
                     captureService?.stopLive()
                     withAccessibility { doStartLive() }
@@ -948,6 +1020,45 @@ class MainActivity :
         selectTab(Tab.TRANSLATE)
     }
 
+    /**
+     * Open Settings keyed to a specific section anchor — without duplicating
+     * the SettingsBottomSheet fragment if one already exists.
+     *
+     * Three states it has to handle:
+     *  - **Dual-screen, default Settings tab**: a SettingsBottomSheet is
+     *    already in the fragment manager (added by [openSettingsInline] at
+     *    initial-tab selection). Just scroll *that* instance to the anchor.
+     *  - **Single-screen, Settings tab visited earlier**: the sheet was
+     *    removed when the user navigated away (see [selectTab]'s fragment
+     *    cleanup at line 859), so the fragment manager doesn't have it.
+     *    Select the SETTINGS tab and add a fresh sheet with the anchor
+     *    baked into its arguments.
+     *  - **Single-screen, never visited Settings**: same as above.
+     *
+     * Replaces the earlier `SettingsBottomSheet.newInstance(…).show(…)`
+     * approach that incorrectly used the DialogFragment `.show()` path to
+     * stack a *modal* dialog over the existing fragment.
+     */
+    private fun openSettingsAtAnchor(anchor: com.playtranslate.ui.SettingsAnchor) {
+        val existing = supportFragmentManager
+            .findFragmentByTag(SettingsBottomSheet.TAG) as? SettingsBottomSheet
+        if (existing != null) {
+            // Sheet already attached (dual-screen default, or onboarding
+            // dialog mode — both wear the same TAG). Scrolling in place
+            // beats creating a second instance.
+            existing.scrollToAnchor(anchor)
+            // Defensive: a dual-screen flow that switched away from SETTINGS
+            // between alert fire + button tap should land back on it. Normal
+            // dual-screen path is a no-op (selectedTab is already SETTINGS).
+            if (selectedTab != Tab.SETTINGS) selectTab(Tab.SETTINGS)
+            return
+        }
+        // No existing sheet — switch to the Settings tab and add a fresh
+        // sheet with the anchor pre-set via newInstance args.
+        if (selectedTab != Tab.SETTINGS) selectTab(Tab.SETTINGS)
+        openSettingsInline(anchor)
+    }
+
     /** Creates and shows a SettingsBottomSheet as a dialog (for onboarding). */
     private fun showSettingsSheet(hideDismiss: Boolean) {
         val sheet = SettingsBottomSheet.newInstance(hideDismiss = hideDismiss).apply {
@@ -956,7 +1067,7 @@ class MainActivity :
                 // configureService() writes display/region; language managers
                 // self-heal via ensureLanguageManagersFor.
                 configureService()
-                PlayTranslateAccessibilityService.instance?.reconcileFloatingIcons()
+                CaptureBackendResolver.activeOverlayUi?.reconcileFloatingIcons()
                 if (wasLive) {
                     captureService?.stopLive()
                     withAccessibility { doStartLive() }
@@ -978,18 +1089,28 @@ class MainActivity :
         ft.commitAllowingStateLoss()
     }
 
-    /** True when the user has the accessibility service enabled in system
-     *  Settings. Reads through `isEnabled(ctx)` so the action button doesn't
-     *  flicker dim → enabled when the service binds shortly after a cold
-     *  start — taps during the brief unbound window are absorbed by the
-     *  three-way decision in [withAccessibility] rather than gated here. */
+    /** True when the active capture backend's prerequisites are satisfied:
+     *  on the accessibility backend, the service is enabled in system
+     *  Settings; on the MediaProjection backend, there is no prerequisite to
+     *  gate on here (consent is requested on-demand). Reads through
+     *  `isEnabled(ctx)` rather than the bound-instance check so the
+     *  capture-readiness status doesn't flicker needed → idle while the
+     *  accessibility service binds shortly after a cold start — taps during
+     *  the brief unbound window are absorbed by the three-way decision in
+     *  [withAccessibility] rather than gated here.
+     *
+     *  Mirrors the broader `captureReady` formula in [checkOnboardingState]
+     *  so MediaProjection users don't see the stale "Accessibility required"
+     *  message in the Translate status area. */
     private val isCaptureReady: Boolean
-        get() = PlayTranslateAccessibilityService.isEnabled(this)
+        get() = PlayTranslateAccessibilityService.isEnabled(this) ||
+            !CaptureBackendResolver.active().requiresAccessibilityService
 
-    /** Dims the action button when no capture method is available. */
-    private fun updateActionButtonState() {
+    /** Reconciles the result-area status line with capture readiness: shows
+     *  the "enable accessibility" prompt while the accessibility service is
+     *  disabled, and clears it once the service is enabled. */
+    private fun updateCaptureReadyStatus() {
         val ready = isCaptureReady
-        btnTranslate.alpha = if (ready) 1f else 0.45f
         val current = resultVm.result.value as? com.playtranslate.ui.ResultState.Status ?: return
         if (!ready) {
             resultVm.showStatus(getString(R.string.status_accessibility_needed), showHint = false)
@@ -1017,7 +1138,7 @@ class MainActivity :
      * LiveData.observe.
      */
     private fun onDegradedStateChanged(degraded: Boolean) {
-        PlayTranslateAccessibilityService.instance?.setIconsDegraded(degraded)
+        CaptureBackendResolver.activeOverlayUi?.setIconsDegraded(degraded)
     }
 
     /** Subscribe to the service's outbound event flows. Called once per
@@ -1118,7 +1239,7 @@ class MainActivity :
                 }
                 launch {
                     svc.holdLoading.collect { loading ->
-                        PlayTranslateAccessibilityService.instance?.setIconsLoading(loading)
+                        CaptureBackendResolver.activeOverlayUi?.setIconsLoading(loading)
                     }
                 }
             }
@@ -1155,14 +1276,15 @@ class MainActivity :
             // self-heals language managers on first call.
             lifecycleScope.launch {
                 try {
-                    val (translated, note) = svc.translateOnce(lineText)
+                    val groupTranslation = svc.translateOnce(lineText)
                     val result = TranslationResult(
-                        originalText = lineText,
-                        segments = segments,
-                        translatedText = translated,
-                        timestamp = timestamp,
-                        screenshotPath = screenshotPath,
-                        note = note
+                        originalText       = lineText,
+                        segments           = segments,
+                        translatedText     = groupTranslation.text,
+                        timestamp          = timestamp,
+                        screenshotPath     = screenshotPath,
+                        note               = groupTranslation.note,
+                        backendDisplayName = groupTranslation.backendDisplayName,
                     )
                     resultVm.displayResult(result, applicationContext)
                 } catch (e: Exception) {
@@ -1232,6 +1354,12 @@ class MainActivity :
 
     private fun withAccessibility(action: () -> Unit) {
         when {
+            // The active capture backend (MediaProjection) doesn't depend on
+            // the accessibility service — run directly without gating on it.
+            !CaptureBackendResolver.active().requiresAccessibilityService -> {
+                ensureConfigured()
+                action()
+            }
             PlayTranslateAccessibilityService.isConnected -> {
                 ensureConfigured()
                 action()
@@ -1260,7 +1388,14 @@ class MainActivity :
             // KEY_DISPLAY_IDS from the legacy KEY_DISPLAY_ID before this
             // gate ever runs.
             if (!prefs.hasDisplaySelection) {
-                prefs.captureDisplayIds = setOf(findGameDisplayId())
+                // Seed the saved selection: the auto-detected game display if
+                // this backend can capture it, else the backend's fallback
+                // (MediaProjection only mirrors the default, so any other
+                // detection is stale from the start). Routes through the
+                // shared backend shim so seeding behaves like every other
+                // call site that turns a selection into the working set.
+                prefs.captureDisplayIds = CaptureBackendResolver.active()
+                    .capturableTargets(setOf(findGameDisplayId()))
             }
             configureService()
         }
@@ -1291,7 +1426,7 @@ class MainActivity :
         // side effect of configureSaved → ensureLanguageManagersFor.
         configureService()
         updateRegionButton()
-        PlayTranslateAccessibilityService.instance?.reconcileFloatingIcons()
+        CaptureBackendResolver.activeOverlayUi?.reconcileFloatingIcons()
         if (LanguagePackStore.isInstalled(applicationContext, prefs.sourceLangId)) {
             lifecycleScope.launch(Dispatchers.IO) {
                 preloadEngineAndRecover(prefs.sourceLangId)
@@ -1349,7 +1484,7 @@ class MainActivity :
             // No handler — scrim tap and "Later" tap both just dismiss;
             // files remain on disk and the prompt re-fires next launch.
             .addCancelButton("Later")
-            .showInActivity(this)
+            .show()
     }
 
     /**
@@ -1386,16 +1521,72 @@ class MainActivity :
                     onProceed(skipTargetCodes)
                 }
             }
-            // addCancelButton routes both the button tap AND scrim tap
-            // through this handler, so onProceed always resumes
-            // setupOnboarding/preload/checkTargetPackMigration regardless
-            // of which dismissal path the user took. Re-prompts on next
-            // launch — the staleness scan keeps returning these packs
-            // until the user actually downloads.
-            .addCancelButton(getString(R.string.pack_upgrade_button_later)) {
-                onProceed(skipTargetCodes)
+            // addCancelButton routes button tap, scrim tap, AND back-press
+            // through this handler — those are all explicit user dismissals,
+            // so onProceed resumes setupOnboarding/preload/checkTargetPackMigration.
+            // LIFECYCLE_PAUSE (host activity paused without the user picking
+            // a button) is NOT a decision: skip onProceed so we don't silently
+            // advance past a choice the user never made. The downstream chain
+            // stays gated for this session; next launch's staleness scan
+            // re-prompts.
+            .addCancelButton(getString(R.string.pack_upgrade_button_later)) { reason ->
+                if (reason == com.playtranslate.ui.DismissReason.USER) {
+                    onProceed(skipTargetCodes)
+                }
             }
-            .showInActivity(this)
+            .show()
+    }
+
+    /**
+     * Cold-launch migration alert for users upgrading from a version with
+     * `:llama`-backed legacy translators (Qwen GGUF and/or TranslateGemma
+     * 4B GGUF). Fires once: if either GGUF (or its `.partial` resume artifact)
+     * is on disk, this method deletes all of them and shows a one-time
+     * OverlayAlert explaining the change. After deletion, future cold
+     * launches find nothing and skip the alert.
+     *
+     * [onProceed] is always invoked exactly once — same contract as
+     * [maybePromptForPackUpgrade]'s onProceed. Tapping "Settings"
+     * deep-links to the Offline Translation section so the user can enable
+     * the new MNN-backed E2B + Qwen-MNN tiers; tapping "Cancel" or
+     * dismissing the scrim just proceeds with no further state change.
+     *
+     * Deletion is irreversible regardless of which dismissal path the user
+     * takes — there's no "Keep them" option because the new code has no
+     * way to load the GGUFs (no `:llama` module, no LlamaTranslator). The
+     * alert is informational; the work is the cleanup.
+     */
+    private fun maybePromptForLegacyEnginesRemoved(onProceed: () -> Unit) {
+        val modelsDir = java.io.File(noBackupFilesDir, "models")
+        val legacyFiles = listOf(
+            java.io.File(modelsDir, "qwen2.5-1.5b-instruct-q4_0.gguf"),
+            java.io.File(modelsDir, "translategemma-4b-it.Q4_0.gguf"),
+        )
+        val partialFiles = legacyFiles.map { java.io.File(it.parentFile, "${it.name}.partial") }
+        val candidates = legacyFiles + partialFiles
+        if (candidates.none { it.exists() }) { onProceed(); return }
+        // Delete first — irreversible regardless of which alert button the
+        // user taps. Multi-GB GGUFs disappear; .partial siblings (resume
+        // artifacts from interrupted downloads) too.
+        candidates.forEach { if (it.exists()) it.delete() }
+        OverlayAlert.Builder(this)
+            .setTitle(getString(R.string.legacy_engines_removed_title))
+            .setMessage(getString(R.string.legacy_engines_removed_message))
+            .addButton(
+                getString(R.string.legacy_engines_removed_button_settings),
+                themeColor(R.attr.ptAccent),
+            ) {
+                openSettingsAtAnchor(com.playtranslate.ui.SettingsAnchor.OfflineTranslation)
+                onProceed()
+            }
+            // Same USER-only gate as pack-upgrade: don't silently advance
+            // setupOnboarding/preload on a transient lifecycle pause.
+            .addCancelButton(getString(R.string.legacy_engines_removed_button_cancel)) { reason ->
+                if (reason == com.playtranslate.ui.DismissReason.USER) {
+                    onProceed()
+                }
+            }
+            .show()
     }
 
     private fun maybeCheckForUpdates() {
@@ -1430,7 +1621,7 @@ class MainActivity :
             // UpdateChecker.maybeCheck — no per-dismissal bookkeeping
             // needed; both cancel-button tap and scrim tap end the alert.
             .addCancelButton("Ask again later")
-            .showInActivity(this)
+            .show()
     }
 
     private fun showRestrictedSettingsDialog() {
@@ -1447,12 +1638,15 @@ class MainActivity :
                 startActivity(intent)
             }
             .addCancelButton()
-            .showInActivity(this)
+            .show()
     }
 
     private fun isSingleScreen(): Boolean = Prefs.isSingleScreen(this)
 
     private fun checkOnboardingState() {
+        // Re-derive the capture backend from current permissions first — a
+        // grant made in system Settings only reaches us on resume.
+        CaptureBackendResolver.reresolve(this)
         val prefs = Prefs(this)
         val sourceInstalled = LanguagePackStore.isInstalled(this, prefs.sourceLangId)
         val languageConfigured = sourceInstalled && prefs.hasTargetLangBeenSet
@@ -1472,7 +1666,11 @@ class MainActivity :
         val notifGranted = Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
             ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) ==
             PackageManager.PERMISSION_GRANTED
-        val a11yEnabled = PlayTranslateAccessibilityService.isEnabled(this)
+        // The accessibility onboarding page only needs to be forced when the
+        // active capture backend depends on the accessibility service. The
+        // MediaProjection backend does not, so an approved MP setup skips it.
+        val captureReady = PlayTranslateAccessibilityService.isEnabled(this) ||
+            !CaptureBackendResolver.active().requiresAccessibilityService
         // Use the viewport predicate (not hasMultipleDisplays) so split-screen
         // users don't fall into the forced non-dismissible settings sheet
         // below. The sheet exists because in pure single-screen fullscreen
@@ -1488,9 +1686,9 @@ class MainActivity :
         }
 
         if (singleScreen) {
-            if (!a11yEnabled) {
+            if (!captureReady) {
                 existingSheet?.dismissAllowingStateLoss()
-                showOnboardingPage(pageA11ySingle)
+                showOnboardingPage(pageA11y)
                 return
             }
             onboardingContainer.visibility = View.GONE
@@ -1507,8 +1705,17 @@ class MainActivity :
             existingSheet.dismissAllowingStateLoss()
         }
 
-        if (a11yEnabled) {
+        if (captureReady) {
+            // Finishing onboarding by granting the overlay permission (the
+            // MediaProjection backend, accessibility off) drops the user on
+            // Settings, where the Turn On control lives.
+            val leavingOnboarding = onboardingContainer.visibility == View.VISIBLE
             onboardingContainer.visibility = View.GONE
+            if (leavingOnboarding &&
+                !CaptureBackendResolver.active().requiresAccessibilityService) {
+                selectTab(Tab.SETTINGS)
+                openSettingsInline()
+            }
             return
         }
         showOnboardingPage(pageA11y)
@@ -1570,7 +1777,6 @@ class MainActivity :
         pageWelcome.visibility    = if (page == pageWelcome)    View.VISIBLE else View.GONE
         pageNotif.visibility      = if (page == pageNotif)      View.VISIBLE else View.GONE
         pageA11y.visibility       = if (page == pageA11y)       View.VISIBLE else View.GONE
-        pageA11ySingle.visibility = if (page == pageA11ySingle) View.VISIBLE else View.GONE
     }
 
     private fun setupOnboarding() {
@@ -1615,19 +1821,13 @@ class MainActivity :
         pageNotif.findViewById<View>(R.id.btnGrantNotif).setOnClickListener {
             notifPermLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
-        pageA11y.findViewById<View>(R.id.btnOpenA11y).setOnClickListener {
-            startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+        val openOverlaySettings = View.OnClickListener {
+            startActivity(overlayPermissionSettingsIntent())
         }
-        pageA11ySingle.findViewById<View>(R.id.btnOpenA11ySingle).setOnClickListener {
-            startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
-        }
-        val cantEnableClick = View.OnClickListener { showRestrictedSettingsDialog() }
-        pageA11y.findViewById<View>(R.id.btnCantEnableA11y).setOnClickListener(cantEnableClick)
-        pageA11ySingle.findViewById<View>(R.id.btnCantEnableA11ySingle).setOnClickListener(cantEnableClick)
+        pageA11y.findViewById<View>(R.id.btnOpenA11y).setOnClickListener(openOverlaySettings)
         // Highlight "PlayTranslate" in the hint text with the theme accent color
         val accentColor = themeColor(R.attr.ptTextTranslation)
         colorizeAppName(pageA11y.findViewById(R.id.tvA11yHintDual), accentColor)
-        colorizeAppName(pageA11ySingle.findViewById(R.id.tvA11yHintSingle), accentColor)
     }
 
     private fun colorizeAppName(tv: TextView, color: Int) {
@@ -1732,8 +1932,8 @@ class MainActivity :
                     resultVm.updateTranslation("—")
                     return@launch
                 }
-                val (translated, _) = svc.translateOnce(newText)
-                resultVm.updateTranslation(translated)
+                val groupTranslation = svc.translateOnce(newText)
+                resultVm.updateTranslation(groupTranslation.text, groupTranslation.backendDisplayName)
             } catch (_: Exception) {
                 resultVm.updateTranslation("—")
             }
@@ -1840,7 +2040,13 @@ class MainActivity :
      *  — the first entry is treated as the "primary" preview target since
      *  the region indicator is single-display. */
     private fun dropdownTargetDisplayIds(): List<Int> {
-        val all = prefs.captureDisplayIds.toList()
+        // Resolve through the backend shim — MediaProjection collapses a
+        // stale non-default selection to its fallback display so the
+        // dropdown still has something to apply a region to. Matches live
+        // start and floating-icon placement.
+        val all = CaptureBackendResolver.active()
+            .capturableTargets(prefs.captureDisplayIds)
+            .toList()
         val filtered = all.filter { it != MainActivity.foregroundDisplayId }
         return filtered.ifEmpty { all }
     }
@@ -1889,7 +2095,7 @@ class MainActivity :
         dropdownHighlightListener = { rowIdx ->
             val regionIdx = dropdownRegionOrder[rowIdx]
             if (regionIdx >= 0 && previewDisplay != null) {
-                PlayTranslateAccessibilityService.instance?.showRegionOverlay(previewDisplay, dropdownRegions[regionIdx])
+                CaptureBackendResolver.activeOverlayUi?.showRegionOverlay(previewDisplay, dropdownRegions[regionIdx])
             }
         }
         dropdownCommitAction = { commitRegionDropdownSelection() }
@@ -1911,7 +2117,7 @@ class MainActivity :
 
         if (previewDisplay != null) {
             val entry = regions[currentIndex]
-            PlayTranslateAccessibilityService.instance?.showRegionOverlay(previewDisplay, entry)
+            CaptureBackendResolver.activeOverlayUi?.showRegionOverlay(previewDisplay, entry)
         }
     }
 
@@ -1936,21 +2142,9 @@ class MainActivity :
         dismissDropdown()
         inDragMode = false
         if (selectedRegionIdx == -1) {
-            when {
-                PlayTranslateAccessibilityService.isConnected ->
-                    openAddCustomRegionFromDropdown()
-                // Binding window — silent no-op; don't re-prompt for a
-                // permission the user has already granted.
-                PlayTranslateAccessibilityService.isEnabled(this) -> {}
-                else -> AlertDialog.Builder(this)
-                    .setTitle(R.string.custom_region_a11y_required_title)
-                    .setMessage(R.string.custom_region_a11y_required_message)
-                    .setPositiveButton(R.string.btn_open_a11y_settings) { _, _ ->
-                        startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
-                    }
-                    .setNegativeButton(android.R.string.cancel, null)
-                    .show()
-            }
+            // The dropdown's explicit "+ Add custom region" row always
+            // opens a blank new-region sheet — never edits the active one.
+            openAddCustomRegionFromDropdown(forceNewRegion = true)
             return
         }
         val changedSavedRegion = dropdownHighlightedRow != dropdownRegionOrder.lastIndex
@@ -1991,11 +2185,18 @@ class MainActivity :
      *  display the user tapped on, matching the icon's per-display
      *  intent. The first id in [targetIds] is also used as the editor
      *  render target and as the inner Translate Once override / capture
-     *  display. */
+     *  display.
+     *
+     *  [forceNewRegion] always opens a blank new-region sheet, skipping
+     *  the seed-from-active-region branch below. The dropdown's explicit
+     *  "+ Add custom region" row sets it; the floating menu's Capture
+     *  Region route leaves it false so it still edits the active custom
+     *  region in place. */
     private fun openAddCustomRegionFromDropdown(
         targetIds: List<Int> = dropdownTargetDisplayIds(),
+        forceNewRegion: Boolean = false,
     ) {
-        PlayTranslateAccessibilityService.instance?.hideRegionOverlay()
+        CaptureBackendResolver.activeOverlayUi?.hideRegionOverlay()
         if (targetIds.isEmpty()) return
         val displayManager = getSystemService(Context.DISPLAY_SERVICE) as DisplayManager
         // The drag overlay is single-display; render it on the first target
@@ -2012,7 +2213,7 @@ class MainActivity :
         val current = CaptureService.instance?.activeRegionForDisplay(targetDisplayId)
         AddCustomRegionSheet().also { sheet ->
             sheet.gameDisplay = gameDisplay
-            if (current != null && !current.isFullScreen) {
+            if (!forceNewRegion && current != null && !current.isFullScreen) {
                 if (captureService?.isOverrideForDisplay(targetDisplayId) == true) {
                     sheet.initRegion(current)
                 } else {
@@ -2056,7 +2257,7 @@ class MainActivity :
         dropdownRows = emptyList()
         dropdownCommitAction = null
         dropdownHighlightListener = null
-        PlayTranslateAccessibilityService.instance?.hideRegionOverlay()
+        CaptureBackendResolver.activeOverlayUi?.hideRegionOverlay()
     }
 
     private fun buildDropdownRow(label: String, highlighted: Boolean, isAddNew: Boolean = false): LinearLayout {
@@ -2137,6 +2338,8 @@ class MainActivity :
     }
 
     companion object {
+        private const val TAG_DISPLAY_DUMP = "DisplayDump"
+
         const val ACTION_DRAG_SENTENCE = "com.playtranslate.ACTION_DRAG_SENTENCE"
         const val EXTRA_DRAG_LINE_TEXT = "extra_drag_line_text"
         const val EXTRA_DRAG_SCREENSHOT_PATH = "extra_drag_screenshot_path"

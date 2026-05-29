@@ -1,14 +1,13 @@
 package com.playtranslate
 
 import android.graphics.Bitmap
-import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Rect
 import android.text.TextPaint
 import com.playtranslate.language.HintTextAnnotation
 import com.playtranslate.language.SourceLanguageEngine
-import com.playtranslate.ui.TranslationOverlayView
+import com.playtranslate.ui.TextBox
 
 /**
  * Pure, stateless functions for building overlay boxes, sampling colors, and
@@ -118,7 +117,7 @@ object OverlayToolkit {
     data class FuriganaGroup(
         val groupText: String,
         val groupBounds: Rect,
-        val boxes: List<TranslationOverlayView.TextBox>
+        val boxes: List<TextBox>
     )
 
     /**
@@ -137,12 +136,12 @@ object OverlayToolkit {
             val lines = ocrResult.lineBoxes.filter { it.groupIndex == groupIdx }
             if (lines.isEmpty()) continue
 
-            val groupBoxes = mutableListOf<TranslationOverlayView.TextBox>()
+            val groupBoxes = mutableListOf<TextBox>()
             for (line in lines) {
                 val isVertical = line.orientation == com.playtranslate.language.TextOrientation.VERTICAL
                 if (line.text.isEmpty()) continue
                 val annotations = engine.annotateForHintText(line.text)
-                val lineBoxes = mutableListOf<TranslationOverlayView.TextBox>()
+                val lineBoxes = mutableListOf<TextBox>()
 
                 if (line.symbols.isNotEmpty()) {
                     for (ann in annotations) {
@@ -170,7 +169,7 @@ object OverlayToolkit {
                                 first.bounds.top
                             )
                         }
-                        lineBoxes += TranslationOverlayView.TextBox(
+                        lineBoxes += TextBox(
                             translatedText = ann.hintText,
                             bounds = bounds,
                             lineCount = 1,
@@ -191,7 +190,7 @@ object OverlayToolkit {
                             val top = lineTop + (ann.baseStart * charHeight).toInt()
                             val bottom = lineTop + (ann.baseEnd * charHeight).toInt()
                             val furiganaWidth = (line.bounds.width() * 0.75f).toInt().coerceAtLeast(1)
-                            lineBoxes += TranslationOverlayView.TextBox(
+                            lineBoxes += TextBox(
                                 translatedText = ann.hintText,
                                 bounds = Rect(
                                     line.bounds.right,
@@ -236,7 +235,7 @@ object OverlayToolkit {
                                 right,
                                 line.bounds.top
                             )
-                            lineBoxes += TranslationOverlayView.TextBox(
+                            lineBoxes += TextBox(
                                 translatedText = ann.hintText,
                                 bounds = furiganaBounds,
                                 lineCount = 1,
@@ -265,7 +264,7 @@ object OverlayToolkit {
         ocrResult: OcrManager.OcrResult,
         engine: SourceLanguageEngine,
         furiganaPaint: TextPaint
-    ): List<TranslationOverlayView.TextBox> =
+    ): List<TextBox> =
         buildFuriganaBoxesByGroup(ocrResult, engine, furiganaPaint).flatMap { it.boxes }
 
     /** Check if two OCR groups match (same text at same approximate location). */
@@ -293,23 +292,23 @@ object OverlayToolkit {
      * along the Y axis (top-to-bottom) instead of the X axis.
      */
     private fun mergeOverlappingFurigana(
-        boxes: List<TranslationOverlayView.TextBox>,
+        boxes: List<TextBox>,
         furiganaPaint: TextPaint,
         vertical: Boolean = false
-    ): List<TranslationOverlayView.TextBox> {
+    ): List<TextBox> {
         if (boxes.size <= 1) return boxes
 
         if (vertical) {
             // Vertical: furigana boxes are stacked top-to-bottom to the right of the column.
             // Merge boxes that overlap on the Y axis.
             val sorted = boxes.sortedBy { it.bounds.top }
-            val merged = mutableListOf<TranslationOverlayView.TextBox>()
+            val merged = mutableListOf<TextBox>()
             var current = sorted[0]
             var currentBottom = estimateFuriganaBottom(current, furiganaPaint)
             for (i in 1 until sorted.size) {
                 val next = sorted[i]
                 if (next.bounds.top < currentBottom) {
-                    current = TranslationOverlayView.TextBox(
+                    current = TextBox(
                         translatedText = current.translatedText + next.translatedText,
                         bounds = Rect(
                             minOf(current.bounds.left, next.bounds.left),
@@ -334,13 +333,13 @@ object OverlayToolkit {
 
         // Horizontal: merge along the X axis (existing behavior)
         val sorted = boxes.sortedBy { it.bounds.left }
-        val merged = mutableListOf<TranslationOverlayView.TextBox>()
+        val merged = mutableListOf<TextBox>()
         var current = sorted[0]
         var currentRight = estimateFuriganaRight(current, furiganaPaint)
         for (i in 1 until sorted.size) {
             val next = sorted[i]
             if (next.bounds.left < currentRight) {
-                current = TranslationOverlayView.TextBox(
+                current = TextBox(
                     translatedText = current.translatedText + next.translatedText,
                     bounds = Rect(
                         current.bounds.left,
@@ -366,7 +365,7 @@ object OverlayToolkit {
      * Estimate the right edge of a furigana label as it would be rendered.
      * The text is rendered at 0.7× the box height, positioned from box.left.
      */
-    private fun estimateFuriganaRight(box: TranslationOverlayView.TextBox, paint: TextPaint): Int {
+    private fun estimateFuriganaRight(box: TextBox, paint: TextPaint): Int {
         val textSizePx = (box.bounds.height() * 0.7f).coerceAtLeast(4f)
         val savedSize = paint.textSize
         paint.textSize = textSizePx
@@ -376,7 +375,7 @@ object OverlayToolkit {
     }
 
     /** Estimate the bottom edge of a vertical furigana label (text rendered top-to-bottom). */
-    private fun estimateFuriganaBottom(box: TranslationOverlayView.TextBox, paint: TextPaint): Int {
+    private fun estimateFuriganaBottom(box: TextBox, paint: TextPaint): Int {
         // Each character stacks vertically; estimate total height from char count × char width
         val textSizePx = (box.bounds.width() * 0.7f).coerceAtLeast(4f)
         val charHeight = textSizePx * 1.2f  // line spacing factor
@@ -477,16 +476,22 @@ object OverlayToolkit {
     }
 
     /**
-     * Crop to active region, blackout floating icon, run OCR, filter source-lang chars.
-     * Returns null if no text detected. Does NOT do dedup, translation, or display.
+     * Crop to active region, run OCR, filter source-lang chars. Returns null
+     * if no text detected. Does NOT do dedup, translation, or display.
      *
-     * [seedWriter], when non-null, is invoked after [OcrManager.recognise] with
-     * the bitmap that was actually fed to OCR and the result (possibly null) —
-     * before the bitmap is recycled. Used to wire [OcrSeedWriter] into the
-     * pinhole / live OCR path so we can capture the exact filled bitmap a
-     * failing repro produced, including the "recognise returned null" case
-     * that wouldn't otherwise be recoverable from a manual capture (manual
-     * capture operates on the raw screen with no overlay fills applied).
+     * The floating icon is now always rendered in compact mode (~1/4 of a
+     * circle pressed against the screen edge), so the old icon-blackout step
+     * is gone — the small edge-arrow doesn't bleed into the OCR region
+     * enough to be worth a per-frame rect fill.
+     *
+     * [seedWriter], when non-null, is invoked after [OcrManager.recognise]
+     * with the bitmap that was actually fed to OCR and the result (possibly
+     * null) — before the bitmap is recycled. Used to wire [OcrSeedWriter]
+     * into the pinhole / live OCR path so we can capture the exact filled
+     * bitmap a failing repro produced, including the "recognise returned
+     * null" case that wouldn't otherwise be recoverable from a manual
+     * capture (manual capture operates on the raw screen with no overlay
+     * fills applied).
      */
     suspend fun runOcrPipeline(
         raw: Bitmap,
@@ -494,8 +499,6 @@ object OverlayToolkit {
         sourceLang: String,
         ocrManager: OcrManager,
         statusBarHeight: Int,
-        iconRect: Rect?,
-        compactIcon: Boolean,
         seedWriter: ((Bitmap, OcrManager.OcrResult?) -> Unit)? = null
     ): OcrPipelineResult? {
         val crop = computeOcrCrop(raw.width, raw.height, activeRegion, statusBarHeight)
@@ -506,13 +509,8 @@ object OverlayToolkit {
 
         val ocrResult: OcrManager.OcrResult?
         try {
-            val ocrBitmap = blackoutFloatingIcon(bitmap, crop.left, crop.top, iconRect, compactIcon)
-            try {
-                ocrResult = ocrManager.recognise(ocrBitmap, sourceLang, screenshotWidth = raw.width)
-                seedWriter?.invoke(ocrBitmap, ocrResult)
-            } finally {
-                if (ocrBitmap !== raw && ocrBitmap !== bitmap) ocrBitmap.recycle()
-            }
+            ocrResult = ocrManager.recognise(bitmap, sourceLang, screenshotWidth = raw.width)
+            seedWriter?.invoke(bitmap, ocrResult)
         } finally {
             // Always clean up the crop (NOT raw — caller manages that)
             if (bitmap !== raw && !bitmap.isRecycled) bitmap.recycle()
@@ -525,29 +523,6 @@ object OverlayToolkit {
 
         return OcrPipelineResult(ocrResult, dedupKey, crop.left, crop.top, raw.width, raw.height)
     }
-
-    /**
-     * Black out the floating icon area in a bitmap so OCR doesn't read it.
-     * Pure function — takes icon rect as parameter.
-     */
-    fun blackoutFloatingIcon(
-        bitmap: Bitmap, cropLeft: Int, cropTop: Int,
-        iconRect: Rect?, compactIcon: Boolean
-    ): Bitmap {
-        if (compactIcon) return bitmap
-        if (iconRect == null) return bitmap
-        val left = (iconRect.left - cropLeft).coerceAtLeast(0)
-        val top = (iconRect.top - cropTop).coerceAtLeast(0)
-        val right = (iconRect.right - cropLeft).coerceAtMost(bitmap.width)
-        val bottom = (iconRect.bottom - cropTop).coerceAtMost(bitmap.height)
-        if (left >= right || top >= bottom) return bitmap
-        val mutable = if (bitmap.isMutable) bitmap
-            else bitmap.copy(bitmap.config, true).also { bitmap.recycle() }
-        Canvas(mutable).drawRect(left.toFloat(), top.toFloat(), right.toFloat(), bottom.toFloat(), blackoutPaint)
-        return mutable
-    }
-
-    private val blackoutPaint = Paint().apply { color = Color.BLACK }
 
     // ── Factory ───────────────────────────────────────────────────────────
 

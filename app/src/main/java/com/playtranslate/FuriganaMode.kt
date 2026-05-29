@@ -1,11 +1,15 @@
 package com.playtranslate
 
+import com.playtranslate.capture.CaptureBackendResolver
+import com.playtranslate.capture.LiveCaptureSource
+
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Rect
 import android.graphics.RectF
+import android.util.Log
 import com.playtranslate.language.SourceLanguageEngines
-import com.playtranslate.ui.TranslationOverlayView
+import com.playtranslate.ui.TextBox
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -38,13 +42,9 @@ private const val STALE_REF_REFRESH_FRAMES = 20
  */
 /**
  * @param service the enclosing capture service (for state access and coordinator calls)
- * @param a11y the accessibility service instance, captured at mode construction.
- *   Injected so the dependency is explicit and the mode is unit-testable. See
- *   PinholeOverlayMode's equivalent KDoc for the rationale — same pattern.
  */
 class FuriganaMode(
     private val service: CaptureService,
-    private val a11y: PlayTranslateAccessibilityService,
     private val displayId: Int,
 ) : LiveMode {
 
@@ -58,7 +58,7 @@ class FuriganaMode(
     // ── Mode-owned state ──────────────────────────────────────────────────
 
     private var furiganaGroups: List<OverlayToolkit.FuriganaGroup> = emptyList()
-    private var cachedFuriganaBoxes: List<TranslationOverlayView.TextBox>? = null
+    private var cachedFuriganaBoxes: List<TextBox>? = null
     private var cleanRefBitmap: Bitmap? = null
     private var lastOcrText: String? = null
     private var cropLeft = 0
@@ -89,14 +89,14 @@ class FuriganaMode(
     // ── LiveMode interface ────────────────────────────────────────────────
 
     override fun start() {
-        val mgr = a11y.screenshotManager
-        if (mgr == null) {
-            DetectionLog.log("ERROR: screenshotManager is null, can't start furigana loop")
+        val source = CaptureBackendResolver.activeLiveCaptureSource
+        if (source == null) {
+            DetectionLog.log("ERROR: no live capture source, can't start furigana loop")
             return
         }
-        a11y.startInputMonitoring(displayId) { onButtonDown() }
+        CaptureBackendResolver.active().startInputMonitoring(displayId) { dismiss() }
         DetectionLog.log("Starting furigana loop on display $displayId")
-        startLoop(mgr)
+        startLoop(source)
     }
 
     override fun stop() {
@@ -105,9 +105,9 @@ class FuriganaMode(
         restartJob?.cancel()
         clearState()
         scope.cancel()
-        a11y.stopInputMonitoring(displayId)
-        a11y.screenshotManager?.stopLoop(displayId)
-        a11y.hideTranslationOverlayForDisplay(displayId)
+        CaptureBackendResolver.active().stopInputMonitoring(displayId)
+        CaptureBackendResolver.activeLiveCaptureSource?.stopLoop(displayId)
+        CaptureBackendResolver.activeOverlayUi?.hideTranslationOverlayForDisplay(displayId)
     }
 
     override fun refresh() {
@@ -115,29 +115,29 @@ class FuriganaMode(
         rawOcrJob?.cancel()
         restartJob?.cancel()
         clearState()
-        val mgr = a11y.screenshotManager ?: return
-        if (mgr.isLoopRunning(displayId)) {
-            mgr.requestCleanCapture(displayId)
+        val source = CaptureBackendResolver.activeLiveCaptureSource ?: return
+        if (source.isLoopRunning(displayId)) {
+            source.requestCleanCapture(displayId)
         } else {
             // Loop was stopped (e.g. via hotkeyHoldStart). Restart it;
             // startLoop's first frame is clean by construction.
-            startLoop(mgr)
+            startLoop(source)
         }
     }
 
-    private fun startLoop(mgr: ScreenshotManager) {
-        mgr.startLoop(displayId, service.serviceScope,
+    private fun startLoop(source: LiveCaptureSource) {
+        source.startLoop(displayId, service.serviceScope,
             onCleanFrame = ::handleCleanFrame,
             onRawFrame = ::handleRawFrame
         )
     }
 
-    private fun onButtonDown() {
-        val mgr = a11y.screenshotManager ?: return
+    override fun dismiss() {
+        val source = CaptureBackendResolver.activeLiveCaptureSource ?: return
         cleanProcessingJob?.cancel()
         rawOcrJob?.cancel()
-        mgr.stopLoop(displayId)
-        a11y.hideTranslationOverlayForDisplay(displayId)
+        source.stopLoop(displayId)
+        CaptureBackendResolver.activeOverlayUi?.hideTranslationOverlayForDisplay(displayId)
         clearState()
         restartJob?.cancel()
         restartJob = scope.launch {
@@ -148,10 +148,10 @@ class FuriganaMode(
             // is now in progress — hotkeyHoldEnd's refresh() will restart the
             // loop cleanly on release.
             if (service.holdActive) {
-                DetectionLog.log("onButtonDown restart skipped (holdActive)")
+                DetectionLog.log("dismiss restart skipped (holdActive)")
                 return@launch
             }
-            startLoop(mgr)
+            startLoop(source)
         }
     }
 
@@ -169,7 +169,7 @@ class FuriganaMode(
                 processCleanFrame(raw)
             } catch (e: kotlinx.coroutines.CancellationException) {
                 if (service.isLive) {
-                    a11y.screenshotManager?.requestCleanCapture(displayId)
+                    CaptureBackendResolver.activeLiveCaptureSource?.requestCleanCapture(displayId)
                 }
                 throw e
             }
@@ -190,6 +190,26 @@ class FuriganaMode(
             }
 
             val (ocrResult, dedupKey, left, top, _, _) = pipeline
+
+            // Pipeline drift defense — mirrors PinholeOverlayMode.kt:303-318.
+            // The existing TranslationOverlayView's width/height are frozen at
+            // its initial display dims; silently reusing it with mismatched
+            // pipeline dims flips scaleX off identity and shifts boxes
+            // (statusBarHeight toggling, MP capture-size race, rotation, etc).
+            // Tear down so the next raw frame falls into handleRawFrame's
+            // null-ref branch and rebuilds against a fresh overlay view.
+            if (cleanRefBitmap != null &&
+                (left != cropLeft || top != cropTop ||
+                    raw.width != screenshotW || raw.height != screenshotH)) {
+                Log.w(
+                    TAG,
+                    "Pipeline drift (crop=($cropLeft,$cropTop)→($left,$top), " +
+                        "screen=${screenshotW}x$screenshotH→${raw.width}x${raw.height})"
+                )
+                clearState()
+                CaptureBackendResolver.activeOverlayUi?.hideTranslationOverlayForDisplay(displayId)
+                return
+            }
 
             // Dedup: if text unchanged and we have cached furigana, re-show
             if (lastOcrText != null && !OverlayToolkit.isSignificantChange(lastOcrText!!, dedupKey)) {
@@ -225,7 +245,7 @@ class FuriganaMode(
 
             // Save screenshot for Anki + send translation to in-app panel.
             // Per-display filename — see ScreenshotManager.saveToCache.
-            val screenshotPath = a11y.screenshotManager?.saveToCache(raw, displayId)
+            val screenshotPath = service.captureSaveToCache(raw, displayId)
             service.translateAndSendToPanel(ocrResult, screenshotPath)
         } finally {
             if (!raw.isRecycled) raw.recycle()
@@ -248,7 +268,7 @@ class FuriganaMode(
 
         val ref = cleanRefBitmap
         val boxes = cachedFuriganaBoxes
-        val overlayView = a11y.translationOverlayForDisplay(displayId)
+        val overlayView = CaptureBackendResolver.activeOverlayUi?.translationOverlayForDisplay(displayId)
         val screenRects = overlayView?.getChildScreenRects() ?: emptyList()
 
         if (ref == null || boxes.isNullOrEmpty()) {
@@ -268,8 +288,8 @@ class FuriganaMode(
                 // Too long without a rendered overlay — force recovery
                 emptyRectsStallCount = 0
                 clearState()
-                a11y.hideTranslationOverlayForDisplay(displayId)
-                a11y.screenshotManager?.requestCleanCapture(displayId)
+                CaptureBackendResolver.activeOverlayUi?.hideTranslationOverlayForDisplay(displayId)
+                CaptureBackendResolver.activeLiveCaptureSource?.requestCleanCapture(displayId)
             }
             return
         }
@@ -281,8 +301,8 @@ class FuriganaMode(
         // fresh clean capture to rebuild from scratch.
         if (bitmap.width != ref.width || bitmap.height != ref.height) {
             clearState()
-            a11y.hideTranslationOverlayForDisplay(displayId)
-            a11y.screenshotManager?.requestCleanCapture(displayId)
+            CaptureBackendResolver.activeOverlayUi?.hideTranslationOverlayForDisplay(displayId)
+            CaptureBackendResolver.activeLiveCaptureSource?.requestCleanCapture(displayId)
             bitmap.recycle()
             return
         }
@@ -377,10 +397,10 @@ class FuriganaMode(
                         lastOcrText = null
 
                         if (cachedFuriganaBoxes == null) {
-                            a11y.hideTranslationOverlayForDisplay(displayId)
+                            CaptureBackendResolver.activeOverlayUi?.hideTranslationOverlayForDisplay(displayId)
                         }
 
-                        a11y.screenshotManager?.requestCleanCapture(displayId)
+                        CaptureBackendResolver.activeLiveCaptureSource?.requestCleanCapture(displayId)
                     } else {
                         // No change detected. Periodically force a clean capture to refresh
                         // the ref — stale ref content in overlay regions can mask real scene
@@ -392,7 +412,7 @@ class FuriganaMode(
                             // Force rebuild path in processCleanFrame. Don't clear cleanRefBitmap
                             // here — see race comment above.
                             lastOcrText = null
-                            a11y.screenshotManager?.requestCleanCapture(displayId)
+                            CaptureBackendResolver.activeLiveCaptureSource?.requestCleanCapture(displayId)
                         }
                     }
                 } else {

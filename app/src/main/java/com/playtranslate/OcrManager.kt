@@ -942,6 +942,63 @@ class OcrManager private constructor() {
          * change here goes into [groupDecisionHorizontal]/[groupDecisionVertical]
          * too.
          */
+        /**
+         * Block-grouping size guard. When the earlier line (in reading order)
+         * is strictly less than one-third the later line's extent, refuse to
+         * group. Catches speaker-name + dialogue, poem-stanza first lines,
+         * and short headings above body text without affecting same-paragraph
+         * wraps. The threshold was loosened from one-half to one-third so
+         * subtle short-above-long pairings (e.g. a ~40% intro line above a
+         * long body) cluster instead of splitting — only clearly-short
+         * labels still trip the guard.
+         *
+         * Asymmetric: long-above-short (a paragraph closing with a short tail)
+         * is unaffected. Only fires when the rects are cleanly separated on
+         * the reading axis; any overlap defers to the existing geometric
+         * checks (inline/block paths in [wouldGroup]).
+         *
+         * Reading order per orientation:
+         * - [TextOrientation.HORIZONTAL] — earlier = strictly above, axis = width.
+         * - [TextOrientation.VERTICAL]   — earlier = strictly to the right of,
+         *   axis = height (vertical text reads right-to-left, top-to-bottom).
+         *
+         * Returns the reason string when blocked, null otherwise. [wouldGroup]
+         * discards the string; [groupDecision] surfaces it in the log so the
+         * two predicates stay in numerical sync.
+         */
+        internal fun shortAboveLongBlock(
+            a: Rect,
+            b: Rect,
+            orientation: TextOrientation,
+        ): String? {
+            return when (orientation) {
+                TextOrientation.VERTICAL -> {
+                    val (earlier, later) = when {
+                        a.left >= b.right -> a to b
+                        b.left >= a.right -> b to a
+                        else -> return null
+                    }
+                    val eh = earlier.height()
+                    val lh = later.height()
+                    if (eh > 0 && eh * 3 < lh)
+                        "size-block (vertical: earlier h=$eh < ⅓× later h=$lh)"
+                    else null
+                }
+                else -> {
+                    val (earlier, later) = when {
+                        a.bottom <= b.top -> a to b
+                        b.bottom <= a.top -> b to a
+                        else -> return null
+                    }
+                    val ew = earlier.width()
+                    val lw = later.width()
+                    if (ew > 0 && ew * 3 < lw)
+                        "size-block (horizontal: earlier w=$ew < ⅓× later w=$lw)"
+                    else null
+                }
+            }
+        }
+
         fun wouldGroup(
             a: Rect,
             b: Rect,
@@ -952,6 +1009,7 @@ class OcrManager private constructor() {
             aLineCount: Int = 1,
             bLineCount: Int = 1,
         ): Boolean {
+            if (shortAboveLongBlock(a, b, orientation) != null) return false
             if (orientation == TextOrientation.VERTICAL) {
                 return wouldGroupVertical(a, b, mode, aLineCount, bLineCount)
             }
@@ -1081,10 +1139,14 @@ class OcrManager private constructor() {
             mode: GroupingMode = GroupingMode.SAME_PASS_LAYOUT,
             aLineCount: Int = 1,
             bLineCount: Int = 1,
-        ): GroupDecision = if (orientation == TextOrientation.VERTICAL)
-            groupDecisionVertical(a, b, mode, aLineCount, bLineCount)
-        else
-            groupDecisionHorizontal(a, b, aAlignLeft, bAlignLeft, mode, aLineCount, bLineCount)
+        ): GroupDecision {
+            val sizeBlock = shortAboveLongBlock(a, b, orientation)
+            if (sizeBlock != null) return GroupDecision.NotGrouped(sizeBlock)
+            return if (orientation == TextOrientation.VERTICAL)
+                groupDecisionVertical(a, b, mode, aLineCount, bLineCount)
+            else
+                groupDecisionHorizontal(a, b, aAlignLeft, bAlignLeft, mode, aLineCount, bLineCount)
+        }
 
         private fun groupDecisionHorizontal(
             a: Rect,

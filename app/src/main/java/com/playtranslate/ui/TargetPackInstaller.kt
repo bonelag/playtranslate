@@ -82,7 +82,7 @@ class TargetPackInstaller(
                 when (result) {
                     is InstallResult.Success -> {
                         activity.runOnUiThread {
-                            dialog.setMessage("Loading")
+                            dialog.setMessage(activity.getString(R.string.lang_setup_preloading_message))
                             dialog.setIndeterminate(true)
                         }
                         runLoadThenFinish(dialog, sourceLangCode, targetCode, onSuccess)
@@ -138,8 +138,8 @@ class TargetPackInstaller(
     private fun buildPopupDialog(title: String): OverlayProgress =
         OverlayProgress.Builder(activity)
             .setTitle(title)
-            .setOnCancel { activeJob?.cancel() }
-            .showInActivity(activity)
+            .setOnDismiss { activeJob?.cancel() }
+            .show()
 
     private fun showErrorPopup(reason: String) {
         AlertDialog.Builder(activity)

@@ -21,9 +21,11 @@ import kotlinx.coroutines.withContext
 import com.playtranslate.Prefs
 import com.playtranslate.PlayTranslateAccessibilityService
 import com.playtranslate.capturableDisplays
+import com.playtranslate.capture.CaptureBackendResolver
 import com.playtranslate.R
 import com.playtranslate.applyAccentOverlay
 import com.playtranslate.fullScreenDialogTheme
+import com.playtranslate.overlayPermissionSettingsIntent
 import com.playtranslate.themeColor
 import kotlinx.coroutines.launch
 
@@ -50,13 +52,51 @@ class SettingsBottomSheet : DialogFragment() {
     private var renderer: SettingsRenderer? = null
     private var currentView: View? = null
     private var prefsListener: SharedPreferences.OnSharedPreferenceChangeListener? = null
+
+    /** Snapshot of LLM-backend configuration taken in [onPause]. Compared
+     *  against the live config in [onResume] to detect changes made by
+     *  [LlmBackendSettingsActivity] while the prefs listener was
+     *  unregistered — those need to force-clear the translation cache so
+     *  stale entries produced by the previous model / key / base URL
+     *  aren't served by the same-id backend after the swap. */
+    private var llmConfigSnapshotOnPause: String? = null
+
+    private fun snapshotLlmConfig(prefs: Prefs): String = listOf(
+        prefs.geminiApiKey, prefs.geminiModel,
+        prefs.openaiApiKey, prefs.openaiModel,
+        prefs.deepseekApiKey, prefs.deepseekModel,
+    ).joinToString("|")
     private var displayListener: DisplayManager.DisplayListener? = null
     private var lastDisplayIds: Set<Int> = emptySet()
+
+    /** The live MediaProjection session this sheet holds a teardown listener
+     *  on while resumed (kept so onPause unregisters from the same one).
+     *  MediaProjection "active" is held consent, not a pref the
+     *  SharedPreferences listener observes — so the Turn On/Off buttons are
+     *  refreshed from this teardown callback instead. */
+    private var teardownController: com.playtranslate.capture.MediaProjectionController? = null
+    private val onProjectionTeardown: () -> Unit = { renderer?.refreshOverlayIconState() }
 
     private val requestAnkiPermission = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { granted ->
         if (granted) renderer?.refreshAnkiSection()
+    }
+
+    /** Voice picker now returns the choice via setResult rather than
+     *  writing the pref directly — Settings persists from its callback
+     *  and refreshes the TTS row. The pref key is keyed by source lang;
+     *  we snapshot the lang at launch time. */
+    private var ttsVoicePickerLang: com.playtranslate.language.SourceLangId? = null
+    private val ttsVoicePickerLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        val lang = ttsVoicePickerLang.also { ttsVoicePickerLang = null }
+            ?: return@registerForActivityResult
+        if (result.resultCode != android.app.Activity.RESULT_OK) return@registerForActivityResult
+        val picked = result.data?.getStringExtra(TtsVoiceActivity.EXTRA_PICKED_VOICE)
+        Prefs(requireContext()).setTtsVoiceName(lang, picked)
+        renderer?.refreshTtsSection()
     }
 
     // ── Lifecycle ────────────────────────────────────────────────────────
@@ -95,6 +135,7 @@ class SettingsBottomSheet : DialogFragment() {
             dm?.unregisterDisplayListener(it)
         }
         displayListener = null
+        renderer?.destroyOverlayIconPreview()
         renderer = null
         currentView = null
         super.onDestroyView()
@@ -102,16 +143,57 @@ class SettingsBottomSheet : DialogFragment() {
 
     override fun onResume() {
         super.onResume()
+        // Observe MediaProjection teardown so the Turn On/Off buttons refresh
+        // when capture is stopped from outside Settings (e.g. the floating-
+        // icon menu's "Turn Off"). Released again in onPause.
+        teardownController =
+            com.playtranslate.CaptureService.instance?.mediaProjectionController?.also {
+                it.addTeardownListener(onProjectionTeardown)
+            }
+        renderer?.startCaptureButtonShimmer()
         renderer?.refreshAnkiSection()
-        renderer?.refreshOverlayIconSwitch()
+        renderer?.refreshOverlayIconState()
+        // The toolbar hosts the Turn On/Off button on the MediaProjection
+        // backend — re-check its visibility in case the accessibility grant
+        // changed while we were away (same catch-up reason as the rows here).
+        view?.let { refreshToolbarVisibility(it) }
+        // Display picker locks to the first display while the a11y service is
+        // off (see SettingsRenderer.buildDisplayRow); rebuild on resume so it
+        // unlocks the moment the user returns from Accessibility Settings.
+        renderer?.refreshDisplayRows(Prefs(requireContext()))
         renderer?.refreshAutoModeToggle()
+        // Catch up on the Enhanced auto-translate row in case the user
+        // granted (or revoked) accessibility while the sheet was paused.
+        renderer?.refreshEnhancedAutoTranslateRow()
+        renderer?.refreshTtsSection()
         // Pick up backend toggle changes made while we were paused —
-        // DeepLSettingsActivity flips deeplEnabled while the prefs listener
-        // is unregistered, so onResume is the catch-up point.
+        // DeepLSettingsActivity / LlmBackendSettingsActivity flip the
+        // *_enabled prefs while the prefs listener is unregistered, so
+        // onResume is the catch-up point.
         renderer?.refreshDeeplBackendSwitch()
+        renderer?.refreshGeminiBackendSwitch()
+        renderer?.refreshOpenaiBackendSwitch()
+        renderer?.refreshDeepseekBackendSwitch()
+        renderer?.refreshGeminiModelValue()
+        renderer?.refreshOpenaiModelValue()
+        renderer?.refreshDeepseekModelValue()
         renderer?.refreshLingvaBackendSwitch()
-        renderer?.refreshTranslategemmaSwitch()
-        renderer?.refreshQwenSwitch()
+        renderer?.refreshQwenMnnSwitch()
+        renderer?.refreshGemmaE2bSwitch()
+        renderer?.refreshHyMtSwitch()
+        // LLM config changes (key / model / base URL) made while we were
+        // paused don't necessarily flip *_enabled, but they DO change the
+        // output any given input maps to — and reconcileBackendPreference
+        // can't catch them (the preferred backend id is unchanged). Compare
+        // the snapshot we stashed in onPause against the current config and
+        // force-clear the translation cache when anything moved.
+        context?.let { ctx ->
+            val before = llmConfigSnapshotOnPause
+            llmConfigSnapshotOnPause = null
+            if (before != null && before != snapshotLlmConfig(Prefs(ctx))) {
+                com.playtranslate.CaptureService.instance?.clearTranslationCache()
+            }
+        }
         // Always re-render every backend's status line on resume — picks
         // up new DeepL keys, freshly toggled state, and triggers a usage
         // re-fetch (the call doesn't consume DeepL characters).
@@ -129,48 +211,90 @@ class SettingsBottomSheet : DialogFragment() {
         val sp = ctx.getSharedPreferences("playtranslate_prefs", Context.MODE_PRIVATE)
         prefsListener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
             when (key) {
-                "show_overlay_icon" -> renderer?.refreshOverlayIconSwitch()
-                "compact_overlay_icon" -> renderer?.refreshCompactIconSwitch()
+                "show_overlay_icon" -> renderer?.refreshOverlayIconState()
                 "auto_translation_mode" -> renderer?.refreshAutoModeToggle()
                 Prefs.KEY_DEEPL_ENABLED -> {
                     renderer?.refreshDeeplBackendSwitch()
                     renderer?.refreshAllBackendStatuses()
                     com.playtranslate.CaptureService.instance?.reconcileBackendPreference()
                 }
+                Prefs.KEY_GEMINI_ENABLED -> {
+                    renderer?.refreshGeminiBackendSwitch()
+                    renderer?.refreshAllBackendStatuses()
+                    com.playtranslate.CaptureService.instance?.reconcileBackendPreference()
+                }
+                Prefs.KEY_OPENAI_ENABLED -> {
+                    renderer?.refreshOpenaiBackendSwitch()
+                    renderer?.refreshAllBackendStatuses()
+                    com.playtranslate.CaptureService.instance?.reconcileBackendPreference()
+                }
+                Prefs.KEY_DEEPSEEK_ENABLED -> {
+                    renderer?.refreshDeepseekBackendSwitch()
+                    renderer?.refreshAllBackendStatuses()
+                    com.playtranslate.CaptureService.instance?.reconcileBackendPreference()
+                }
+                // LLM key / model changes don't flip the enabled toggle,
+                // but they DO change the *output* the backend produces
+                // for a given input — so cached entries from the previous
+                // config would be served stale. reconcileBackendPreference
+                // can't catch this (the preferred backend id is unchanged);
+                // force-clear the whole cache instead. Refresh status too —
+                // key presence drives the "API Key Required" vs "Today: …" line.
+                Prefs.KEY_GEMINI_KEY, Prefs.KEY_OPENAI_KEY, Prefs.KEY_DEEPSEEK_KEY,
+                Prefs.KEY_GEMINI_MODEL, Prefs.KEY_OPENAI_MODEL, Prefs.KEY_DEEPSEEK_MODEL -> {
+                    renderer?.refreshAllBackendStatuses()
+                    com.playtranslate.CaptureService.instance?.clearTranslationCache()
+                    // The inline "Model" sub-cell under each LLM row also
+                    // mirrors the model pref; refresh the matching one.
+                    if (key == Prefs.KEY_GEMINI_MODEL) renderer?.refreshGeminiModelValue()
+                    if (key == Prefs.KEY_OPENAI_MODEL) renderer?.refreshOpenaiModelValue()
+                    if (key == Prefs.KEY_DEEPSEEK_MODEL) renderer?.refreshDeepseekModelValue()
+                }
                 Prefs.KEY_LINGVA_ENABLED -> {
                     renderer?.refreshLingvaBackendSwitch()
                     renderer?.refreshAllBackendStatuses()
                     com.playtranslate.CaptureService.instance?.reconcileBackendPreference()
                 }
-                Prefs.KEY_TRANSLATEGEMMA_ENABLED -> {
-                    renderer?.refreshTranslategemmaSwitch()
+                Prefs.KEY_QWEN_MNN_ENABLED -> {
+                    renderer?.refreshQwenMnnSwitch()
                     renderer?.refreshAllBackendStatuses()
                     com.playtranslate.CaptureService.instance?.reconcileBackendPreference()
-                    maybeUnloadOnDeviceLlmIfBothDisabled(ctx)
+                    maybeUnloadIdleEngines(ctx)
                 }
-                Prefs.KEY_QWEN_ENABLED -> {
-                    renderer?.refreshQwenSwitch()
+                Prefs.KEY_GEMMA_E2B_ENABLED -> {
+                    renderer?.refreshGemmaE2bSwitch()
                     renderer?.refreshAllBackendStatuses()
                     com.playtranslate.CaptureService.instance?.reconcileBackendPreference()
-                    maybeUnloadOnDeviceLlmIfBothDisabled(ctx)
+                    maybeUnloadIdleEngines(ctx)
+                }
+                Prefs.KEY_HYMT_ENABLED -> {
+                    renderer?.refreshHyMtSwitch()
+                    renderer?.refreshAllBackendStatuses()
+                    com.playtranslate.CaptureService.instance?.reconcileBackendPreference()
+                    maybeUnloadIdleEngines(ctx)
                 }
             }
         }
         sp.registerOnSharedPreferenceChangeListener(prefsListener)
     }
 
-    /** When the user disables BOTH on-device LLM backends, drop the loaded
-     *  model from native memory. Frees ~300-400 MB of KV cache + scratch
-     *  immediately and lets the kernel reclaim the mmap'd weight pages. If
-     *  only one backend is disabled, the singleton stays loaded for the other.
+    /**
+     * Drop the loaded MNN model when every on-device LLM backend toggle is
+     * off, freeing the working set so the OS can reclaim that RAM. Since
+     * `:mnn` serves Qwen-MNN, Gemma E2B, and Hunyuan-MT (live-mode, manual-
+     * lookup, and translation-specialist tiers), we only unload when ALL
+     * three are disabled — otherwise we'd defeat the point of caching the
+     * currently-active model mid-session.
      *
-     *  Mutex-serialized inside [LlamaTranslator.unloadModel] — won't race with
-     *  any in-flight translation triggered just before the toggle changed. */
-    private fun maybeUnloadOnDeviceLlmIfBothDisabled(ctx: Context) {
+     * unloadModel is mutex-serialized inside the translator singleton so it
+     * can't race an in-flight translation that started right before the
+     * toggle changed.
+     */
+    private fun maybeUnloadIdleEngines(ctx: Context) {
         val prefs = Prefs(ctx)
-        if (!prefs.translateGemmaEnabled && !prefs.qwenEnabled) {
+        if (!prefs.qwenMnnEnabled && !prefs.gemmaE2bEnabled && !prefs.hyMtEnabled) {
             viewLifecycleOwner.lifecycleScope.launch {
-                com.playtranslate.translation.translategemma.LlamaTranslator
+                com.playtranslate.translation.mnn.MnnTranslator
                     .getInstance(ctx).unloadModel()
             }
         }
@@ -178,7 +302,11 @@ class SettingsBottomSheet : DialogFragment() {
 
     override fun onPause() {
         super.onPause()
+        teardownController?.removeTeardownListener(onProjectionTeardown)
+        teardownController = null
+        renderer?.stopCaptureButtonShimmer()
         val ctx = context ?: return
+        llmConfigSnapshotOnPause = snapshotLlmConfig(Prefs(ctx))
         val sp = ctx.getSharedPreferences("playtranslate_prefs", Context.MODE_PRIVATE)
         prefsListener?.let { sp.unregisterOnSharedPreferenceChangeListener(it) }
         prefsListener = null
@@ -186,22 +314,39 @@ class SettingsBottomSheet : DialogFragment() {
 
     // ── View setup ──────────────────────────────────────────────────────
 
+    /** Show the toolbar in dialog mode (single-screen), and in inline mode
+     *  (dual-screen) only when the accessibility service is off — the
+     *  MediaProjection backend then needs the Turn On/Off control the toolbar
+     *  hosts. With accessibility on, dual-screen capture is always running, so
+     *  there is nothing to start. Re-checked on resume since the grant can
+     *  change while the user is away in system settings.
+     *
+     *  Toggles the inner MaterialToolbar, not the AppBarLayout: a GONE
+     *  AppBarLayout keeps its stale measured height, so the CoordinatorLayout
+     *  leaves the scroll child offset by a phantom toolbar until the view is
+     *  rebuilt. The AppBarLayout (wrap_content) collapses to 0 on its own once
+     *  its only child is hidden. */
+    private fun refreshToolbarVisibility(root: View) {
+        val show = showsDialog ||
+            !PlayTranslateAccessibilityService.isEnabled(requireContext())
+        root.findViewById<View>(R.id.settingsToolbarInner).visibility =
+            if (show) View.VISIBLE else View.GONE
+    }
+
     private fun setupViews(view: View) {
         val hideDismiss = arguments?.getBoolean(ARG_HIDE_DISMISS, false) ?: false
         val isDialog = showsDialog
         val prefs = Prefs(requireContext())
 
-        // Toolbar (dialog mode only). Dialog mode is only entered from the
-        // single-screen onboarding/main path (MainActivity.checkOnboardingState),
-        // so the toolbar appears only in single-screen mode and the title is
-        // the app name. Dual-screen flows use inline mode where the toolbar
-        // stays GONE per its XML default.
-        if (isDialog) {
-            view.findViewById<View>(R.id.settingsToolbar).visibility = View.VISIBLE
-            view.findViewById<android.widget.TextView>(R.id.tvSettingsTitle)
-                .text = getString(R.string.app_name)
-            val closeBtn = view.findViewById<View>(R.id.btnCloseSettings)
-            if (hideDismiss) {
+        // Toolbar contents — mode-constant, configured once here. The title is
+        // always the app name; the close button only makes sense in dialog
+        // mode (inline mode is embedded in MainActivity, nothing to dismiss).
+        view.findViewById<android.widget.TextView>(R.id.tvSettingsTitle)
+            .text = getString(R.string.app_name)
+        val closeBtn = view.findViewById<View>(R.id.btnCloseSettings)
+        when {
+            !isDialog -> closeBtn.visibility = View.GONE
+            hideDismiss -> {
                 closeBtn.visibility = View.GONE
                 dialog?.setOnKeyListener { _, keyCode, event ->
                     if (keyCode == android.view.KeyEvent.KEYCODE_BACK &&
@@ -210,15 +355,26 @@ class SettingsBottomSheet : DialogFragment() {
                         true
                     } else false
                 }
-            } else {
-                closeBtn.setOnClickListener { dismiss() }
             }
+            else -> closeBtn.setOnClickListener { dismiss() }
         }
+        refreshToolbarVisibility(view)
 
-        // Scroll position restore after theme change
+        // Scroll position restore after theme change vs. deep-link anchor.
+        // Anchor wins when present — it's a fresh "land here" navigation, so
+        // it should override a stale settingsScrollY left over from a prior
+        // theme change (which would otherwise restore a position the user
+        // never asked to return to in this flow).
         val settingsScrollView = view.findViewById<NestedScrollView>(R.id.settingsScrollView)
+        val anchorName = arguments?.getString(ARG_ANCHOR)
         val savedScroll = prefs.settingsScrollY
-        if (savedScroll > 0) {
+        if (anchorName != null) {
+            val anchor = runCatching { SettingsAnchor.valueOf(anchorName) }.getOrNull()
+            // Clear the saved scroll position so a later theme change after
+            // the anchor land doesn't pop the user back to a stale offset.
+            if (savedScroll > 0) prefs.settingsScrollY = 0
+            if (anchor != null) scrollToAnchor(anchor)
+        } else if (savedScroll > 0) {
             fun tryRestore() {
                 if (settingsScrollView.height > 0) {
                     settingsScrollView.scrollTo(0, savedScroll)
@@ -259,23 +415,53 @@ class SettingsBottomSheet : DialogFragment() {
                 override fun openDeepLSettings() {
                     startActivity(android.content.Intent(requireContext(), DeepLSettingsActivity::class.java))
                 }
-                override fun startTranslateGemmaDownload() {
-                    showTranslateGemmaDownloadDialog()
+                override fun openLlmBackendSettings(id: com.playtranslate.translation.BackendId) {
+                    startActivity(
+                        android.content.Intent(requireContext(), LlmBackendSettingsActivity::class.java)
+                            .putExtra(LlmBackendSettingsActivity.EXTRA_BACKEND_ID, id)
+                    )
                 }
-                override fun enableInstalledTranslateGemma() {
-                    this@SettingsBottomSheet.enableInstalledTranslateGemma()
+                override fun openLlmModelPicker(id: com.playtranslate.translation.BackendId) {
+                    startActivity(LlmModelPickerActivity.newIntent(requireContext(), id))
                 }
-                override fun showTranslateGemmaDisableDialog() {
-                    this@SettingsBottomSheet.showTranslateGemmaDisableDialog()
+                override fun openTtsVoicePicker() {
+                    val ctx = requireContext()
+                    val lang = Prefs(ctx).sourceLangId
+                    ttsVoicePickerLang = lang
+                    ttsVoicePickerLauncher.launch(
+                        TtsVoiceActivity.intent(ctx, lang, Prefs(ctx).ttsVoiceName(lang)),
+                    )
                 }
-                override fun startQwenDownload() {
-                    showQwenDownloadDialog()
+                override fun openTtsSetup() {
+                    val act = activity ?: return
+                    showTtsNoEngineDialog(TtsAlertTarget.InActivity(act)) { }
                 }
-                override fun enableInstalledQwen() {
-                    this@SettingsBottomSheet.enableInstalledQwen()
+                override fun startQwenMnnDownload() {
+                    showQwenMnnDownloadDialog()
                 }
-                override fun showQwenDisableDialog() {
-                    this@SettingsBottomSheet.showQwenDisableDialog()
+                override fun enableInstalledQwenMnn() {
+                    this@SettingsBottomSheet.enableInstalledQwenMnn()
+                }
+                override fun showQwenMnnDisableDialog() {
+                    this@SettingsBottomSheet.showQwenMnnDisableDialog()
+                }
+                override fun startGemmaE2bMnnDownload() {
+                    showGemmaE2bMnnDownloadDialog()
+                }
+                override fun enableInstalledGemmaE2bMnn() {
+                    this@SettingsBottomSheet.enableInstalledGemmaE2bMnn()
+                }
+                override fun showGemmaE2bMnnDisableDialog() {
+                    this@SettingsBottomSheet.showGemmaE2bMnnDisableDialog()
+                }
+                override fun startHyMtDownload() {
+                    showHyMtDownloadDialog()
+                }
+                override fun enableInstalledHyMt() {
+                    this@SettingsBottomSheet.enableInstalledHyMt()
+                }
+                override fun showHyMtDisableDialog() {
+                    this@SettingsBottomSheet.showHyMtDisableDialog()
                 }
                 override fun onUpdateLanguagePacksTapped(
                     stalePacks: List<com.playtranslate.language.StalePack>
@@ -289,6 +475,14 @@ class SettingsBottomSheet : DialogFragment() {
                     dialog.onHotkeySet = onSet
                     dialog.onCancelled = onCancel
                     dialog.show(childFragmentManager, "hotkey_setup")
+                }
+                override fun showAccessibilityRequiredAlert(
+                    requirement: AccessibilityRequirement
+                ) {
+                    this@SettingsBottomSheet.showAccessibilityRequiredAlert(requirement)
+                }
+                override fun requestMediaProjectionControls() {
+                    this@SettingsBottomSheet.requestMediaProjectionControls()
                 }
                 override fun showAnkiDeckPicker(onDeckSelected: () -> Unit) {
                     val picker = AnkiDeckPickerDialog.newInstance()
@@ -395,11 +589,20 @@ class SettingsBottomSheet : DialogFragment() {
         }
         displayManager.registerDisplayListener(displayListener, null)
 
-        // Capture thumbnails asynchronously
+        // Capture thumbnails asynchronously. On the MediaProjection backend
+        // captureSource.requestClean() fails closed without screen-record
+        // consent, so the backend source is used only when capture can
+        // actually produce a frame; otherwise the own-display activity
+        // thumbnail is used, as on the null-source path below.
         val myDisplayId = requireActivity().display?.displayId ?: android.view.Display.DEFAULT_DISPLAY
+        val backend = CaptureBackendResolver.active()
+        val mgr = backend.captureSource?.takeIf { backend.canCaptureWithoutPrompting }
+        // Only the displays the backend can actually capture get a backend
+        // thumbnail — MediaProjection mirrors just the default display, so a
+        // requestClean for any other display would return the default
+        // display's pixels under the wrong row. Other rows get no thumbnail.
         displays.forEach { display ->
-            val mgr = PlayTranslateAccessibilityService.instance?.screenshotManager
-            if (mgr != null) {
+            if (mgr != null && backend.canCapture(display.displayId)) {
                 viewLifecycleOwner.lifecycleScope.launch {
                     val bitmap = mgr.requestClean(display.displayId)
                     if (bitmap != null) {
@@ -460,6 +663,9 @@ class SettingsBottomSheet : DialogFragment() {
                     "(a child DialogFragment was shown earlier this session)")
             return
         }
+        // Recycle the outgoing renderer's preview bitmap — reinflate builds a
+        // fresh renderer + preview without going through onDestroyView.
+        renderer?.destroyOverlayIconPreview()
         val index = parent.indexOfChild(old)
         parent.removeView(old)
         val newView = LayoutInflater.from(requireActivity())
@@ -516,16 +722,35 @@ class SettingsBottomSheet : DialogFragment() {
                 else { bmp.recycle(); onReady(null) }
             }, Handler(Looper.getMainLooper()))
         } catch (e: IllegalArgumentException) {
-            // PixelCopy throws when the window has no backing surface yet —
-            // e.g. capture requested mid-resume, before the first frame.
+            // PixelCopy throws when the activity window has no backing surface
+            // — a display-change reinflate can land mid-transition, before the
+            // window is drawn. Skip the thumbnail instead of crashing.
             bmp.recycle()
             onReady(null)
         }
     }
 
-    // ── TranslateGemma flow ─────────────────────────────────────────────
+    // ── On-device LLM download / enable / disable flows ────────────────
 
-    private var translategemmaDownloadJob: kotlinx.coroutines.Job? = null
+    /**
+     * Returns true and short-circuits if a download for the same backend is
+     * already in flight. Two on-device backends use this guard (Qwen-MNN
+     * and Gemma E2B) — without it, a frustrated user tapping the row
+     * repeatedly (because the OverlayProgress dialog isn't showing fast
+     * enough, or got dismissed by the back key, etc.) launches one new
+     * download coroutine per tap, each opening the same `<name>.partial`
+     * with `append=false` and truncating the others' progress to zero.
+     * Worst case observed on the MNN Qwen flow: six concurrent downloads
+     * in 4 s, app OOM-killed mid-stream, no successful install. See the
+     * in-place comments at each call site.
+     */
+    private fun isDownloadInFlight(job: kotlinx.coroutines.Job?, label: String): Boolean {
+        if (job?.isActive == true) {
+            android.util.Log.d(TAG, "$label download already in flight; ignoring tap")
+            return true
+        }
+        return false
+    }
 
     /** Kick off [com.playtranslate.language.PackUpgradeOrchestrator] for the
      *  user's deferred-upgrade list (the "Update language packs" cell tap).
@@ -566,7 +791,7 @@ class SettingsBottomSheet : DialogFragment() {
      * If availMem is above the floor, [onProceed] is invoked synchronously.
      *
      * The gate value comes from [com.playtranslate.translation.llm.OnDeviceLlmBackend.availMemFloorBytes]
-     * — the same threshold [com.playtranslate.translation.translategemma.LlamaTranslator.preflightMemory]
+     * — the same threshold [com.playtranslate.translation.mnn.MnnTranslator.preflightMemory]
      * enforces at translate time, so the install-time gate and the run-time
      * gate agree on "low memory."
      */
@@ -588,7 +813,6 @@ class SettingsBottomSheet : DialogFragment() {
             return
         }
 
-        val oc = com.playtranslate.OverlayColors
         val needStr = formatGb(backend.availMemFloorBytes)
         val freeStr = formatGb(mi.availMem)
         val builder = OverlayAlert.Builder(ctx)
@@ -598,7 +822,7 @@ class SettingsBottomSheet : DialogFragment() {
                 modelDisplayName, needStr, freeStr,
             ))
             .hideIcon()
-            .addButton(getString(R.string.llm_low_memory_recheck), oc.accent(ctx)) {
+            .addButton(getString(R.string.llm_low_memory_recheck), ctx.themeColor(R.attr.ptAccent)) {
                 // Recurse: re-reads availMem and either proceeds (if memory
                 // freed in the meantime) or shows the alert again. The prior
                 // OverlayAlert has already dismissed by the time onClick fires
@@ -614,7 +838,7 @@ class SettingsBottomSheet : DialogFragment() {
             // pt_*_text_on_accent nor card maps cleanly here.
             builder.addButton(
                 getString(R.string.llm_low_memory_delete),
-                oc.danger(ctx),
+                ctx.themeColor(R.attr.ptDanger),
                 android.graphics.Color.WHITE,
             ) {
                 onDelete()
@@ -622,7 +846,7 @@ class SettingsBottomSheet : DialogFragment() {
             }
         }
         builder.addCancelButton(getString(R.string.llm_low_memory_cancel)) { onCancel() }
-        builder.showInActivity(activity)
+        builder.show()
     }
 
     private fun formatGb(bytes: Long): String {
@@ -631,139 +855,135 @@ class SettingsBottomSheet : DialogFragment() {
                else "%.1f GB".format(gb)
     }
 
-    /** Re-enable an already-downloaded TranslateGemma model. Routes through
-     *  the availMem gate; on success flips the pref. The [Delete model] branch
-     *  of the gate matches the disable-dialog "Delete model" behavior so the
-     *  user can free disk space if they decide the model isn't right for the
-     *  device after all. */
-    private fun enableInstalledTranslateGemma() {
+
+    /**
+     * Smooth-scrolls the named section header into view. Safe to call on an
+     * already-shown sheet (e.g. the dual-screen default sheet that's already
+     * in the fragment manager when the cold-launch alert fires) — uses the
+     * same `post` + height-poll pattern as the theme-change scroll restore
+     * so the target's `top` coordinate is meaningful when we call scrollTo.
+     *
+     * Called from two paths:
+     *  - onViewCreated, when a freshly-created sheet was constructed with
+     *    `newInstance(anchor = …)` — the anchor is read from arguments.
+     *  - [com.playtranslate.MainActivity.openSettingsAtAnchor], when the
+     *    sheet is already shown and we want to navigate within it instead
+     *    of duplicating the fragment.
+     */
+    fun scrollToAnchor(anchor: SettingsAnchor) {
+        val root = view ?: return
+        val sv = root.findViewById<NestedScrollView>(R.id.settingsScrollView) ?: return
+        val target = root.findViewById<android.view.View>(anchor.headerId) ?: return
+        fun tryScroll() {
+            if (sv.height > 0 && target.height > 0) {
+                // Subtract a small top margin so the header doesn't sit
+                // flush with the scroll view's top edge.
+                val dp = root.resources.displayMetrics.density
+                val topMargin = (16 * dp).toInt()
+                sv.smoothScrollTo(0, (target.top - topMargin).coerceAtLeast(0))
+            } else {
+                sv.postDelayed(::tryScroll, 16)
+            }
+        }
+        sv.post { tryScroll() }
+    }
+
+    // ── Qwen (MNN) flow ──────────────────────────────────────────────────
+
+    private var qwenMnnDownloadJob: kotlinx.coroutines.Job? = null
+
+    /** Re-enable an already-extracted MNN-Qwen model. Mirrors
+     *  [enableInstalledQwen] but routes through MnnTranslator for the unload-
+     *  on-delete branch (so the right engine's native state is freed). */
+    private fun enableInstalledQwenMnn() {
         val ctx = context ?: return
         val backend = com.playtranslate.translation.TranslationBackendRegistry
-            .byId("translategemma") as? com.playtranslate.translation.llm.OnDeviceLlmBackend
+            .byId("qwen_mnn") as? com.playtranslate.translation.llm.OnDeviceLlmBackend
             ?: return
         checkAvailMemAndProceed(
             backend = backend,
-            modelDisplayName = getString(R.string.translategemma_display_name),
-            onProceed = { Prefs(ctx).translateGemmaEnabled = true },
+            modelDisplayName = getString(R.string.qwen_mnn_display_name),
+            onProceed = { Prefs(ctx).qwenMnnEnabled = true },
             allowDelete = true,
             onDelete = {
-                com.playtranslate.translation.translategemma.TranslateGemmaModel.delete(ctx)
-                // Drop the loaded model from native memory too — see the
-                // disable-dialog delete branch for why (avoids stale mmap
-                // after a re-download to the same filename).
+                com.playtranslate.translation.qwen.QwenMnnModel.delete(ctx)
                 viewLifecycleOwner.lifecycleScope.launch {
-                    com.playtranslate.translation.translategemma.LlamaTranslator
+                    com.playtranslate.translation.mnn.MnnTranslator
                         .getInstance(ctx).unloadModel()
                 }
                 renderer?.refreshAllBackendStatuses()
             },
-            onCancel = { renderer?.refreshTranslategemmaSwitch() },
+            onCancel = { renderer?.refreshQwenMnnSwitch() },
         )
     }
 
-    /** Re-enable an already-downloaded Qwen model. Mirrors
-     *  [enableInstalledTranslateGemma]. */
-    private fun enableInstalledQwen() {
+    /** Show the modal download dialog for the MNN-Qwen zip. Mirrors
+     *  [showQwenDownloadDialog]; the downloader picks ZipExtract automatically
+     *  via [com.playtranslate.translation.qwen.QwenMnnModel.isDirectoryMode]. */
+    private fun showQwenMnnDownloadDialog() {
+        if (isDownloadInFlight(qwenMnnDownloadJob, "Qwen MNN")) return
         val ctx = context ?: return
         val backend = com.playtranslate.translation.TranslationBackendRegistry
-            .byId("qwen") as? com.playtranslate.translation.llm.OnDeviceLlmBackend
-            ?: return
-        checkAvailMemAndProceed(
-            backend = backend,
-            modelDisplayName = getString(R.string.qwen_display_name),
-            onProceed = { Prefs(ctx).qwenEnabled = true },
-            allowDelete = true,
-            onDelete = {
-                com.playtranslate.translation.qwen.QwenModel.delete(ctx)
-                viewLifecycleOwner.lifecycleScope.launch {
-                    com.playtranslate.translation.translategemma.LlamaTranslator
-                        .getInstance(ctx).unloadModel()
-                }
-                renderer?.refreshAllBackendStatuses()
-            },
-            onCancel = { renderer?.refreshQwenSwitch() },
-        )
-    }
-
-    /** Show the modal download dialog (OverlayProgress).
-     *  Drives a [com.playtranslate.translation.llm.OnDeviceLlmDownloader] configured
-     *  for TG from the bottom sheet's lifecycle scope — dismissing the sheet
-     *  cancels the coroutine but preserves the partial file (resume on next
-     *  attempt). The Cancel button explicitly deletes the partial file. */
-    private fun showTranslateGemmaDownloadDialog() {
-        val ctx = context ?: return
-        val backend = com.playtranslate.translation.TranslationBackendRegistry
-            .byId("translategemma") as? com.playtranslate.translation.llm.OnDeviceLlmBackend
+            .byId("qwen_mnn") as? com.playtranslate.translation.llm.OnDeviceLlmBackend
             ?: return
         val downloader = com.playtranslate.translation.llm.OnDeviceLlmDownloader(
             context = ctx,
-            modelHelper = com.playtranslate.translation.translategemma.TranslateGemmaModel,
+            modelHelper = com.playtranslate.translation.qwen.QwenMnnModel,
             totalMemFloorBytes = backend.totalMemFloorBytes,
         )
-
-        // Pre-download availMem gate — runs first so we don't sink a 2 GB
-        // download into a device that can't currently load the model. The
-        // pre-download path has nothing to delete yet, so allowDelete=false
-        // (Check-again / Cancel only). onCancel is a no-op: the renderer
-        // didn't optimistically flip a switch for the download path; tapping
-        // the row enters this method directly and the switch is still off.
         checkAvailMemAndProceed(
             backend = backend,
-            modelDisplayName = getString(R.string.translategemma_display_name),
-            onProceed = { showTranslateGemmaDownloadDialogPostGate(ctx, downloader) },
+            modelDisplayName = getString(R.string.qwen_mnn_display_name),
+            onProceed = { showQwenMnnDownloadDialogPostGate(ctx, downloader) },
         )
     }
 
-    /** Post-availMem-gate continuation of [showTranslateGemmaDownloadDialog].
-     *  Surfaces the metered-network warning (if any) and kicks off the
-     *  download. Split out so the gate's [onProceed] can re-enter this flow
-     *  after a successful [Check memory again] tap. */
-    private fun showTranslateGemmaDownloadDialogPostGate(
+    private fun showQwenMnnDownloadDialogPostGate(
         ctx: Context,
         downloader: com.playtranslate.translation.llm.OnDeviceLlmDownloader,
     ) {
-        // Metered-network warning before kicking off the multi-GB download.
         if (downloader.isCurrentNetworkMetered()) {
-            val sizeStr = com.playtranslate.translation.translategemma
-                .TranslateGemmaModel.humanSize(ctx)
+            val sizeStr = com.playtranslate.translation.qwen.QwenMnnModel.humanSize(ctx)
             androidx.appcompat.app.AlertDialog.Builder(ctx)
-                .setTitle(R.string.translategemma_metered_warning_title)
-                .setMessage(getString(R.string.translategemma_metered_warning_message, sizeStr))
+                .setTitle(R.string.qwen_mnn_metered_warning_title)
+                .setMessage(getString(R.string.qwen_mnn_metered_warning_message, sizeStr))
                 .setPositiveButton(android.R.string.ok) { _, _ ->
-                    runTranslateGemmaDownload(ctx, downloader)
+                    runQwenMnnDownload(ctx, downloader)
                 }
                 .setNegativeButton(android.R.string.cancel) { _, _ -> }
                 .show()
             return
         }
-        runTranslateGemmaDownload(ctx, downloader)
+        runQwenMnnDownload(ctx, downloader)
     }
 
-    private fun runTranslateGemmaDownload(
+    private fun runQwenMnnDownload(
         ctx: Context,
         downloader: com.playtranslate.translation.llm.OnDeviceLlmDownloader,
     ) {
         val activity = activity ?: return
-        val sizeStr = com.playtranslate.translation.translategemma
-            .TranslateGemmaModel.humanSize(ctx)
+        val sizeStr = com.playtranslate.translation.qwen.QwenMnnModel.humanSize(ctx)
 
-        // Reference captured into the cancel callback below; the dialog is
-        // assigned right after via the Builder, then mutated as the download
-        // progresses.
         var dialog: OverlayProgress? = null
         dialog = OverlayProgress.Builder(ctx)
-            .setTitle(getString(R.string.translategemma_display_name))
-            .setMessage(getString(R.string.translategemma_status_downloading, "0 B", sizeStr))
+            .setTitle(getString(R.string.qwen_mnn_display_name))
+            .setMessage(getString(R.string.qwen_mnn_status_downloading, "0 B", sizeStr))
             .setProgress(0)
-            .setOnCancel {
-                translategemmaDownloadJob?.cancel()
-                // Explicit cancel deletes the partial file (no resume on next attempt).
-                downloader.deletePartial()
+            .setOnDismiss { reason ->
+                qwenMnnDownloadJob?.cancel()
+                // USER explicitly bailed → wipe the .partial so a new
+                // attempt starts fresh. LIFECYCLE_PAUSE keeps the .partial
+                // so the next attempt resumes instead of restarting a
+                // multi-GB download from zero.
+                if (reason == com.playtranslate.ui.DismissReason.USER) {
+                    downloader.deletePartial()
+                }
                 renderer?.refreshAllBackendStatuses()
             }
-            .showInActivity(activity)
+            .show()
 
-        translategemmaDownloadJob = viewLifecycleOwner.lifecycleScope.launch {
+        renderer?.setBackendDownloading("qwen_mnn", true)
+        qwenMnnDownloadJob = viewLifecycleOwner.lifecycleScope.launch {
             try {
                 val outcome = downloader.run { progress ->
                     requireActivity().runOnUiThread {
@@ -775,7 +995,7 @@ class SettingsBottomSheet : DialogFragment() {
                                 val total = com.playtranslate.translation.llm
                                     .humanSize(progress.total)
                                 dialog?.setMessage(getString(
-                                    R.string.translategemma_status_downloading,
+                                    R.string.qwen_mnn_status_downloading,
                                     recv, total,
                                 ))
                                 if (progress.total > 0) {
@@ -786,7 +1006,17 @@ class SettingsBottomSheet : DialogFragment() {
                             }
                             is com.playtranslate.translation.llm
                                 .OnDeviceLlmDownloader.Progress.Verifying -> {
-                                dialog?.setMessage(getString(R.string.translategemma_status_verifying))
+                                dialog?.setMessage(getString(R.string.qwen_mnn_status_verifying))
+                                dialog?.setProgress(100)
+                            }
+                            is com.playtranslate.translation.llm
+                                .OnDeviceLlmDownloader.Progress.Extracting -> {
+                                // The directory-mode commit path lives here.
+                                // The MNN Qwen zip extracts to ~30 separate
+                                // files (.mnn / .mnn.weight / tokenizer.txt /
+                                // config.json / ...) over a few seconds on
+                                // Thor; indeterminate spinner is fine.
+                                dialog?.setMessage(getString(R.string.model_download_extracting))
                                 dialog?.setProgress(100)
                             }
                         }
@@ -798,13 +1028,15 @@ class SettingsBottomSheet : DialogFragment() {
                     when (outcome) {
                         is com.playtranslate.translation.llm
                             .OnDeviceLlmDownloader.Outcome.Success -> {
-                            // Flip the pref → SP listener fires → switch + status refresh + reconcile.
-                            Prefs(ctx).translateGemmaEnabled = true
+                            Prefs(ctx).qwenMnnEnabled = true
+                            renderer?.refreshAllBackendStatuses()
                         }
                         is com.playtranslate.translation.llm
                             .OnDeviceLlmDownloader.Outcome.Refused -> {
                             android.widget.Toast.makeText(
-                                ctx, outcome.reason, android.widget.Toast.LENGTH_LONG
+                                ctx,
+                                getString(R.string.qwen_mnn_download_failed, outcome.reason),
+                                android.widget.Toast.LENGTH_LONG,
                             ).show()
                             renderer?.refreshAllBackendStatuses()
                         }
@@ -812,24 +1044,23 @@ class SettingsBottomSheet : DialogFragment() {
                             .OnDeviceLlmDownloader.Outcome.Failed -> {
                             android.widget.Toast.makeText(
                                 ctx,
-                                getString(R.string.translategemma_download_failed, outcome.reason),
+                                getString(R.string.qwen_mnn_download_failed, outcome.reason),
                                 android.widget.Toast.LENGTH_LONG,
                             ).show()
                             renderer?.refreshAllBackendStatuses()
                         }
                         is com.playtranslate.translation.llm
                             .OnDeviceLlmDownloader.Outcome.Cancelled -> {
-                            // Partial file kept (lifecycle dismiss). Settings will say "Tap to download"
-                            // because isInstalled() is false — but next tap resumes from offset.
-                            android.widget.Toast.makeText(
-                                ctx, R.string.translategemma_download_paused,
-                                android.widget.Toast.LENGTH_SHORT,
-                            ).show()
+                            // User-cancelled — partial may remain for resume,
+                            // unless the Cancel button's onCancel deleted it.
                             renderer?.refreshAllBackendStatuses()
                         }
                     }
                 }
             } catch (e: kotlinx.coroutines.CancellationException) {
+                // Rethrow so the coroutine machinery records the cancellation
+                // and the parent job tears down cleanly. Swallowing it leaves
+                // the cancellation state inconsistent; mirroring TG/Qwen.
                 throw e
             } catch (e: Exception) {
                 if (isAdded) {
@@ -837,7 +1068,7 @@ class SettingsBottomSheet : DialogFragment() {
                         dialog?.dismiss()
                         android.widget.Toast.makeText(
                             ctx,
-                            getString(R.string.translategemma_download_failed,
+                            getString(R.string.qwen_mnn_download_failed,
                                 e.message ?: e.javaClass.simpleName),
                             android.widget.Toast.LENGTH_LONG,
                         ).show()
@@ -848,119 +1079,132 @@ class SettingsBottomSheet : DialogFragment() {
                 // OverlayProgress lives on activity.window.decorView, not the
                 // fragment view — a fragment-only lifecycle cancel (sheet
                 // dismissed mid-download) would otherwise leave the scrim
-                // stuck. dismiss() is idempotent so this is safe even after
-                // the success/outcome branches above already dismissed.
+                // stuck full-screen until process restart. dismiss() is
+                // idempotent so this is safe even after the success/outcome
+                // branches above already dismissed. Codex review
+                // (2026-05-22, [P2]).
                 dialog?.dismiss()
+                renderer?.setBackendDownloading("qwen_mnn", false)
+                qwenMnnDownloadJob = null
             }
         }
     }
 
-
-    /** OverlayAlert with three options when the user taps an enabled TG row.
-     *  Scrim-tap and Cancel both revert the optimistic switch flip via
-     *  [SettingsRenderer.refreshTranslategemmaSwitch]. */
-    private fun showTranslateGemmaDisableDialog() {
+    /** Show the 3-button disable dialog for the Qwen-MNN tier. Delete branch
+     *  deletes via [QwenMnnModel.delete] and unloads the loaded MNN model. */
+    private fun showQwenMnnDisableDialog() {
         val ctx = context ?: return
-        val activity = activity ?: return
-        val oc = com.playtranslate.OverlayColors
-        val sizeStr = com.playtranslate.translation.translategemma
-            .TranslateGemmaModel.humanSize(ctx)
+        val sizeStr = com.playtranslate.translation.qwen.QwenMnnModel.humanSize(ctx)
         OverlayAlert.Builder(ctx)
-            .setTitle(getString(R.string.translategemma_disable_title))
-            .setMessage(getString(R.string.translategemma_disable_message, sizeStr))
+            .setTitle(getString(R.string.qwen_mnn_disable_title))
+            .setMessage(getString(R.string.qwen_mnn_disable_message, sizeStr))
             .hideIcon()
-            .addButton(getString(R.string.translategemma_disable_keep), oc.accent(ctx)) {
-                // File kept; only the toggle flips. SP listener picks up the change.
-                Prefs(ctx).translateGemmaEnabled = false
+            .addButton(getString(R.string.qwen_mnn_disable_keep), ctx.themeColor(R.attr.ptAccent)) {
+                Prefs(ctx).qwenMnnEnabled = false
             }
-            .addButton(getString(R.string.translategemma_disable_delete), oc.divider(ctx), oc.danger(ctx)) {
-                Prefs(ctx).translateGemmaEnabled = false
-                com.playtranslate.translation.translategemma
-                    .TranslateGemmaModel.delete(ctx)
-                // Drop the loaded model from native memory too. Without this,
-                // the unlinked file's mmap'd pages remain valid and a subsequent
-                // re-download would serve stale weights from the previous mmap
-                // because LlamaTranslator.ensureLoaded matches on the path string
-                // (which is unchanged after delete + re-download to the same
-                // FILENAME). See Codex adversarial-review Finding #1.
+            .addButton(getString(R.string.qwen_mnn_disable_delete), ctx.themeColor(R.attr.ptDivider), ctx.themeColor(R.attr.ptDanger)) {
+                Prefs(ctx).qwenMnnEnabled = false
+                com.playtranslate.translation.qwen.QwenMnnModel.delete(ctx)
                 viewLifecycleOwner.lifecycleScope.launch {
-                    com.playtranslate.translation.translategemma.LlamaTranslator
+                    com.playtranslate.translation.mnn.MnnTranslator
                         .getInstance(ctx).unloadModel()
                 }
                 renderer?.refreshAllBackendStatuses()
             }
-            .addCancelButton { renderer?.refreshTranslategemmaSwitch() }
-            .showInActivity(activity)
+            .addCancelButton { renderer?.refreshQwenMnnSwitch() }
+            .show()
     }
 
-    // ── Qwen flow ───────────────────────────────────────────────────────
+    // ── Gemma E2B (MNN, manual-lookup tier) flow ────────────────────────
 
-    private var qwenDownloadJob: kotlinx.coroutines.Job? = null
+    private var gemmaE2bDownloadJob: kotlinx.coroutines.Job? = null
 
-    /** Show the modal download dialog for Qwen. Mirrors
-     *  [showTranslateGemmaDownloadDialog] but with QwenModel + a 4 GB total-mem
-     *  floor (Qwen 1.5B fits comfortably below TG's 6 GB requirement). */
-    private fun showQwenDownloadDialog() {
+    /** Re-enable an already-extracted Gemma E2B model. Mirrors
+     *  [enableInstalledQwenMnn] but targets [GemmaE2BMnnModel] +
+     *  `prefs.gemmaE2bEnabled`. */
+    private fun enableInstalledGemmaE2bMnn() {
         val ctx = context ?: return
         val backend = com.playtranslate.translation.TranslationBackendRegistry
-            .byId("qwen") as? com.playtranslate.translation.llm.OnDeviceLlmBackend
+            .byId("gemma_e2b_mnn") as? com.playtranslate.translation.llm.OnDeviceLlmBackend
+            ?: return
+        checkAvailMemAndProceed(
+            backend = backend,
+            modelDisplayName = getString(R.string.gemma_e2b_mnn_display_name),
+            onProceed = { Prefs(ctx).gemmaE2bEnabled = true },
+            allowDelete = true,
+            onDelete = {
+                com.playtranslate.translation.gemma.GemmaE2BMnnModel.delete(ctx)
+                viewLifecycleOwner.lifecycleScope.launch {
+                    com.playtranslate.translation.mnn.MnnTranslator
+                        .getInstance(ctx).unloadModel()
+                }
+                renderer?.refreshAllBackendStatuses()
+            },
+            onCancel = { renderer?.refreshGemmaE2bSwitch() },
+        )
+    }
+
+    /** Show the modal download dialog for the Gemma E2B zip. Mirrors
+     *  [showQwenMnnDownloadDialog]; same ZipExtract commit strategy. */
+    private fun showGemmaE2bMnnDownloadDialog() {
+        if (isDownloadInFlight(gemmaE2bDownloadJob, "Gemma E2B")) return
+        val ctx = context ?: return
+        val backend = com.playtranslate.translation.TranslationBackendRegistry
+            .byId("gemma_e2b_mnn") as? com.playtranslate.translation.llm.OnDeviceLlmBackend
             ?: return
         val downloader = com.playtranslate.translation.llm.OnDeviceLlmDownloader(
             context = ctx,
-            modelHelper = com.playtranslate.translation.qwen.QwenModel,
+            modelHelper = com.playtranslate.translation.gemma.GemmaE2BMnnModel,
             totalMemFloorBytes = backend.totalMemFloorBytes,
         )
-
-        // Pre-download availMem gate — mirrors the TG flow. See the comment
-        // there for why allowDelete=false and onCancel is empty.
         checkAvailMemAndProceed(
             backend = backend,
-            modelDisplayName = getString(R.string.qwen_display_name),
-            onProceed = { showQwenDownloadDialogPostGate(ctx, downloader) },
+            modelDisplayName = getString(R.string.gemma_e2b_mnn_display_name),
+            onProceed = { showGemmaE2bMnnDownloadDialogPostGate(ctx, downloader) },
         )
     }
 
-    /** Post-availMem-gate continuation of [showQwenDownloadDialog]. Mirrors
-     *  [showTranslateGemmaDownloadDialogPostGate]. */
-    private fun showQwenDownloadDialogPostGate(
+    private fun showGemmaE2bMnnDownloadDialogPostGate(
         ctx: Context,
         downloader: com.playtranslate.translation.llm.OnDeviceLlmDownloader,
     ) {
         if (downloader.isCurrentNetworkMetered()) {
-            val sizeStr = com.playtranslate.translation.qwen.QwenModel.humanSize(ctx)
+            val sizeStr = com.playtranslate.translation.gemma.GemmaE2BMnnModel.humanSize(ctx)
             androidx.appcompat.app.AlertDialog.Builder(ctx)
-                .setTitle(R.string.qwen_metered_warning_title)
-                .setMessage(getString(R.string.qwen_metered_warning_message, sizeStr))
+                .setTitle(R.string.gemma_e2b_mnn_metered_warning_title)
+                .setMessage(getString(R.string.gemma_e2b_mnn_metered_warning_message, sizeStr))
                 .setPositiveButton(android.R.string.ok) { _, _ ->
-                    runQwenDownload(ctx, downloader)
+                    runGemmaE2bDownload(ctx, downloader)
                 }
                 .setNegativeButton(android.R.string.cancel) { _, _ -> }
                 .show()
             return
         }
-        runQwenDownload(ctx, downloader)
+        runGemmaE2bDownload(ctx, downloader)
     }
 
-    private fun runQwenDownload(
+    private fun runGemmaE2bDownload(
         ctx: Context,
         downloader: com.playtranslate.translation.llm.OnDeviceLlmDownloader,
     ) {
-        val activity = activity ?: return
-        val sizeStr = com.playtranslate.translation.qwen.QwenModel.humanSize(ctx)
+        val sizeStr = com.playtranslate.translation.gemma.GemmaE2BMnnModel.humanSize(ctx)
 
         var dialog: OverlayProgress? = null
         dialog = OverlayProgress.Builder(ctx)
-            .setTitle(getString(R.string.qwen_display_name))
-            .setMessage(getString(R.string.qwen_status_downloading, "0 B", sizeStr))
+            .setTitle(getString(R.string.gemma_e2b_mnn_display_name))
+            .setMessage(getString(R.string.gemma_e2b_mnn_status_downloading, "0 B", sizeStr))
             .setProgress(0)
-            .setOnCancel {
-                qwenDownloadJob?.cancel()
-                downloader.deletePartial()
+            .setOnDismiss { reason ->
+                gemmaE2bDownloadJob?.cancel()
+                if (reason == com.playtranslate.ui.DismissReason.USER) {
+                    downloader.deletePartial()
+                }
                 renderer?.refreshAllBackendStatuses()
             }
-            .showInActivity(activity)
+            .show()
 
-        qwenDownloadJob = viewLifecycleOwner.lifecycleScope.launch {
+        renderer?.setBackendDownloading("gemma_e2b_mnn", true)
+        gemmaE2bDownloadJob = viewLifecycleOwner.lifecycleScope.launch {
             try {
                 val outcome = downloader.run { progress ->
                     requireActivity().runOnUiThread {
@@ -972,7 +1216,7 @@ class SettingsBottomSheet : DialogFragment() {
                                 val total = com.playtranslate.translation.llm
                                     .humanSize(progress.total)
                                 dialog?.setMessage(getString(
-                                    R.string.qwen_status_downloading,
+                                    R.string.gemma_e2b_mnn_status_downloading,
                                     recv, total,
                                 ))
                                 if (progress.total > 0) {
@@ -983,7 +1227,12 @@ class SettingsBottomSheet : DialogFragment() {
                             }
                             is com.playtranslate.translation.llm
                                 .OnDeviceLlmDownloader.Progress.Verifying -> {
-                                dialog?.setMessage(getString(R.string.qwen_status_verifying))
+                                dialog?.setMessage(getString(R.string.gemma_e2b_mnn_status_verifying))
+                                dialog?.setProgress(100)
+                            }
+                            is com.playtranslate.translation.llm
+                                .OnDeviceLlmDownloader.Progress.Extracting -> {
+                                dialog?.setMessage(getString(R.string.model_download_extracting))
                                 dialog?.setProgress(100)
                             }
                         }
@@ -995,12 +1244,15 @@ class SettingsBottomSheet : DialogFragment() {
                     when (outcome) {
                         is com.playtranslate.translation.llm
                             .OnDeviceLlmDownloader.Outcome.Success -> {
-                            Prefs(ctx).qwenEnabled = true
+                            Prefs(ctx).gemmaE2bEnabled = true
+                            renderer?.refreshAllBackendStatuses()
                         }
                         is com.playtranslate.translation.llm
                             .OnDeviceLlmDownloader.Outcome.Refused -> {
                             android.widget.Toast.makeText(
-                                ctx, outcome.reason, android.widget.Toast.LENGTH_LONG
+                                ctx,
+                                getString(R.string.gemma_e2b_mnn_download_failed, outcome.reason),
+                                android.widget.Toast.LENGTH_LONG,
                             ).show()
                             renderer?.refreshAllBackendStatuses()
                         }
@@ -1008,17 +1260,13 @@ class SettingsBottomSheet : DialogFragment() {
                             .OnDeviceLlmDownloader.Outcome.Failed -> {
                             android.widget.Toast.makeText(
                                 ctx,
-                                getString(R.string.qwen_download_failed, outcome.reason),
+                                getString(R.string.gemma_e2b_mnn_download_failed, outcome.reason),
                                 android.widget.Toast.LENGTH_LONG,
                             ).show()
                             renderer?.refreshAllBackendStatuses()
                         }
                         is com.playtranslate.translation.llm
                             .OnDeviceLlmDownloader.Outcome.Cancelled -> {
-                            android.widget.Toast.makeText(
-                                ctx, R.string.qwen_download_paused,
-                                android.widget.Toast.LENGTH_SHORT,
-                            ).show()
                             renderer?.refreshAllBackendStatuses()
                         }
                     }
@@ -1031,7 +1279,7 @@ class SettingsBottomSheet : DialogFragment() {
                         dialog?.dismiss()
                         android.widget.Toast.makeText(
                             ctx,
-                            getString(R.string.qwen_download_failed,
+                            getString(R.string.gemma_e2b_mnn_download_failed,
                                 e.message ?: e.javaClass.simpleName),
                             android.widget.Toast.LENGTH_LONG,
                         ).show()
@@ -1039,44 +1287,372 @@ class SettingsBottomSheet : DialogFragment() {
                     }
                 }
             } finally {
-                // See translategemma flow above — OverlayProgress sits on
-                // activity decor, so a fragment-only lifecycle cancel
-                // bypasses the inner dismisses. Idempotent late dismiss
-                // catches the !isAdded return and CancellationException
-                // paths.
                 dialog?.dismiss()
+                renderer?.setBackendDownloading("gemma_e2b_mnn", false)
+                gemmaE2bDownloadJob = null
             }
         }
     }
 
-    /** OverlayAlert with three options when the user taps an enabled Qwen row.
-     *  Scrim-tap and Cancel both revert the optimistic switch flip via
-     *  [SettingsRenderer.refreshQwenSwitch]. */
-    private fun showQwenDisableDialog() {
+    /** Show the 3-button disable dialog for the Gemma E2B tier. Delete branch
+     *  deletes via [GemmaE2BMnnModel.delete] and unloads the loaded MNN model. */
+    private fun showGemmaE2bMnnDisableDialog() {
         val ctx = context ?: return
-        val activity = activity ?: return
-        val oc = com.playtranslate.OverlayColors
-        val sizeStr = com.playtranslate.translation.qwen.QwenModel.humanSize(ctx)
+        val sizeStr = com.playtranslate.translation.gemma.GemmaE2BMnnModel.humanSize(ctx)
         OverlayAlert.Builder(ctx)
-            .setTitle(getString(R.string.qwen_disable_title))
-            .setMessage(getString(R.string.qwen_disable_message, sizeStr))
+            .setTitle(getString(R.string.gemma_e2b_mnn_disable_title))
+            .setMessage(getString(R.string.gemma_e2b_mnn_disable_message, sizeStr))
             .hideIcon()
-            .addButton(getString(R.string.qwen_disable_keep), oc.accent(ctx)) {
-                Prefs(ctx).qwenEnabled = false
+            .addButton(getString(R.string.gemma_e2b_mnn_disable_keep), ctx.themeColor(R.attr.ptAccent)) {
+                Prefs(ctx).gemmaE2bEnabled = false
             }
-            .addButton(getString(R.string.qwen_disable_delete), oc.divider(ctx), oc.danger(ctx)) {
-                Prefs(ctx).qwenEnabled = false
-                com.playtranslate.translation.qwen.QwenModel.delete(ctx)
-                // See translategemma_disable_delete branch above for why we
-                // also unload the native model on file delete.
+            .addButton(getString(R.string.gemma_e2b_mnn_disable_delete), ctx.themeColor(R.attr.ptDivider), ctx.themeColor(R.attr.ptDanger)) {
+                Prefs(ctx).gemmaE2bEnabled = false
+                com.playtranslate.translation.gemma.GemmaE2BMnnModel.delete(ctx)
                 viewLifecycleOwner.lifecycleScope.launch {
-                    com.playtranslate.translation.translategemma.LlamaTranslator
+                    com.playtranslate.translation.mnn.MnnTranslator
                         .getInstance(ctx).unloadModel()
                 }
                 renderer?.refreshAllBackendStatuses()
             }
-            .addCancelButton { renderer?.refreshQwenSwitch() }
-            .showInActivity(activity)
+            .addCancelButton { renderer?.refreshGemmaE2bSwitch() }
+            .show()
+    }
+
+    // ── Hunyuan-MT 1.5 (MNN, translation-specialist tier) flow ──────────
+    //
+    // Region-gated by SettingsRenderer.wireHyMtBackendRow (which hides the
+    // row entirely in EU/UK/SK). Behind a one-time click-through legal
+    // attestation dialog (showHyMtLegalAttestationDialog) before the first
+    // download. Otherwise mirrors the Qwen-MNN flow above.
+
+    private var hyMtDownloadJob: kotlinx.coroutines.Job? = null
+
+    /** Re-enable an already-extracted Hunyuan-MT model. Skips the legal
+     *  attestation dialog — once `hyMtLegalAccepted` is true (set when the
+     *  user agreed before the first download), it stays true. */
+    private fun enableInstalledHyMt() {
+        val ctx = context ?: return
+        val backend = com.playtranslate.translation.TranslationBackendRegistry
+            .byId("hymt_mnn") as? com.playtranslate.translation.llm.OnDeviceLlmBackend
+            ?: return
+        checkAvailMemAndProceed(
+            backend = backend,
+            modelDisplayName = getString(R.string.hymt_display_name),
+            onProceed = { Prefs(ctx).hyMtEnabled = true },
+            allowDelete = true,
+            onDelete = {
+                com.playtranslate.translation.hymt.HyMtModel.delete(ctx)
+                viewLifecycleOwner.lifecycleScope.launch {
+                    com.playtranslate.translation.mnn.MnnTranslator
+                        .getInstance(ctx).unloadModel()
+                }
+                renderer?.refreshAllBackendStatuses()
+            },
+            onCancel = { renderer?.refreshHyMtSwitch() },
+        )
+    }
+
+    /** Show the modal download dialog for the Hunyuan-MT zip. Inserts the
+     *  click-through legal attestation dialog
+     *  ([showHyMtLegalAttestationDialog]) between the availMem and
+     *  metered-network gates and the actual download. The legal dialog
+     *  fires only on first download (when `hyMtLegalAccepted` is false);
+     *  subsequent enables skip it. */
+    private fun showHyMtDownloadDialog() {
+        if (isDownloadInFlight(hyMtDownloadJob, "Hunyuan-MT")) return
+        val ctx = context ?: return
+        val backend = com.playtranslate.translation.TranslationBackendRegistry
+            .byId("hymt_mnn") as? com.playtranslate.translation.llm.OnDeviceLlmBackend
+            ?: return
+        val downloader = com.playtranslate.translation.llm.OnDeviceLlmDownloader(
+            context = ctx,
+            modelHelper = com.playtranslate.translation.hymt.HyMtModel,
+            totalMemFloorBytes = backend.totalMemFloorBytes,
+        )
+        checkAvailMemAndProceed(
+            backend = backend,
+            modelDisplayName = getString(R.string.hymt_display_name),
+            onProceed = { showHyMtDownloadDialogPostAvailMem(ctx, downloader) },
+        )
+    }
+
+    /** Stage 2: metered-network gate. Stage 1 (availMem) already passed. */
+    private fun showHyMtDownloadDialogPostAvailMem(
+        ctx: Context,
+        downloader: com.playtranslate.translation.llm.OnDeviceLlmDownloader,
+    ) {
+        if (downloader.isCurrentNetworkMetered()) {
+            val sizeStr = com.playtranslate.translation.hymt.HyMtModel.humanSize(ctx)
+            androidx.appcompat.app.AlertDialog.Builder(ctx)
+                .setTitle(R.string.hymt_metered_warning_title)
+                .setMessage(getString(R.string.hymt_metered_warning_message, sizeStr))
+                .setPositiveButton(android.R.string.ok) { _, _ ->
+                    showHyMtLegalAttestationDialog(ctx, downloader)
+                }
+                .setNegativeButton(android.R.string.cancel) { _, _ ->
+                    renderer?.refreshHyMtSwitch()
+                }
+                .show()
+            return
+        }
+        showHyMtLegalAttestationDialog(ctx, downloader)
+    }
+
+    /** Stage 3 (Hunyuan-MT specific): one-time click-through legal
+     *  attestation. The Tencent HY Community License governs the model
+     *  weights; §1(l) defines a "Territory" that excludes EU/UK/SK, §5(c)
+     *  forbids use outside the Territory, and §5(b) forbids using outputs
+     *  to improve other AI models. RegionPolicy already hid the row from
+     *  users whose device signals indicate restricted regions; this dialog
+     *  catches the default-open case (no signals available, e.g. wifi-only
+     *  tablet) and gives every user an explicit point to read and accept
+     *  the restrictions.
+     *
+     *  Skipped on subsequent enables — once the user has tapped "I Agree"
+     *  once on this device (persisted via [Prefs.hyMtLegalAccepted]), the
+     *  dialog never re-fires. Mirrors how Meta handles Llama ToS. */
+    private fun showHyMtLegalAttestationDialog(
+        ctx: Context,
+        downloader: com.playtranslate.translation.llm.OnDeviceLlmDownloader,
+    ) {
+        if (Prefs(ctx).hyMtLegalAccepted) {
+            // Already accepted on this device — straight to download.
+            runHyMtDownload(ctx, downloader)
+            return
+        }
+        OverlayAlert.Builder(ctx)
+            .setTitle(getString(R.string.hymt_legal_title))
+            .setMessage(getString(R.string.hymt_legal_message))
+            .hideIcon()
+            .addButton(getString(R.string.hymt_legal_agree), ctx.themeColor(R.attr.ptAccent)) {
+                Prefs(ctx).hyMtLegalAccepted = true
+                runHyMtDownload(ctx, downloader)
+            }
+            .addCancelButton(getString(R.string.hymt_legal_cancel)) {
+                renderer?.refreshHyMtSwitch()
+            }
+            .show()
+    }
+
+    private fun runHyMtDownload(
+        ctx: Context,
+        downloader: com.playtranslate.translation.llm.OnDeviceLlmDownloader,
+    ) {
+        val sizeStr = com.playtranslate.translation.hymt.HyMtModel.humanSize(ctx)
+
+        var dialog: OverlayProgress? = null
+        dialog = OverlayProgress.Builder(ctx)
+            .setTitle(getString(R.string.hymt_display_name))
+            .setMessage(getString(R.string.hymt_status_downloading, "0 B", sizeStr))
+            .setProgress(0)
+            .setOnDismiss { reason ->
+                hyMtDownloadJob?.cancel()
+                if (reason == com.playtranslate.ui.DismissReason.USER) {
+                    downloader.deletePartial()
+                }
+                renderer?.refreshAllBackendStatuses()
+            }
+            .show()
+
+        renderer?.setBackendDownloading("hymt_mnn", true)
+        hyMtDownloadJob = viewLifecycleOwner.lifecycleScope.launch {
+            try {
+                val outcome = downloader.run { progress ->
+                    requireActivity().runOnUiThread {
+                        when (progress) {
+                            is com.playtranslate.translation.llm
+                                .OnDeviceLlmDownloader.Progress.Downloading -> {
+                                val recv = com.playtranslate.translation.llm
+                                    .humanSize(progress.received)
+                                val total = com.playtranslate.translation.llm
+                                    .humanSize(progress.total)
+                                dialog?.setMessage(getString(
+                                    R.string.hymt_status_downloading,
+                                    recv, total,
+                                ))
+                                if (progress.total > 0) {
+                                    dialog?.setProgress(
+                                        ((progress.received * 100) / progress.total).toInt()
+                                    )
+                                }
+                            }
+                            is com.playtranslate.translation.llm
+                                .OnDeviceLlmDownloader.Progress.Verifying -> {
+                                dialog?.setMessage(getString(R.string.hymt_status_verifying))
+                                dialog?.setProgress(100)
+                            }
+                            is com.playtranslate.translation.llm
+                                .OnDeviceLlmDownloader.Progress.Extracting -> {
+                                dialog?.setMessage(getString(R.string.model_download_extracting))
+                                dialog?.setProgress(100)
+                            }
+                        }
+                    }
+                }
+                if (!isAdded) return@launch
+                requireActivity().runOnUiThread {
+                    dialog?.dismiss()
+                    when (outcome) {
+                        is com.playtranslate.translation.llm
+                            .OnDeviceLlmDownloader.Outcome.Success -> {
+                            Prefs(ctx).hyMtEnabled = true
+                            renderer?.refreshAllBackendStatuses()
+                        }
+                        is com.playtranslate.translation.llm
+                            .OnDeviceLlmDownloader.Outcome.Refused -> {
+                            android.widget.Toast.makeText(
+                                ctx,
+                                getString(R.string.hymt_download_failed, outcome.reason),
+                                android.widget.Toast.LENGTH_LONG,
+                            ).show()
+                            renderer?.refreshAllBackendStatuses()
+                        }
+                        is com.playtranslate.translation.llm
+                            .OnDeviceLlmDownloader.Outcome.Failed -> {
+                            android.widget.Toast.makeText(
+                                ctx,
+                                getString(R.string.hymt_download_failed, outcome.reason),
+                                android.widget.Toast.LENGTH_LONG,
+                            ).show()
+                            renderer?.refreshAllBackendStatuses()
+                        }
+                        is com.playtranslate.translation.llm
+                            .OnDeviceLlmDownloader.Outcome.Cancelled -> {
+                            renderer?.refreshAllBackendStatuses()
+                        }
+                    }
+                }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                if (isAdded) {
+                    requireActivity().runOnUiThread {
+                        dialog?.dismiss()
+                        android.widget.Toast.makeText(
+                            ctx,
+                            getString(R.string.hymt_download_failed,
+                                e.message ?: e.javaClass.simpleName),
+                            android.widget.Toast.LENGTH_LONG,
+                        ).show()
+                        renderer?.refreshAllBackendStatuses()
+                    }
+                }
+            } finally {
+                dialog?.dismiss()
+                renderer?.setBackendDownloading("hymt_mnn", false)
+                hyMtDownloadJob = null
+            }
+        }
+    }
+
+    /** Show the 3-button disable dialog for the Hunyuan-MT tier. Mirrors
+     *  [showQwenMnnDisableDialog]. Delete branch wipes the model + unloads
+     *  the loaded MNN engine state. */
+    private fun showHyMtDisableDialog() {
+        val ctx = context ?: return
+        val sizeStr = com.playtranslate.translation.hymt.HyMtModel.humanSize(ctx)
+        OverlayAlert.Builder(ctx)
+            .setTitle(getString(R.string.hymt_disable_title))
+            .setMessage(getString(R.string.hymt_disable_message, sizeStr))
+            .hideIcon()
+            .addButton(getString(R.string.hymt_disable_keep), ctx.themeColor(R.attr.ptAccent)) {
+                Prefs(ctx).hyMtEnabled = false
+            }
+            .addButton(getString(R.string.hymt_disable_delete), ctx.themeColor(R.attr.ptDivider), ctx.themeColor(R.attr.ptDanger)) {
+                Prefs(ctx).hyMtEnabled = false
+                com.playtranslate.translation.hymt.HyMtModel.delete(ctx)
+                viewLifecycleOwner.lifecycleScope.launch {
+                    com.playtranslate.translation.mnn.MnnTranslator
+                        .getInstance(ctx).unloadModel()
+                }
+                renderer?.refreshAllBackendStatuses()
+            }
+            .addCancelButton { renderer?.refreshHyMtSwitch() }
+            .show()
+    }
+
+    // ── Accessibility-required alert ─────────────────────────────────────
+
+    /** OverlayAlert shown when the user attempts an accessibility-gated
+     *  Settings action — switching capture displays or setting a hotkey —
+     *  while the service is disabled. The accent button opens Accessibility
+     *  Settings; the cancel button just dismisses. Icon-less, matching the
+     *  TG / Qwen confirmation dialogs. */
+    private fun showAccessibilityRequiredAlert(requirement: AccessibilityRequirement) {
+        val ctx = context ?: return
+        val message = when (requirement) {
+            AccessibilityRequirement.MULTI_DISPLAY ->
+                getString(R.string.a11y_required_displays_message)
+            AccessibilityRequirement.HOTKEY ->
+                getString(R.string.a11y_required_hotkey_message)
+            AccessibilityRequirement.ENHANCED_AUTO_TRANSLATE ->
+                getString(R.string.a11y_required_enhanced_message)
+        }
+        OverlayAlert.Builder(ctx)
+            .hideIcon()
+            .setTitle(getString(R.string.a11y_required_alert_title))
+            .setMessage(message)
+            .addButton(
+                getString(R.string.btn_open_a11y_settings),
+                ctx.themeColor(R.attr.ptAccent),
+                ctx.themeColor(R.attr.ptAccentOn),
+            ) {
+                startActivity(android.content.Intent(
+                    android.provider.Settings.ACTION_ACCESSIBILITY_SETTINGS))
+            }
+            .addCancelButton(getString(android.R.string.cancel))
+            .show()
+    }
+
+    // ── MediaProjection controls ─────────────────────────────────────────
+
+    /** MediaProjection-backend "turn on game screen controls": prompt for the
+     *  screen-record consent and, on grant, reconcile the floating icons.
+     *  Runs on the Activity scope so the consent round-trip survives a
+     *  Settings dismiss; the switch refresh is null-safe for that case. */
+    private fun requestMediaProjectionControls() {
+        val activity = activity as? androidx.appcompat.app.AppCompatActivity ?: return
+        if (!android.provider.Settings.canDrawOverlays(activity)) {
+            // The MediaProjection floating controls are TYPE_APPLICATION_OVERLAY
+            // windows — without "Display over other apps" they silently fail to
+            // add. Route the user to grant it; they re-tap Start afterwards.
+            showOverlayPermissionAlert(activity)
+            return
+        }
+        activity.lifecycleScope.launch {
+            val controller =
+                com.playtranslate.CaptureService.instance?.mediaProjectionController
+            val granted = controller?.ensureConsent() ?: false
+            if (granted) {
+                // showOverlayIcon doesn't apply on the MediaProjection
+                // backend — the icon shows whenever capture is active (see
+                // OverlayUiController.reconcileFloatingIcons), so there's
+                // nothing to flip here.
+                com.playtranslate.capture.CaptureBackendResolver
+                    .activeOverlayUi?.reconcileFloatingIcons()
+                com.playtranslate.PlayTranslateTileService.TileSync.refresh(activity)
+            }
+            renderer?.refreshOverlayIconState()
+        }
+    }
+
+    /** Routes the user to grant "Display over other apps" — required for the
+     *  MediaProjection floating controls (TYPE_APPLICATION_OVERLAY windows). */
+    private fun showOverlayPermissionAlert(activity: androidx.appcompat.app.AppCompatActivity) {
+        OverlayAlert.Builder(activity)
+            .hideIcon()
+            .setTitle(getString(R.string.mp_overlay_permission_title))
+            .setMessage(getString(R.string.mp_overlay_permission_message))
+            .addButton(
+                getString(R.string.mp_overlay_permission_button),
+                activity.themeColor(R.attr.ptAccent),
+                activity.themeColor(R.attr.ptAccentOn),
+            ) {
+                activity.startActivity(activity.overlayPermissionSettingsIntent())
+            }
+            .addCancelButton(getString(android.R.string.cancel))
+            .show()
     }
 
     // ── Companion ───────────────────────────────────────────────────────
@@ -1090,8 +1666,28 @@ class SettingsBottomSheet : DialogFragment() {
         // class itself — see OnDeviceLlmBackend.totalMemFloorBytes — so the UI's
         // hardware-gate logic and the downloader's preflight read the same source.)
 
-        fun newInstance(hideDismiss: Boolean = false) = SettingsBottomSheet().apply {
-            if (hideDismiss) arguments = Bundle().apply { putBoolean(ARG_HIDE_DISMISS, true) }
+        private const val ARG_ANCHOR = "anchor"
+
+        fun newInstance(
+            hideDismiss: Boolean = false,
+            anchor: SettingsAnchor? = null,
+        ) = SettingsBottomSheet().apply {
+            val args = Bundle()
+            if (hideDismiss) args.putBoolean(ARG_HIDE_DISMISS, true)
+            if (anchor != null) args.putString(ARG_ANCHOR, anchor.name)
+            if (!args.isEmpty) arguments = args
         }
     }
+}
+
+/**
+ * Named scroll target for [SettingsBottomSheet.newInstance]. Add new entries
+ * here when a deep-link needs to land the user at a specific section of the
+ * Settings sheet; the sheet scrolls the corresponding header view into view
+ * after layout. See [SettingsBottomSheet.maybeScrollToAnchor].
+ */
+enum class SettingsAnchor(val headerId: Int) {
+    /** "Offline translations" section header. Used by the cold-launch
+     *  "faster Qwen available" OverlayAlert in MainActivity. */
+    OfflineTranslation(com.playtranslate.R.id.headerOfflineTranslations),
 }

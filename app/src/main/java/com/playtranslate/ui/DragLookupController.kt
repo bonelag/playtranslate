@@ -10,11 +10,16 @@ import android.os.Handler
 import android.os.Looper
 import android.util.Log
 import android.util.TypedValue
+import android.widget.Toast
 import com.playtranslate.AnkiManager
 import com.playtranslate.CaptureService
+import com.playtranslate.R
+import com.playtranslate.capture.CaptureBackendResolver
+import com.playtranslate.displaySizePx
 import com.playtranslate.MainActivity
 import com.playtranslate.OcrManager
-import com.playtranslate.PlayTranslateAccessibilityService
+import com.playtranslate.PlayTranslateApplication
+import com.playtranslate.overlay.OverlayHost
 import com.playtranslate.Prefs
 import com.playtranslate.language.DefinitionResolver
 import com.playtranslate.language.DefinitionResult
@@ -26,6 +31,7 @@ import com.playtranslate.model.DictionaryEntry
 import com.playtranslate.model.headwordDisplay
 import kotlinx.coroutines.*
 import java.io.File
+import kotlin.coroutines.coroutineContext
 import kotlin.math.abs
 
 /**
@@ -38,9 +44,11 @@ import kotlin.math.abs
  * Finger position is checked against cached OCR bounding boxes — essentially free.
  */
 class DragLookupController(
+    private val context: Context,
     private val displayId: Int,
     private val popup: WordLookupPopup,
-    private val magnifier: MagnifierLens
+    private val magnifier: MagnifierLens,
+    private val overlayHost: OverlayHost,
 ) {
     /** Fires once per drag, on the main thread, when no popup will surface
      *  from this drag (release with no OCR / no hit / async lookup miss) or
@@ -61,6 +69,8 @@ class DragLookupController(
     private var ocrLines: List<OcrManager.OcrLine>? = null
     private var ocrJob: Job? = null
     private var lookupJob: Job? = null
+    /** Wires the lens Speak chip to the TTS engine. Created in [init]. */
+    private var speakChip: LensSpeakChip? = null
     private var lastWord: String? = null
     /** Current dictionary entry shown in the popup. */
     private var currentEntry: DictionaryEntry? = null
@@ -139,6 +149,21 @@ class DragLookupController(
         // single- or dual-screen mode, so the user lands on a consistent
         // surface with the switch available.
         magnifier.onOpenTap = { openSentenceInApp() }
+        // Anki chip: tap opens the editable review sheet (default).
+        // Long-press is the headless one-tap shortcut — documented by
+        // the pro-tip footer in Settings → Anki.
+        magnifier.onAnkiTap = { openAnkiReviewForLens() }
+        magnifier.onAnkiLongPress = { oneTapFromLens() }
+        // Speak chip → pronounce the looked-up headword via the system TTS
+        // engine. LensSpeakChip installs the lens's onSpeakTap handler and
+        // owns the speak coroutine + alert routing.
+        speakChip = LensSpeakChip(
+            magnifier,
+            scope,
+            TtsAlertTarget.Overlay(magnifier.rawCtx, overlayHost, magnifier.wm, displayId),
+        ) {
+            lastWord?.let { LensSpeakChip.Request(it, Prefs(popup.ctx).sourceLangId) }
+        }
         // Lens dismissal post-drag fires [onSettled] so the service can
         // restore region indicator + live mode. If a new drag starts and
         // tears down a sticky lens, dragInProgress is true at that moment
@@ -147,6 +172,9 @@ class DragLookupController(
         magnifier.onDismiss = {
             lastWord = null
             currentEntry = null
+            // Cancel a pending speak and stop any in-progress speech when
+            // the lens goes away.
+            speakChip?.release()
             if (!dragInProgress) onSettled?.invoke()
         }
     }
@@ -276,12 +304,7 @@ class DragLookupController(
         }
     }
 
-    private fun queryScreenSize(): Point {
-        val wm = popup.ctx.getSystemService(Context.WINDOW_SERVICE) as? WindowManager
-            ?: return Point()
-        val bounds = wm.currentWindowMetrics.bounds
-        return Point(bounds.width(), bounds.height())
-    }
+    private fun queryScreenSize(): Point = popup.ctx.displaySizePx()
 
     // ── Public API (called from FloatingOverlayIcon callbacks) ───────────
 
@@ -336,8 +359,12 @@ class DragLookupController(
         // contaminate the captured pixels.
         val screen = queryScreenSize()
         magnifier.show(lastX.toInt(), lastY.toInt(), screen.x, screen.y)
+        // Arm the spinner skin BEFORE the first setLabel so the very
+        // first paint of the pill is the loading look — no flash of the
+        // magnifying-glass icon before OCR begins.
+        magnifier.setPillLoading(true)
         magnifier.setLabel(null, null)
-        ocrJob = scope.launch {
+        val thisJob = scope.launch {
             try {
                 if (existingScreenshotPath != null) {
                     ocrFromFile(existingScreenshotPath)
@@ -348,6 +375,22 @@ class DragLookupController(
                 throw e
             } catch (e: Exception) {
                 Log.e(TAG, "OCR failed", e)
+            }
+        }
+        ocrJob = thisJob
+        // Safety net for paths that don't reach the inline clear in
+        // [ocrFromFile] / [captureAndOcr]: bitmap-null / lines-null
+        // early returns, exceptions, and cancellation. On success the
+        // inline clear has already fired and this is a no-op (the
+        // setPillLoading guard makes it idempotent). invokeOnCompletion
+        // fires on an arbitrary thread; post to main. The identity
+        // guard protects against a stale cancelled job's late completion
+        // clearing the new drag's spinner — ML Kit text recognition is
+        // non-cancellable at the native layer, so a previous-drag job
+        // can complete after the next onDragStart has armed its spinner.
+        thisJob.invokeOnCompletion {
+            handler.post {
+                if (ocrJob === thisJob) magnifier.setPillLoading(false)
             }
         }
     }
@@ -377,6 +420,16 @@ class DragLookupController(
         // ocrLines on it would drop release-time lookups during the ~50-
         // 300 ms pretokenize window.
         ocrLines = lines
+        // The pill spinner tracks "release-time lookup is blocked" — clear
+        // it here, not when the OCR coroutine ends. pretokenizeLines below
+        // only refines the hover-time label readout; gating the spinner
+        // on full job completion would keep "Processing…" up while the
+        // user can already lift to look up a word. Identity-guarded
+        // against a stale cancelled job's late return: ML Kit text
+        // recognition is non-cancellable at the native layer.
+        if (ocrJob === coroutineContext[Job]) {
+            magnifier.setPillLoading(false)
+        }
         pretokenizeLines(lines)
     }
 
@@ -539,16 +592,21 @@ class DragLookupController(
      *  (n-gram phrase matches in `tokenizeWithSurfaces` carry null
      *  readings).
      *
-     *  **Phase 2** — canonicalize each unique lookupForm against the
-     *  dictionary. Per-form (not per-token) dedupe is the key cost
-     *  control: a screen with 240 tokens commonly has ~50 unique
-     *  lookupForms, so we pay 50 SQLite queries instead of 240. Each
-     *  resolved form patches every cache entry that uses it — fixes both
-     *  the wrong-reading case (replaces kuromoji's surface reading with
-     *  JMdict's lemma reading) and the missing-reading case (fills in
-     *  what tokenizeWithSurfaces left null). Reader (onDragMove) re-reads
-     *  the cache on every tick so the label updates in place as Phase 2
-     *  progresses.
+     *  **Phase 2** — canonicalize each unique (lookupForm, reading) pair
+     *  against the dictionary. Dedupe keys on the pair, not the form
+     *  alone, so kuromoji's per-token reading can ride along as a
+     *  disambiguation hint: a homograph kanji (人 → ひと "person" vs にん
+     *  "counter for people") then resolves to the entry that matches the
+     *  surface, instead of whichever entry happens to win the reading-
+     *  blind ranking. The pair count barely exceeds the form count — a
+     *  form appearing with two readings on one screen is uncommon — so a
+     *  240-token screen still collapses to ~50-ish SQLite queries, not
+     *  240. Each resolved pair patches every cache entry that uses it —
+     *  fixes both the wrong-reading case (replaces kuromoji's surface
+     *  reading with JMdict's lemma reading) and the missing-reading case
+     *  (fills in what tokenizeWithSurfaces left null). Reader (onDragMove)
+     *  re-reads the cache on every tick so the label updates in place as
+     *  Phase 2 progresses.
      *
      *  Re-throws [CancellationException] before the generic catch so a
      *  cancelled drag's coroutine actually exits without overwriting
@@ -557,8 +615,7 @@ class DragLookupController(
      *  silently, the loop would run to completion, and the assignment at
      *  the end would clobber the next drag's reset. */
     private suspend fun pretokenizeLines(lines: List<OcrManager.OcrLine>) {
-        val service = PlayTranslateAccessibilityService.instance ?: return
-        val engine = SourceLanguageEngines.get(service, Prefs(service).sourceLangId)
+        val engine = SourceLanguageEngines.get(context, Prefs(context).sourceLangId)
         val cache = mutableMapOf<String, List<LabelToken>>()
 
         // Phase 1: kuromoji-only pass.
@@ -602,26 +659,29 @@ class DragLookupController(
             refreshLabelAndDwell()
         }
 
-        // Phase 2: per-unique-lookupForm canonicalization.
-        val uniqueForms = LinkedHashSet<String>()
-        for (tokens in cache.values) for (t in tokens) uniqueForms.add(t.lookupForm)
-        for (form in uniqueForms) {
+        // Phase 2: per-unique-(lookupForm, reading) canonicalization.
+        // Keying on the pair — not the form alone — lets the lookup pass
+        // kuromoji's reading as a hint so a homograph kanji resolves to
+        // the matching entry instead of the top reading-blind one.
+        val uniqueKeys = LinkedHashSet<Pair<String, String?>>()
+        for (tokens in cache.values) for (t in tokens) uniqueKeys.add(t.lookupForm to t.reading)
+        for ((form, hintReading) in uniqueKeys) {
             val (canonicalWord, canonicalReading) = try {
-                val head = engine.lookup(form, null)?.entries?.firstOrNull()
+                val head = engine.lookup(form, hintReading)?.entries?.firstOrNull()
                     ?.headwords?.firstOrNull()
                 if (head != null) (head.written ?: head.reading ?: form) to head.reading
                 else continue  // not in dict — leave Phase 1 entry as-is
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                Log.w(TAG, "pretokenize phase 2 failed for $form: ${e.message}")
+                Log.w(TAG, "pretokenize phase 2 failed for $form [$hintReading]: ${e.message}")
                 continue
             }
             val gatedReading = canonicalReading?.takeIf { readingAddsInfo(canonicalWord, it) }
             for ((lineText, tokens) in cache.toMap()) {
                 var dirty = false
                 val patched = tokens.map { t ->
-                    if (t.lookupForm == form &&
+                    if (t.lookupForm == form && t.reading == hintReading &&
                         (t.lookupForm != canonicalWord || t.reading != gatedReading)
                     ) {
                         dirty = true
@@ -847,11 +907,10 @@ class DragLookupController(
 
     @OptIn(ExperimentalCoroutinesApi::class)
     private suspend fun captureAndOcr() {
-        val service = PlayTranslateAccessibilityService.instance ?: return
         Log.d(TAG, "Taking screenshot for full-screen OCR...")
 
         val bitmap = withTimeoutOrNull(3000L) {
-            service.screenshotManager?.requestClean(displayId)
+            CaptureBackendResolver.active().captureSource?.requestClean(displayId)
         }
         if (bitmap == null) {
             Log.w(TAG, "Screenshot failed or timed out")
@@ -862,7 +921,7 @@ class DragLookupController(
         onScreenshotCaptured(bitmap, savedPath)
 
         val lines = withContext(Dispatchers.Default) {
-            ocrManager.recogniseWithPositions(bitmap, Prefs(service).sourceLang)
+            ocrManager.recogniseWithPositions(bitmap, Prefs(context).sourceLang)
         }
         if (lines == null) {
             Log.d(TAG, "No text found on screen")
@@ -872,6 +931,10 @@ class DragLookupController(
         // See ocrFromFile — publish ocrLines first so a quick release
         // doesn't get gated on the per-line pretokenization pass.
         ocrLines = lines
+        // Same spinner boundary as ocrFromFile — see comment there.
+        if (ocrJob === coroutineContext[Job]) {
+            magnifier.setPillLoading(false)
+        }
         pretokenizeLines(lines)
     }
 
@@ -917,8 +980,7 @@ class DragLookupController(
         val charExtent = lineExtent / lineText.length
 
         // Tokenize the line (surface spans for position mapping, lookup forms for dictionary)
-        val service = PlayTranslateAccessibilityService.instance ?: return null
-        val engine = SourceLanguageEngines.get(service, Prefs(service).sourceLangId)
+        val engine = SourceLanguageEngines.get(context, Prefs(context).sourceLangId)
         val tokenResults = engine.tokenize(lineText)
 
         if (tokenResults.isEmpty()) return null
@@ -956,8 +1018,8 @@ class DragLookupController(
         val lookupForm = matchedToken?.lookupForm ?: matchedSurface
 
         // Dictionary lookup using the base/dictionary form + reading hint
-        val prefs = Prefs(service)
-        val targetGlossDb = TargetGlossDatabaseProvider.get(service, prefs.targetLang)
+        val prefs = Prefs(context)
+        val targetGlossDb = TargetGlossDatabaseProvider.get(context, prefs.targetLang)
         val mlKitTranslator = TranslationManagerProvider.get(engine.profile.translationCode, prefs.targetLang)
         val enToTarget = TranslationManagerProvider.getEnToTarget(prefs.targetLang)
         val resolver = DefinitionResolver(engine, targetGlossDb,
@@ -1240,25 +1302,19 @@ class DragLookupController(
     }
 
     private fun prefetchWordLookups(sentence: String) {
-        val cache = LastSentenceCache
-        // Skip if the cache already has results for this exact sentence
-        if (cache.original == sentence && cache.wordResults != null) return
-        val service = PlayTranslateAccessibilityService.instance ?: return
+        // Fire-and-forget; the cache owns the in-flight Deferred and
+        // the staleness gate. Cancelling the previous job is no longer
+        // our concern — LastSentenceCache.awaitOrStartWordLookups flips
+        // its own `original` and cancels stale pending jobs when the
+        // sentence changes.
         wordLookupJob?.cancel()
         wordLookupJob = scope.launch {
-            val results = LastSentenceCache.lookupWords(service, sentence)
-            // Only write cache if this sentence is still current
-            if (currentSentence == sentence) {
-                cache.original = sentence
-                cache.translation = null  // clear stale translation from previous text
-                cache.wordResults = results
-            }
+            LastSentenceCache.awaitOrStartWordLookups(context, sentence)
         }
     }
 
     private fun openSentenceInApp() {
         val sentence = currentSentence ?: return
-        val service = PlayTranslateAccessibilityService.instance ?: return
         // Capture word context BEFORE magnifier.dismiss() — the lens's
         // onDismiss handler nulls lastWord and currentEntry, so any read
         // after dismiss returns null and the intent loses EXTRA_DRAG_WORD,
@@ -1275,6 +1331,7 @@ class DragLookupController(
         // snapshot that nothing else can overwrite.
         val cached = LastSentenceCache.takeIf { it.original == sentence }
         val cachedTranslation = cached?.translation
+        val cachedTranslationSource = cached?.translationSource
         val cachedWordResults = cached?.wordResults?.takeIf { it.isNotEmpty() }
         // Tell the service to clear the drag-flow's pause obligation if
         // the detail view will cover the live-mode surface. The service
@@ -1283,13 +1340,20 @@ class DragLookupController(
         // path can't drift from the routing logic in resumeLiveMode and
         // friends. Dual-screen with the in-app panel visible leaves
         // auto-resume intact since TRA lands separately from live mode.
-        service.cancelLivePauseObligation()
+        CaptureBackendResolver.activeOverlayUi?.cancelLivePauseObligation()
         // Tear down the lens (sticky drag-flow surface) before launching
         // the activity. Lens dismiss → onDismiss → onSettled, which is
         // what the service expects post-drag.
         magnifier.dismiss()
-        val intent = Intent(service, TranslationResultActivity::class.java).apply {
-            flags = Intent.FLAG_ACTIVITY_NEW_TASK
+        // Finish any previously launched TranslationResultActivity so the
+        // new launch fully replaces it visually (otherwise FLAG_ACTIVITY_MULTIPLE_TASK
+        // leaves it alive in a hidden task).
+        TranslationResultActivity.finishCurrentIfAny()
+        val intent = Intent(context, TranslationResultActivity::class.java).apply {
+            // MULTIPLE_TASK prevents Android from reusing the previous
+            // activity's task and migrating it (and its stale content)
+            // onto a different display — the bug repro on dual-screen.
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_MULTIPLE_TASK
             putExtra(TranslationResultActivity.EXTRA_SENTENCE_TEXT, sentence)
             putExtra(TranslationResultActivity.EXTRA_SCREENSHOT_PATH, screenshotPath)
             // Word context — when present, the activity surfaces the
@@ -1300,6 +1364,9 @@ class DragLookupController(
             }
             cachedTranslation?.let {
                 putExtra(TranslationResultActivity.EXTRA_DRAG_SENTENCE_TRANSLATION, it)
+            }
+            cachedTranslationSource?.let {
+                putExtra(TranslationResultActivity.EXTRA_DRAG_SENTENCE_TRANSLATION_SOURCE, it)
             }
             cachedWordResults?.let { wr ->
                 putExtra(TranslationResultActivity.EXTRA_DRAG_SENTENCE_WORDS,
@@ -1312,40 +1379,257 @@ class DragLookupController(
                     wr.values.map { it.third }.toIntArray())
             }
         }
-        // App-foregrounded launches land on MainActivity's display, which is
-        // the user's expected target. When the app is backgrounded, no
-        // foreground task pulls the activity onto the user's display, so it
-        // lands wherever Android default-routes (typically DEFAULT_DISPLAY) —
-        // wrong on dual-screen setups where the user just tapped the floating
-        // icon on a non-default display. Force the launch onto the icon's
-        // display in that case.
-        if (!MainActivity.isInForeground) {
-            val opts = android.app.ActivityOptions.makeBasic()
-                .setLaunchDisplayId(displayId)
-                .toBundle()
-            service.startActivity(intent, opts)
-        } else {
-            service.startActivity(intent)
+        // Always pass an explicit launch display:
+        //   - When any PlayTranslate activity is resumed, route onto its
+        //     display so the new activity replaces it visually (the user
+        //     is already looking there).
+        //   - When nothing is resumed, fall back to the icon's display so
+        //     the activity doesn't land on DEFAULT_DISPLAY on dual-screen
+        //     setups.
+        // The previous `if (!MainActivity.isInForeground)` gate only
+        // tracked MainActivity, so once an Anki/TRA activity was the
+        // resumed one, the gate routed the next launch to the icon's
+        // display — the dual-screen "moved to wrong display" bug.
+        val targetDisplay = PlayTranslateApplication.foregroundDisplayId() ?: displayId
+        val opts = android.app.ActivityOptions.makeBasic()
+            .setLaunchDisplayId(targetDisplay)
+            .toBundle()
+        context.startActivity(intent, opts)
+    }
+
+    /**
+     * Headless one-tap counterpart to [openAnkiReviewForLens]. When the
+     * user has the one-tap pref on, the lens's Anki chip dismisses the
+     * lens, fires off a [Context.oneTapSendWord] in [scope], and toasts
+     * the result. Falls back to [openAnkiReviewForLens] (the existing
+     * Activity launch) on any prerequisite failure so the user can
+     * still resolve it from inside the sheet.
+     *
+     * Critically, the NeedsMapping recovery path launches the review
+     * Activity from the pre-dismiss [LensAnkiSnapshot] — not via
+     * [openAnkiReviewForLens] — because by the time the dispatcher
+     * returns, the lens has been dismissed and `lastWord` /
+     * `currentEntry` are null. Calling back into
+     * [openAnkiReviewForLens] would silently return on those null
+     * checks, leaving users with an unmapped custom card type stuck
+     * with only the dispatcher's toast and no path to the mapping UI.
+     */
+    private fun oneTapFromLens() {
+        val word = lastWord ?: return
+        val entry = currentEntry ?: return
+        val ankiManager = AnkiManager(context)
+        if (!ankiManager.isAnkiDroidInstalled() || !ankiManager.hasPermission()) {
+            openAnkiReviewForLens()
+            return
+        }
+        val prefs = Prefs(context)
+        if (prefs.ankiDeckId < 0L) {
+            openAnkiReviewForLens()
+            return
+        }
+
+        // Snapshot the lens's word context BEFORE dismiss (onDismiss
+        // nulls lastWord / currentEntry) — same precaution
+        // openAnkiReviewForLens takes. The snapshot is the only data
+        // the Activity-launch fallback below can rely on.
+        val snap = snapshotLensFieldsForAnki(word, entry)
+        val sourceLangId = prefs.sourceLangId
+
+        CaptureBackendResolver.activeOverlayUi?.cancelLivePauseObligation()
+        magnifier.dismiss()
+        // Initial "Adding to Anki…" toast so the user has feedback
+        // while the send runs. Result toast follows on completion.
+        Toast.makeText(
+            context, R.string.anki_adding_in_progress, Toast.LENGTH_SHORT,
+        ).show()
+        scope.launch {
+            // When the lens was dragged out of a sentence, the existing
+            // sheet defaults to sentence mode with the dragged word
+            // bolded (SentenceAnkiContentFragment.kt:227-231). Match
+            // that default in one-tap: send a sentence card with the
+            // target word selected. Without sentence context, fall
+            // back to a word card.
+            val sentence = snap.sentence
+            val result = if (sentence != null) {
+                context.oneTapSendSentence(
+                    original = sentence,
+                    translation = snap.sentenceTranslation,
+                    wordsPayload = null,        // await the cache (atomic)
+                    screenshotPath = snap.screenshotPath,
+                    sourceLangId = sourceLangId,
+                    targetWord = snap.word,
+                )
+            } else {
+                context.oneTapSendWord(
+                    word = snap.word,
+                    reading = snap.reading,
+                    pos = snap.pos,
+                    fallbackDefinition = snap.definition,
+                    freqScore = snap.freqScore,
+                    screenshotPath = snap.screenshotPath,
+                    sourceLangId = sourceLangId,
+                )
+            }
+            when (result) {
+                is AnkiSendResult.Success -> {
+                    val msgRes = if (result.audioDropped || result.wordAudioDropped)
+                        R.string.anki_added_no_audio
+                    else
+                        R.string.anki_added_success
+                    Toast.makeText(context, msgRes, Toast.LENGTH_SHORT).show()
+                }
+                is AnkiSendResult.Failed -> {
+                    Toast.makeText(context, result.messageRes, Toast.LENGTH_LONG).show()
+                }
+                is AnkiSendResult.NeedsMapping -> {
+                    // Dispatcher already toasted "Configure fields…".
+                    // Launch the review Activity from the snapshot —
+                    // openAnkiReviewForLens reads now-null instance
+                    // state and would no-op, stranding the user.
+                    launchWordAnkiActivity(snap)
+                }
+            }
         }
     }
 
+    /**
+     * Launches the Anki word-review flow with the lens's current word
+     * context. Snapshots state before dismissing the lens (onDismiss
+     * nulls lastWord / currentEntry, so reads after dismiss would lose
+     * the data). Gates on AnkiDroid being installed; [AnkiPermissionActivity]
+     * handles the permission gate, then forwards to the review sheet.
+     */
+    private fun openAnkiReviewForLens() {
+        val word = lastWord ?: return
+        val entry = currentEntry ?: return
+
+        val ankiManager = AnkiManager(context)
+        if (!ankiManager.isAnkiDroidInstalled()) {
+            // Service context — no Activity to attach to, so route the alert
+            // through the capture-overlay path on the lens's display.
+            showAnkiNotInstalledDialog(
+                magnifier.rawCtx, overlayHost, magnifier.wm, displayId,
+            )
+            return
+        }
+
+        val snap = snapshotLensFieldsForAnki(word, entry)
+        CaptureBackendResolver.activeOverlayUi?.cancelLivePauseObligation()
+        magnifier.dismiss()
+        launchWordAnkiActivity(snap)
+    }
+
+    /**
+     * Snapshot of all the data needed to launch
+     * [AnkiPermissionActivity] for this lens session, captured before
+     * [magnifier.dismiss] is allowed to null the source-of-truth fields
+     * (`lastWord`, `currentEntry`, `currentSentence`, `screenshotPath`).
+     */
+    private data class LensAnkiSnapshot(
+        val word: String,
+        val reading: String,
+        val pos: String,
+        val definition: String,
+        val freqScore: Int,
+        val screenshotPath: String?,
+        val sentence: String?,
+        val sentenceTranslation: String?,
+        val sourceLangCode: String,
+    )
+
+    /** Build a [LensAnkiSnapshot] from the supplied word + entry plus
+     *  the controller's current session fields. Call BEFORE
+     *  [magnifier.dismiss]. */
+    private fun snapshotLensFieldsForAnki(
+        word: String, entry: DictionaryEntry,
+    ): LensAnkiSnapshot {
+        val primaryHeadword = entry.headwords.firstOrNull()
+        val reading = primaryHeadword?.reading
+            ?.takeIf { it != primaryHeadword.written } ?: ""
+        val pos = entry.senses.firstOrNull()?.partsOfSpeech
+            ?.filter { it.isNotBlank() }?.joinToString(" · ") ?: ""
+        val nonEmptySenses = entry.senses.filter { it.targetDefinitions.isNotEmpty() }
+        val definition = nonEmptySenses.mapIndexed { i, sense ->
+            val prefix = if (nonEmptySenses.size > 1) "${i + 1}. " else ""
+            prefix + sense.targetDefinitions.joinToString("; ")
+        }.joinToString("\n")
+        val sentence = currentSentence
+        val sentenceTranslation = LastSentenceCache
+            .takeIf { it.original == sentence }?.translation
+        return LensAnkiSnapshot(
+            word = word,
+            reading = reading,
+            pos = pos,
+            definition = definition,
+            freqScore = entry.freqScore,
+            screenshotPath = screenshotPath,
+            sentence = sentence,
+            sentenceTranslation = sentenceTranslation,
+            sourceLangCode = Prefs(context).sourceLangId.code,
+        )
+    }
+
+    /**
+     * Launches the [AnkiPermissionActivity] → [WordAnkiReviewActivity]
+     * flow from a pre-captured [LensAnkiSnapshot]. Decoupled from
+     * `lastWord` / `currentEntry` so the one-tap fallback path can
+     * still launch the sheet after `magnifier.dismiss()` has cleared
+     * those fields.
+     */
+    private fun launchWordAnkiActivity(snap: LensAnkiSnapshot) {
+        // Finish any previously launched WordAnkiReviewActivity so the
+        // new sheet visibly replaces the old one rather than stacking
+        // behind it in a hidden task. Also cancel any in-flight
+        // permission trampoline — otherwise a rapid second tap (e.g.
+        // during a first-time permission flow) could let an older
+        // trampoline forward its stale intent after the new sheet opens.
+        WordAnkiReviewActivity.finishCurrentIfAny()
+        AnkiPermissionActivity.finishCurrentIfAny()
+
+        val intent = Intent(context, AnkiPermissionActivity::class.java).apply {
+            // MULTIPLE_TASK — see openSentenceInApp for the rationale.
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_MULTIPLE_TASK
+            putExtra(WordAnkiReviewActivity.EXTRA_WORD, snap.word)
+            putExtra(WordAnkiReviewActivity.EXTRA_READING, snap.reading)
+            putExtra(WordAnkiReviewActivity.EXTRA_POS, snap.pos)
+            putExtra(WordAnkiReviewActivity.EXTRA_DEFINITION, snap.definition)
+            putExtra(WordAnkiReviewActivity.EXTRA_FREQ_SCORE, snap.freqScore)
+            snap.screenshotPath?.let {
+                putExtra(WordAnkiReviewActivity.EXTRA_SCREENSHOT_PATH, it)
+            }
+            snap.sentence?.let {
+                putExtra(WordAnkiReviewActivity.EXTRA_SENTENCE_ORIGINAL, it)
+            }
+            snap.sentenceTranslation?.let {
+                putExtra(WordAnkiReviewActivity.EXTRA_SENTENCE_TRANSLATION, it)
+            }
+            putExtra(WordAnkiReviewActivity.EXTRA_SOURCE_LANG, snap.sourceLangCode)
+        }
+
+        // Same routing rule as [openSentenceInApp]: prefer any resumed
+        // PlayTranslate activity's display, fall back to the icon's display.
+        val targetDisplay = PlayTranslateApplication.foregroundDisplayId() ?: displayId
+        val opts = android.app.ActivityOptions.makeBasic()
+            .setLaunchDisplayId(targetDisplay)
+            .toBundle()
+        context.startActivity(intent, opts)
+    }
+
     private fun sendLineToMainApp(lineText: String) {
-        val service = PlayTranslateAccessibilityService.instance ?: return
-        if (Prefs.isSingleScreen(service)) return  // only in dual-screen mode
+        if (Prefs.isSingleScreen(context)) return  // only in dual-screen mode
         if (!MainActivity.isInForeground) return    // don't foreground the app
-        val intent = Intent(service, MainActivity::class.java).apply {
+        val intent = Intent(context, MainActivity::class.java).apply {
             action = MainActivity.ACTION_DRAG_SENTENCE
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
             putExtra(MainActivity.EXTRA_DRAG_LINE_TEXT, lineText)
             putExtra(MainActivity.EXTRA_DRAG_SCREENSHOT_PATH, screenshotPath)
         }
-        service.startActivity(intent)
+        context.startActivity(intent)
     }
 
     private fun saveScreenshot(bitmap: Bitmap): String? {
-        val service = PlayTranslateAccessibilityService.instance ?: return null
         return try {
-            val dir = File(service.cacheDir, "screenshots").apply { mkdirs() }
+            val dir = File(context.cacheDir, "screenshots").apply { mkdirs() }
             val file = File(dir, "drag.jpg")
             file.outputStream().use { bitmap.compress(Bitmap.CompressFormat.JPEG, 90, it) }
             file.absolutePath

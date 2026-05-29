@@ -14,7 +14,10 @@ import androidx.lifecycle.MutableLiveData
 import android.app.PendingIntent
 import android.app.Service
 import android.content.Intent
+import android.content.pm.ServiceInfo
+import android.view.WindowManager
 import android.os.Binder
+import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
@@ -46,11 +49,16 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import android.hardware.display.DisplayManager
+import com.playtranslate.capture.CaptureBackendResolver
+import com.playtranslate.capture.CaptureLifecycle
+import com.playtranslate.capture.MediaProjectionCaptureSource
+import com.playtranslate.capture.MediaProjectionController
 import com.playtranslate.dictionary.DictionaryManager
+import com.playtranslate.overlay.OverlayHost
 import com.playtranslate.language.SourceLanguageProfiles
 import com.playtranslate.translation.TranslationBackendRegistry
 import com.playtranslate.ui.DegradedWarningKind
-import com.playtranslate.ui.TranslationOverlayView
+import com.playtranslate.ui.TextBox
 
 private const val TAG = "CaptureService"
 private const val NOTIF_ID = 1001
@@ -138,11 +146,19 @@ class CaptureService : Service() {
      * falls back to the first id in [gameDisplayIds] (insertion order
      * is stable thanks to LinkedHashSet); finally [Display.DEFAULT_DISPLAY]
      * if the set is empty.
+     *
+     * On the MediaProjection backend this is always [Display.DEFAULT_DISPLAY] —
+     * MediaProjection can only mirror that display, so it is the only one the
+     * app can capture, OCR, or overlay there.
      */
-    fun primaryGameDisplayId(): Int =
-        lastInteractedDisplayId
+    fun primaryGameDisplayId(): Int {
+        if (!CaptureBackendResolver.active().requiresAccessibilityService) {
+            return android.view.Display.DEFAULT_DISPLAY
+        }
+        return lastInteractedDisplayId
             ?: gameDisplayIds.firstOrNull()
             ?: android.view.Display.DEFAULT_DISPLAY
+    }
     /** Always returns the current source-language translation code from Prefs.
      *  Single source of truth for the language pair — callers don't need to
      *  notify the service when prefs change; [ensureLanguageManagersFor]
@@ -316,9 +332,9 @@ class CaptureService : Service() {
      *  PlayTranslateAccessibilityService.installFloatingIconForDisplay /
      *  hideFloatingIconForDisplay). */
     fun syncIconState() {
-        val a11y = PlayTranslateAccessibilityService.instance ?: return
-        a11y.setIconsLiveMode(isLive)
-        a11y.setIconsDegraded(translationDegraded)
+        val ui = CaptureBackendResolver.activeOverlayUi ?: return
+        ui.setIconsLiveMode(isLive)
+        ui.setIconsDegraded(translationDegraded)
     }
 
     // ── Lifecycle ─────────────────────────────────────────────────────────
@@ -336,22 +352,49 @@ class CaptureService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         Log.i(TAG, "onStartCommand action=${intent?.action}")
         // Android requires startForeground() within 5s of startForegroundService()
-        startForeground(NOTIF_ID, buildNotification())
+        enterForeground()
         // Immediately evaluate — may stopForeground if no game-screen presence yet
         updateForegroundState()
+        if (intent?.action == ACTION_MP_ACTIVATE) {
+            // QS tile turn-on in MediaProjection mode — routed
+            // through the service so it works even from a cold start.
+            serviceScope.launch { CaptureLifecycle.activateMediaProjection() }
+        }
         return START_STICKY
     }
 
     override fun onTaskRemoved(rootIntent: Intent?) {
         Log.w(TAG, "onTaskRemoved")
         super.onTaskRemoved(rootIntent)
-        PlayTranslateAccessibilityService.instance?.hideFloatingIcon("task_removed")
+        CaptureBackendResolver.activeOverlayUi?.hideFloatingIcon("task_removed")
     }
 
     override fun onDestroy() {
         Log.w(TAG, "onDestroy")
-        instance = null
+        // Tear down live modes FIRST — while [instance] is still set, so
+        // CaptureBackendResolver.activeOverlayUi can still resolve to this
+        // service's MediaProjection overlay UI and the cleanup chain (each
+        // LiveMode.stop, stopAllInputMonitoring, hideTranslationOverlay)
+        // actually finds the overlays/sentinels to remove. Nulling [instance]
+        // before this is what would leak the MP floating icon / translation
+        // window / touch sentinels — the resolver would return null and the
+        // chain would no-op.
         stopLive()
+        // Hide the MediaProjection floating icon and any region UI — a
+        // separate concern from live-mode overlays (which stopLive handled
+        // above). Gated on whether the overlay UI was ever touched so an
+        // accessibility-only session doesn't force-initialize it.
+        if (mediaProjectionOverlayUiLazy.isInitialized()) {
+            mediaProjectionOverlayUi.destroy()
+        }
+        // Release the MediaProjection session (projection / VirtualDisplay /
+        // ImageReader) — nothing else releases those native resources. Same
+        // lazy-gate pattern — accessibility-only sessions skip this entirely
+        // instead of force-initializing the MP backend just to tear it down.
+        if (mediaProjectionCaptureSourceLazy.isInitialized()) {
+            mediaProjectionCaptureSource.destroy()
+        }
+        instance = null
         serviceScope.cancel()
         // The TranslationBackendRegistry is owned at app scope (built in
         // PlayTranslateApplication.onCreate) and outlives this service —
@@ -415,9 +458,9 @@ class CaptureService : Service() {
      *  scopes are now aligned). */
     private fun afterRegionChange(changedDisplayIds: Set<Int>) {
         recalcActiveRegionLiveData()
-        val a11y = PlayTranslateAccessibilityService.instance
-        a11y?.hideRegionIndicator()
-        for (id in changedDisplayIds) a11y?.hideTranslationOverlayForDisplay(id)
+        val ui = CaptureBackendResolver.activeOverlayUi
+        ui?.hideRegionIndicator()
+        for (id in changedDisplayIds) ui?.hideTranslationOverlayForDisplay(id)
         oneShotCaptureJob?.cancel()
         oneShotManager.cancel()
         if (isLive) {
@@ -447,8 +490,8 @@ class CaptureService : Service() {
         // overlay on a now-deselected display would otherwise stay
         // painted on a screen the app no longer captures.
         val removedIds = gameDisplayIds - displayIds
-        val a11y = PlayTranslateAccessibilityService.instance
-        for (id in removedIds) a11y?.hideTranslationOverlayForDisplay(id)
+        val ui = CaptureBackendResolver.activeOverlayUi
+        for (id in removedIds) ui?.hideTranslationOverlayForDisplay(id)
 
         gameDisplayIds   = displayIds
         // Track the user's intent for the primary so the in-app UI focuses
@@ -529,6 +572,14 @@ class CaptureService : Service() {
      *  never invoked. Cheap: a Map-clear on transition, no-op otherwise. */
     fun reconcileBackendPreference() {
         ensureLanguageManagersFor(snapshotTranslationTarget())
+    }
+
+    /** Force-drop every cached translation. Used when the *configuration*
+     *  of an LLM backend changes without changing its id — switching the
+     *  OpenAI model, base URL, or API key. [reconcileBackendPreference]
+     *  can't catch those because the preferred backend id is unchanged. */
+    fun clearTranslationCache() {
+        translationCache.clear()
     }
 
     /** Start a one-shot capture cycle on [displayId]. Caller observes the
@@ -648,8 +699,7 @@ class CaptureService : Service() {
         var bitmap: Bitmap = raw
         try {
             state.value = CaptureState.InProgress(getString(R.string.status_capturing))
-            val mgr = PlayTranslateAccessibilityService.instance?.screenshotManager
-            val screenshotPath = mgr?.saveToCache(raw, displayId)
+            val screenshotPath = captureSaveToCache(raw, displayId)
 
             val region = activeRegionForDisplay(displayId)
             val top    = (raw.height * region.top).toInt()
@@ -658,20 +708,14 @@ class CaptureService : Service() {
             val right  = (raw.width  * region.right).toInt()
             bitmap = cropBitmap(raw, top, bottom, left, right)
 
-            // blackoutFloatingIcon may recycle its input (immutable path),
-            // so `bitmap` may be stale after this call. A nested try/finally
-            // on ocrBitmap keeps its cleanup local and survives OCR exceptions
-            // without the outer finally having to follow ownership transfers.
-            val ocrBitmap = blackoutFloatingIcon(bitmap, displayId, left, top)
-            val ocrResult = try {
-                state.value = CaptureState.InProgress(getString(R.string.status_ocr))
-                val result = ocrManager.recognise(ocrBitmap, sourceLang, screenshotWidth = raw.width)
-                if (BuildConfig.DEBUG && Prefs(this@CaptureService).debugSaveOcrSeed) {
-                    OcrSeedWriter.writeSeed(this@CaptureService, ocrBitmap, result)
-                }
-                result
-            } finally {
-                if (!ocrBitmap.isRecycled) ocrBitmap.recycle()
+            // The floating icon is always rendered in compact mode (a small
+            // edge-arrow), so the pre-OCR icon blackout is gone — we feed
+            // OCR the crop directly. Cleanup of `bitmap` is the outer
+            // finally's job.
+            state.value = CaptureState.InProgress(getString(R.string.status_ocr))
+            val ocrResult = ocrManager.recognise(bitmap, sourceLang, screenshotWidth = raw.width)
+            if (BuildConfig.DEBUG && Prefs(this@CaptureService).debugSaveOcrSeed) {
+                OcrSeedWriter.writeSeed(this@CaptureService, bitmap, ocrResult)
             }
 
             if (ocrResult == null) {
@@ -680,17 +724,18 @@ class CaptureService : Service() {
             }
 
             state.value = CaptureState.InProgress(getString(R.string.status_translating))
-            val (translated, note) = translateGroups(ocrResult.groupTexts)
+            val groupTranslation = translateGroups(ocrResult.groupTexts)
 
             val timestamp = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
             state.value = CaptureState.Done(
                 TranslationResult(
-                    originalText   = ocrResult.fullText,
-                    segments       = ocrResult.segments,
-                    translatedText = translated,
-                    timestamp      = timestamp,
-                    screenshotPath = screenshotPath,
-                    note           = note
+                    originalText        = ocrResult.fullText,
+                    segments            = ocrResult.segments,
+                    translatedText      = groupTranslation.text,
+                    timestamp           = timestamp,
+                    screenshotPath      = screenshotPath,
+                    note                = groupTranslation.note,
+                    backendDisplayName  = groupTranslation.backendDisplayName,
                 )
             )
         } catch (e: CancellationException) {
@@ -743,6 +788,44 @@ class CaptureService : Service() {
 
     private val oneShotManager = OneShotManager(this)
     private var oneShotCaptureJob: Job? = null
+
+    // ── MediaProjection backend state ─────────────────────────────────────
+    //
+    // Lazily created; untouched until the MediaProjection backend is the
+    // active one. MediaProjectionCaptureBackend forwards to these, just as
+    // the accessibility backend forwards to the accessibility service.
+
+    /** Owns the MediaProjection session (consent, VirtualDisplay, ImageReader). */
+    internal val mediaProjectionController by lazy { MediaProjectionController(this) }
+
+    /** One-shot clean-capture source backed by [mediaProjectionController].
+     *  Stored as an explicit [Lazy] so [onDestroy] can gate teardown on
+     *  whether the source was ever touched (via [Lazy.isInitialized]) without
+     *  force-initializing it through the property access itself. */
+    private val mediaProjectionCaptureSourceLazy = lazy {
+        MediaProjectionCaptureSource(mediaProjectionController)
+    }
+    internal val mediaProjectionCaptureSource: MediaProjectionCaptureSource
+        by mediaProjectionCaptureSourceLazy
+
+    /** Overlay-window host for MediaProjection mode (TYPE_APPLICATION_OVERLAY). */
+    internal val mediaProjectionOverlayHost by lazy {
+        OverlayHost(this, WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY)
+    }
+
+    /** Game-screen overlay UI for MediaProjection mode. Its floating controls
+     *  stay hidden until MediaProjection consent is granted — see
+     *  [OverlayUiController]'s canShowControls gate. Stored as an explicit
+     *  [Lazy] so [onDestroy] can gate teardown on whether the overlay UI was
+     *  ever touched (via [Lazy.isInitialized]) — accessibility-only sessions
+     *  never realize it and never need its teardown. */
+    private val mediaProjectionOverlayUiLazy = lazy {
+        OverlayUiController(this, mediaProjectionOverlayHost) {
+            mediaProjectionController.hasConsent
+        }.also { it.attach() }
+    }
+    internal val mediaProjectionOverlayUi: OverlayUiController
+        by mediaProjectionOverlayUiLazy
 
     /**
      * Listens for capture displays going away (external monitor unplugged,
@@ -809,22 +892,55 @@ class CaptureService : Service() {
     }
 
     fun startLive() {
+        val backend = CaptureBackendResolver.active()
+        if (!backend.supportsLiveMode) {
+            val msg = getString(R.string.error_live_mode_unsupported_backend)
+            emitError(msg)
+            Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
+            return
+        }
         oneShotCaptureJob?.cancel()
+
+        // Secure capture readiness — the MediaProjection screen-record consent
+        // token — BEFORE the live-mode loop and its touch sentinel exist. A
+        // consent dialog launched from inside the running loop has its Cancel
+        // tap caught by the 1×1 outside-touch sentinel as "game input", which
+        // restarts the loop and re-launches the dialog in an unbreakable
+        // cycle. canCaptureWithoutPrompting keeps the common already-ready
+        // case (consent held, or the accessibility backend) fully synchronous.
+        if (backend.canCaptureWithoutPrompting) {
+            beginLiveCapture()
+        } else {
+            serviceScope.launch {
+                if (backend.ensureCaptureReady()) {
+                    beginLiveCapture()
+                } else {
+                    emitError(getString(R.string.error_screen_capture_denied))
+                }
+            }
+        }
+    }
+
+    /**
+     * The post-consent tail of [startLive]: compute the target display set
+     * and hand off to [setLiveDisplays]. Split out so [startLive] can await
+     * [CaptureBackend.ensureCaptureReady] first — on the MediaProjection
+     * backend the consent dialog must fully resolve before any live-mode
+     * window (and its touch sentinel) is built. Main thread only.
+     */
+    private fun beginLiveCapture() {
         // Reset the panel to Searching so the activity sees an
         // immediate transition into live mode (rather than a stale
         // result lingering until the first cycle lands).
         _panelState.value = PanelState.Searching
 
         val prefs = Prefs(this)
-
-        // Compute target = user-selected displays minus those we should
-        // skip right now (STATE_OFF, or hosting PlayTranslate's own UI
-        // under multi-select). InAppOnly's "force {first}" rule is
-        // applied inside [setLiveDisplays] so callers don't need to know.
         val activeIds = gameDisplayIds.ifEmpty { setOf(primaryGameDisplayId()) }
-        val target = activeIds.filterNot { shouldSkipDisplay(it) }.toSet()
-        Log.d(TAG, "startLive: activeIds=$activeIds target=$target prefs.overlayMode=${prefs.overlayMode}")
-        setLiveDisplays(target)
+        Log.d(TAG, "startLive: activeIds=$activeIds prefs.overlayMode=${prefs.overlayMode}")
+        // setLiveDisplays handles capturableTargets + shouldSkipDisplay
+        // resolution centrally — every caller (start, reconcile, multi-
+        // window, the display listener) gets the same shim.
+        setLiveDisplays(activeIds)
     }
 
     /**
@@ -891,11 +1007,29 @@ class CaptureService : Service() {
         val prefs = Prefs(this)
         val flavor = desiredFlavor(prefs)
 
-        // IN_APP_ONLY is a single-display path by design. Collapse the
-        // target so callers don't have to know about the rule.
-        val actualTarget = if (flavor == OverlayFlavor.IN_APP_ONLY && target.isNotEmpty()) {
-            setOf(target.first())
-        } else target
+        // Resolve through the backend shim — capturable subset of [target]
+        // with the backend's fallback display substituted when nothing in
+        // [target] is capturable (stale-selection collapse). Then drop
+        // displays currently off / app-occluded. This is THE canonical
+        // resolution: every non-stop caller (start, reconcile, multi-window,
+        // the display listener after a state change) gets the same result
+        // without needing to remember to apply the shim itself. Stop bypasses
+        // this path entirely via [tearDownAllLiveModes] — passing ∅ here
+        // would resolve to the backend's fallback (MediaProjection always
+        // reaches default), which is right for "selection filtered to
+        // nothing" but wrong for "user pressed stop."
+        val backend = CaptureBackendResolver.active()
+        val capturable = backend.capturableTargets(target)
+            .filterNot { shouldSkipDisplay(it) }
+            .toSet()
+        // IN_APP_ONLY is single-display by design — collapse to the primary
+        // (capturable is a Set, so first() is order-dependent; prefer the primary).
+        val actualTarget = if (flavor == OverlayFlavor.IN_APP_ONLY && capturable.isNotEmpty()) {
+            val primary = primaryGameDisplayId()
+            setOf(if (primary in capturable) primary else capturable.first())
+        } else {
+            capturable
+        }
 
         // Snapshot — diff sets are computed against an immutable copy so
         // subsequent mutation of [liveModes] can't perturb them.
@@ -909,12 +1043,14 @@ class CaptureService : Service() {
         val structuralChange = toStop.isNotEmpty() || toRebuild.isNotEmpty() || toAdd.isNotEmpty()
         if (!structuralChange) return false
 
-        // Construct new instances first so that an a11y-missing failure
-        // aborts before we tear down the existing modes (overlay flavors
-        // need PlayTranslateAccessibilityService.instance; InAppOnly does
-        // not). Matches the original startLive guard at lines 763-772.
+        // Construct new instances first so a missing-prerequisite failure
+        // aborts before we tear down the existing modes. The overlay flavors
+        // need the accessibility service ONLY on the accessibility backend,
+        // where they capture through it; under MediaProjection capture routes
+        // through CaptureBackendResolver. InAppOnly never needs it.
         val a11y = PlayTranslateAccessibilityService.instance
         val needsA11y = flavor != OverlayFlavor.IN_APP_ONLY &&
+            CaptureBackendResolver.active().requiresAccessibilityService &&
             (toRebuild.isNotEmpty() || toAdd.isNotEmpty())
         if (needsA11y && a11y == null) {
             Log.w(TAG, "setLiveDisplays: accessibility service not connected; cannot start $flavor. Aborting.")
@@ -924,8 +1060,8 @@ class CaptureService : Service() {
         val newInstances: Map<Int, LiveMode> = (toAdd + toRebuild).associateWith { id ->
             when (flavor) {
                 OverlayFlavor.IN_APP_ONLY -> InAppOnlyMode(this, id)
-                OverlayFlavor.FURIGANA -> FuriganaMode(this, a11y!!, id)
-                OverlayFlavor.TRANSLATION -> PinholeOverlayMode(this, a11y!!, id)
+                OverlayFlavor.FURIGANA -> FuriganaMode(this, id)
+                OverlayFlavor.TRANSLATION -> PinholeOverlayMode(this, id)
             }
         }
 
@@ -972,6 +1108,34 @@ class CaptureService : Service() {
         }
 
         return true
+    }
+
+    /**
+     * Stop every running live mode without going through [setLiveDisplays].
+     * Mirrors the teardown branch of [setLiveDisplays] (stop modes, fire the
+     * non-empty→empty state observers, unregister the display listener) but
+     * skips the capturableTargets shim — which would substitute the
+     * backend's fallback display for an empty input and keep MediaProjection
+     * running on the default. That fallback is the right answer for
+     * "selection filtered to nothing" at reconcile / multi-window / listener
+     * call sites, and the wrong answer for "the user pressed stop."
+     */
+    @MainThread
+    private fun tearDownAllLiveModes() {
+        check(Looper.myLooper() == Looper.getMainLooper()) {
+            "tearDownAllLiveModes must run on the main thread " +
+                "(got ${Thread.currentThread().name})"
+        }
+        if (liveModes.isEmpty()) return
+        val ids = liveModes.keys.toList()
+        val wasLive = _liveModeState.value == true
+        for (id in ids) liveModes.remove(id)?.stop()
+        if (wasLive) {
+            _liveModeState.value = false
+            updateForegroundState()
+            syncIconState()
+            getSystemService(DisplayManager::class.java)?.unregisterDisplayListener(displayListener)
+        }
     }
 
     /**
@@ -1120,20 +1284,21 @@ class CaptureService : Service() {
 
     fun stopLive() {
         Log.i(TAG, "stopLive() called (isLive=$isLive, modes=${liveModes.keys})", Throwable("stopLive caller"))
-        // setLiveDisplays(emptySet()) handles: stop every running mode (each
-        // tears down its own loop+input+sentinel+overlay), unregister the
-        // display listener on the non-empty→empty transition, fire LiveData
-        // false, run updateForegroundState/syncIconState.
-        setLiveDisplays(emptySet())
+        // Stop bypasses setLiveDisplays: we genuinely want zero live modes,
+        // not "fall back to the backend's capturable default" — which is what
+        // setLiveDisplays(emptySet()) now resolves to via the capturableTargets
+        // shim (MediaProjection always reaches default). tearDownAllLiveModes
+        // mirrors setLiveDisplays' teardown branch (stop modes, fire LiveData
+        // false, unregister the display listener) without going through the
+        // shim.
+        tearDownAllLiveModes()
         setDegraded(false)
         // Belt-and-suspenders fan-out — each LiveMode.stop() should already
         // have torn down its own loop / input / overlay, but historically these
         // calls have caught misbehaving modes that left state behind.
-        // TODO(P1): with setLiveDisplays(emptySet()) guaranteeing per-mode
-        //   teardown via the canonical mutator, this fan-out should be removable.
-        PlayTranslateAccessibilityService.instance?.screenshotManager?.stopAllLoops()
-        PlayTranslateAccessibilityService.instance?.stopInputMonitoring()
-        PlayTranslateAccessibilityService.instance?.hideTranslationOverlay()
+        CaptureBackendResolver.active().liveCaptureSource?.stopAllLoops()
+        CaptureBackendResolver.active().stopAllInputMonitoring()
+        CaptureBackendResolver.activeOverlayUi?.hideTranslationOverlay()
         // Don't reset _panelState here — let the last live result
         // linger so a STOP→START reattach still shows it. The VM's
         // identity dedup keeps the replay from re-running lookups.
@@ -1150,6 +1315,21 @@ class CaptureService : Service() {
         liveModes.values.forEach { it.refresh() }
     }
 
+    /**
+     * Box-tap dismiss: clear [displayId]'s translation overlay and reset its
+     * live-mode detection so the next capture re-baselines from a clean frame.
+     * Falls back to hiding the overlay when no live mode owns the display
+     * (e.g. a one-shot translation overlay).
+     */
+    fun dismissLiveOverlay(displayId: Int) {
+        val mode = liveModes[displayId]
+        if (mode != null) {
+            mode.dismiss()
+        } else {
+            CaptureBackendResolver.activeOverlayUi?.hideTranslationOverlayForDisplay(displayId)
+        }
+    }
+
     /** One-shot: capture, OCR, translate, show overlay (not live mode). */
 
     /** True while a hold gesture or modal UI is active — suppresses overlay display in live mode. */
@@ -1162,9 +1342,10 @@ class CaptureService : Service() {
      * can render cleanly, and launches the one-shot.
      *
      * [holdActive] doubles as the pause signal for [PinholeOverlayMode] (its
-     * cycle polls the flag directly). [ScreenshotManager.stopLoop] is needed
-     * for modes that drive capture through the loop (Furigana) — Pinhole
-     * calls `requestRaw` directly and would otherwise keep screenshotting.
+     * cycle polls the flag directly). Stopping the backend's live capture
+     * loop is needed for modes that drive capture through the loop
+     * (Furigana) — Pinhole calls `requestRaw` directly and would otherwise
+     * keep screenshotting.
      * Hiding the existing overlay view up front is what prevents its visible
      * content (e.g. furigana boxes) from being swapped in-place to shimmer
      * placeholders during the one-shot, and also prevents the live loop's
@@ -1188,9 +1369,8 @@ class CaptureService : Service() {
             // Hold pause is global — stop every per-display loop and hide
             // every translation overlay. Each fan-out cycle then paints its
             // own result on its own display.
-            PlayTranslateAccessibilityService.instance
-                ?.screenshotManager?.stopAllLoops()
-            PlayTranslateAccessibilityService.instance
+            CaptureBackendResolver.active().liveCaptureSource?.stopAllLoops()
+            CaptureBackendResolver.activeOverlayUi
                 ?.hideTranslationOverlay()
         }
         oneShotManager.runHoldOverlay(
@@ -1215,18 +1395,31 @@ class CaptureService : Service() {
      *  fall-through to capturing the foreground display, which would
      *  OCR the app's own UI and publish a garbage panel result.
      *
-     *  Single-display always returns the only display — the skip
-     *  predicate's foreground branch is gated on `size > 1`, so the
-     *  only way the filter can empty here is STATE_OFF, in which case
-     *  captureScreen will return null and the cycle exits cleanly.
-     *  Returning the display rather than empty preserves "the gesture
-     *  always tries to do something on a single-display setup."
-     *  Iteration order follows [gameDisplayIds] insertion order. */
+     *  A genuine single-display setup ([gameDisplayIds] size <= 1) always
+     *  returns the target — the skip predicate's foreground branch is gated
+     *  on `gameDisplayIds.size > 1`, so the only way the filter can empty
+     *  there is STATE_OFF, in which case captureScreen returns null and the
+     *  cycle exits cleanly, preserving "the gesture always tries to do
+     *  something on a single-display setup."
+     *  Iteration order follows [gameDisplayIds] insertion order.
+     *
+     *  Routed through [CaptureBackend.capturableTargets] — the same shim
+     *  live start and icon placement use — so a stale non-default
+     *  selection carried over from an accessibility session collapses to
+     *  the MediaProjection backend's only capturable display. Without it
+     *  a fan-out one-shot would request a display MediaProjection can't
+     *  mirror and silently get default-display pixels back. */
     internal fun oneShotFanoutDisplayIds(): Set<Int> {
-        val all = gameDisplayIds.ifEmpty { setOf(primaryGameDisplayId()) }
+        val all = CaptureBackendResolver.active()
+            .capturableTargets(gameDisplayIds.ifEmpty { setOf(primaryGameDisplayId()) })
         val filtered = all.filter { !shouldSkipDisplay(it) }
         if (filtered.isNotEmpty()) return filtered.toSet()
-        if (all.size == 1) return all
+        // Single-display exception is keyed on gameDisplayIds — the field
+        // shouldSkipDisplay's foreground gate reads — NOT the collapsed `all`.
+        // A stale multi-display selection that capturableTargets collapsed to
+        // one fallback display is still multi-display: returning `all` here
+        // would capture the foregrounded app UI instead of no-op'ing.
+        if (gameDisplayIds.size <= 1) return all
         return emptySet()
     }
 
@@ -1263,13 +1456,23 @@ class CaptureService : Service() {
      */
     fun holdStart(displayId: Int) {
         lastInteractedDisplayId = displayId
+        // If the floating menu is up, tear it down outright instead of
+        // letting the capture path alpha-cycle it. Avoids a class of
+        // post-capture layout glitches on the MediaProjection backend where
+        // the restored menu re-appeared at wrong coords, and matches the
+        // user's intent — they wanted a translation, not a half-broken
+        // menu to come back. Pass clearHoldActive=false so the dismissal
+        // doesn't flip holdActive off between here and the holdActive=true
+        // we're about to set in the live-peek branch / beginHoldPreview.
+        CaptureBackendResolver.activeOverlayUi
+            ?.dismissFloatingMenu(clearHoldActive = false)
         // Pinhole / translation-overlay live modes: "peek" through the
         // overlay at the game underneath, without running a one-shot.
         // PinholeOverlayMode's cycle polls [holdActive] and pauses itself.
         val isFurigana = liveModes.values.any { it.flavor == OverlayFlavor.FURIGANA }
         if (isLive && !isFurigana && !isInAppOnly) {
             holdActive = true
-            PlayTranslateAccessibilityService.instance?.hideTranslationOverlay()
+            CaptureBackendResolver.activeOverlayUi?.hideTranslationOverlay()
             return
         }
         _holdLoading.value = true
@@ -1290,6 +1493,10 @@ class CaptureService : Service() {
      * panel.
      */
     fun holdStartFanout() {
+        // Same rationale as holdStart: if the floating menu is up, tear it
+        // down outright so prepareForCleanCapture has nothing to restore.
+        CaptureBackendResolver.activeOverlayUi
+            ?.dismissFloatingMenu(clearHoldActive = false)
         val isFurigana = liveModes.values.any { it.flavor == OverlayFlavor.FURIGANA }
         if (isLive && !isFurigana && !isInAppOnly) {
             // Live translation overlay peek — hide so user can see game
@@ -1297,7 +1504,7 @@ class CaptureService : Service() {
             // targets (fires even when multi-display + everything
             // skip-eligible would otherwise no-op the capture path).
             holdActive = true
-            PlayTranslateAccessibilityService.instance?.hideTranslationOverlay()
+            CaptureBackendResolver.activeOverlayUi?.hideTranslationOverlay()
             return
         }
         val targets = oneShotFanoutDisplayIds()
@@ -1377,10 +1584,10 @@ class CaptureService : Service() {
     /** Flash the region indicator on [displayId] using that display's
      *  active region. Called by per-display modes after their own captures. */
     internal fun flashRegionIndicator(displayId: Int) {
-        val a11y = PlayTranslateAccessibilityService.instance ?: return
+        val ui = CaptureBackendResolver.activeOverlayUi ?: return
         val dm = getSystemService(DisplayManager::class.java)
         val display = dm.getDisplay(displayId) ?: return
-        a11y.showRegionIndicator(display, activeRegionForDisplay(displayId))
+        ui.showRegionIndicator(display, activeRegionForDisplay(displayId))
     }
 
     /** Run the shared OCR pipeline on a frame captured from [displayId].
@@ -1398,8 +1605,6 @@ class CaptureService : Service() {
             sourceLang,
             ocrManager,
             getStatusBarHeightForDisplay(displayId),
-            PlayTranslateAccessibilityService.instance?.getFloatingIconRect(displayId),
-            prefs.compactOverlayIcon,
             seedWriter = seedWriter
         )
     }
@@ -1413,23 +1618,25 @@ class CaptureService : Service() {
         ocrResult: OcrManager.OcrResult,
         screenshotPath: String?,
         forceShow: Boolean = false
-    ): List<Pair<String, String?>>? {
+    ): List<GroupTranslation>? {
         if (!forceShow) {
             val appPanelVisible = !Prefs.isSingleScreen(this) && MainActivity.isInForeground
             if (!appPanelVisible) return null
         }
         val perGroup = translateGroupsSeparately(ocrResult.groupTexts)
-        val translated = perGroup.joinToString("\n\n") { it.first }
-        val note = perGroup.mapNotNull { it.second }.firstOrNull()
+        val translated = perGroup.joinToString("\n\n") { it.text }
+        val note = perGroup.mapNotNull { it.note }.firstOrNull()
+        val backendDisplayName = perGroup.mapNotNull { it.backendDisplayName }.firstOrNull()
         val timestamp = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.getDefault()).format(java.util.Date())
         emitResult(
             com.playtranslate.model.TranslationResult(
-                originalText   = ocrResult.fullText,
-                segments       = ocrResult.segments,
-                translatedText = translated,
-                timestamp      = timestamp,
-                screenshotPath = screenshotPath,
-                note           = note
+                originalText       = ocrResult.fullText,
+                segments           = ocrResult.segments,
+                translatedText     = translated,
+                timestamp          = timestamp,
+                screenshotPath     = screenshotPath,
+                note               = note,
+                backendDisplayName = backendDisplayName,
             )
         )
         return perGroup
@@ -1442,17 +1649,17 @@ class CaptureService : Service() {
      *  for it. The overlay teardown is per-display so a no-text outcome
      *  on display B doesn't take display A's still-valid overlay with it. */
     internal fun handleNoTextDetected(displayId: Int) {
-        PlayTranslateAccessibilityService.instance?.hideTranslationOverlayForDisplay(displayId)
+        CaptureBackendResolver.activeOverlayUi?.hideTranslationOverlayForDisplay(displayId)
         emitLiveNoText()
     }
 
     /** Remove specific overlay boxes without rebuilding the entire view.
      *  [displayId] defaults to [primaryGameDisplayId] for legacy callers. */
     internal fun removeOverlayBoxes(
-        toRemove: List<TranslationOverlayView.TextBox>,
+        toRemove: List<TextBox>,
         displayId: Int = primaryGameDisplayId(),
     ) {
-        PlayTranslateAccessibilityService.instance?.removeOverlayBoxes(toRemove, displayId)
+        CaptureBackendResolver.activeOverlayUi?.removeOverlayBoxes(toRemove, displayId)
     }
 
     /**
@@ -1461,30 +1668,31 @@ class CaptureService : Service() {
      * modes pass their own displayId).
      */
     internal fun showLiveOverlay(
-        boxes: List<TranslationOverlayView.TextBox>,
+        boxes: List<TextBox>,
         cropLeft: Int, cropTop: Int,
         screenshotW: Int, screenshotH: Int,
         force: Boolean = false,
         pinholeMode: Boolean = false,
+        oneShot: Boolean = false,
         displayId: Int = primaryGameDisplayId(),
     ) {
         if (!force && holdActive) { Log.w("FuriganaDbg", "showLiveOverlay BLOCKED: holdActive=true"); return }
-        val a11y = PlayTranslateAccessibilityService.instance
-        if (a11y == null) { Log.w("FuriganaDbg", "showLiveOverlay BLOCKED: a11y=null"); return }
+        val ui = CaptureBackendResolver.activeOverlayUi
+        if (ui == null) { Log.w("FuriganaDbg", "showLiveOverlay BLOCKED: overlayUi=null"); return }
         val dm = getSystemService(DisplayManager::class.java)
         val display = dm.getDisplay(displayId)
         if (display == null) { Log.w("FuriganaDbg", "showLiveOverlay BLOCKED: display=null for id=$displayId"); return }
         Log.d("FuriganaDbg", "showLiveOverlay: ${boxes.size} boxes, crop=($cropLeft,$cropTop), screen=${screenshotW}x$screenshotH on display $displayId")
-        a11y.showTranslationOverlay(display, boxes, cropLeft, cropTop, screenshotW, screenshotH, pinholeMode)
+        ui.showTranslationOverlay(display, boxes, cropLeft, cropTop, screenshotW, screenshotH, pinholeMode, oneShot)
     }
 
-    /**
-     * Captures a clean screenshot via [ScreenshotManager].
-     */
-    internal suspend fun captureScreen(displayId: Int): Bitmap? {
-        val mgr = PlayTranslateAccessibilityService.instance?.screenshotManager
-        return mgr?.requestClean(displayId)
-    }
+    /** Capture a clean screenshot via the active capture backend. */
+    internal suspend fun captureScreen(displayId: Int): Bitmap? =
+        CaptureBackendResolver.active().captureSource?.requestClean(displayId)
+
+    /** Persist [raw] to the screenshot cache via the active capture backend. */
+    internal fun captureSaveToCache(raw: Bitmap, displayId: Int): String? =
+        CaptureBackendResolver.active().captureSource?.saveToCache(raw, displayId)
 
     /**
      * @param preCaptured If non-null, use this bitmap instead of taking a new
@@ -1497,36 +1705,16 @@ class CaptureService : Service() {
         var instance: CaptureService? = null
             private set
 
+        /** Action for an [onStartCommand] intent meaning "obtain MediaProjection
+         *  consent and bring the controls up" — sent by the Quick Settings tile,
+         *  which can't assume the service is already alive. */
+        const val ACTION_MP_ACTIVATE = "com.playtranslate.action.MP_ACTIVATE"
+
         /** Empty-id, full-screen region used as the initial saved/active value
          *  before [configureSaved] runs and as the defensive fallback in
          *  [activeRegion]. Centralized so the literal isn't duplicated. */
         val DEFAULT_REGION = RegionEntry("", 0f, 1f)
     }
-
-    /**
-     * Blacks out the floating icon area so OCR doesn't read the icon's text.
-     * Returns a mutable bitmap with the icon area painted black. If the icon
-     * is not in the crop area, returns the original bitmap unchanged.
-     *
-     * @param bitmap   The (possibly immutable) cropped bitmap.
-     * @param cropLeft Left offset of the crop in full-screen coordinates.
-     * @param cropTop  Top offset of the crop in full-screen coordinates.
-     */
-    /** Black out [displayId]'s floating icon area in [bitmap] so OCR doesn't
-     *  pick up the icon glyph as text. The icon rect is resolved per-display
-     *  — passing the wrong displayId here is what was producing garbled OCR
-     *  on multi-display before this refactor (the secondary's icon stayed
-     *  visible to OCR; the primary's icon coords got applied to the wrong
-     *  bitmap). */
-    private fun blackoutFloatingIcon(
-        bitmap: Bitmap,
-        displayId: Int,
-        cropLeft: Int = 0,
-        cropTop: Int = 0,
-    ): Bitmap =
-        OverlayToolkit.blackoutFloatingIcon(bitmap, cropLeft, cropTop,
-            PlayTranslateAccessibilityService.instance?.getFloatingIconRect(displayId),
-            Prefs(this).compactOverlayIcon)
 
     fun resetConfiguration() {
         // Translation backends are owned by TranslationBackendRegistry at
@@ -1584,8 +1772,7 @@ class CaptureService : Service() {
         onScreenshotTaken?.invoke()
         var bitmap: Bitmap? = raw
         try {
-            val screenshotPath = PlayTranslateAccessibilityService.instance
-                ?.screenshotManager?.saveToCache(raw, displayId)
+            val screenshotPath = captureSaveToCache(raw, displayId)
 
             val region = activeRegionForDisplay(displayId)
             val top    = (raw.height * region.top).toInt()
@@ -1594,38 +1781,34 @@ class CaptureService : Service() {
             val right  = (raw.width  * region.right).toInt()
             bitmap = cropBitmap(raw, top, bottom, left, right)
 
-            // See runProcessCycle for the ownership rationale behind the
-            // nested try/finally.
-            val ocrBitmap = blackoutFloatingIcon(bitmap, displayId, left, top)
-            val ocrResult = try {
-                val result = ocrManager.recognise(ocrBitmap, sourceLang, screenshotWidth = raw.width)
-                if (BuildConfig.DEBUG && Prefs(this@CaptureService).debugSaveOcrSeed) {
-                    OcrSeedWriter.writeSeed(this@CaptureService, ocrBitmap, result)
-                }
-                result
-            } finally {
-                if (!ocrBitmap.isRecycled) ocrBitmap.recycle()
+            // No pre-OCR icon blackout — the floating icon is always rendered
+            // in compact mode so it doesn't bleed into the OCR region.
+            val ocrResult = ocrManager.recognise(bitmap, sourceLang, screenshotWidth = raw.width)
+            if (BuildConfig.DEBUG && Prefs(this@CaptureService).debugSaveOcrSeed) {
+                OcrSeedWriter.writeSeed(this@CaptureService, bitmap, ocrResult)
             }
 
             if (ocrResult == null) return PipelineOutcome.NoText
 
             val perGroup = translateGroupsSeparately(ocrResult.groupTexts)
-            val translated = perGroup.joinToString("\n\n") { it.first }
-            val note = perGroup.mapNotNull { it.second }.firstOrNull()
+            val translated = perGroup.joinToString("\n\n") { it.text }
+            val note = perGroup.mapNotNull { it.note }.firstOrNull()
+            val backendDisplayName = perGroup.mapNotNull { it.backendDisplayName }.firstOrNull()
             val timestamp = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
 
             return PipelineOutcome.Success(
                 PipelineResult(
                     result = TranslationResult(
-                        originalText   = ocrResult.fullText,
-                        segments       = ocrResult.segments,
-                        translatedText = translated,
-                        timestamp      = timestamp,
-                        screenshotPath = screenshotPath,
-                        note           = note
+                        originalText       = ocrResult.fullText,
+                        segments           = ocrResult.segments,
+                        translatedText     = translated,
+                        timestamp          = timestamp,
+                        screenshotPath     = screenshotPath,
+                        note               = note,
+                        backendDisplayName = backendDisplayName,
                     ),
                     groupBounds = ocrResult.groupBounds,
-                    groupTranslations = perGroup.map { it.first },
+                    groupTranslations = perGroup.map { it.text },
                     cropLeft = left, cropTop = top,
                     screenshotW = raw.width, screenshotH = raw.height,
                     ocrResult = ocrResult
@@ -1698,7 +1881,7 @@ class CaptureService : Service() {
      *     a lower-priority backend, the fallback's output shouldn't outlast
      *     the memory pressure window.
      */
-    internal suspend fun translateGroupsSeparately(groupTexts: List<String>): List<Pair<String, String?>> {
+    internal suspend fun translateGroupsSeparately(groupTexts: List<String>): List<GroupTranslation> {
         val target = snapshotTranslationTarget()
 
         // OCR-only bypass: when source and target language are the same,
@@ -1709,25 +1892,33 @@ class CaptureService : Service() {
         // fallback should drop.
         if (target.source == target.target) {
             setDegraded(false)
-            return groupTexts.map { Pair(it, null) }
+            return groupTexts.map { GroupTranslation(it, null, null) }
         }
+
+        // Reconcile the cache's preferred-backend identity BEFORE the
+        // cache lookup. If a fully-cached batch returns early, the
+        // identity check inside translateBatch never runs, so a backend
+        // toggle / cooldown enter-or-exit since the last call would
+        // leave stale entries serving forever. Cheap (one Map clear on
+        // transition, no-op otherwise).
+        ensureLanguageManagersFor(target)
 
         val keys = groupTexts.map { cacheKey(it, target) }
         val uncached = keys.withIndex()
             .filter { (_, key) -> key !in translationCache }
 
-        val freshByKey: Map<TranslationCache.Key, Pair<String, String?>> = if (uncached.isNotEmpty()) {
-            // Fan out under coroutineScope so the per-group translations
-            // are children of the calling capture job. When that job is
-            // cancelled (live-mode start, replacement one-shot, etc.) the
-            // children cancel with it instead of continuing on
-            // serviceScope and writing to translationCache / degradedState
-            // after the session has already been marked Cancelled.
-            val outcomes = coroutineScope {
-                uncached.map { (_, key) ->
-                    async { translate(key.text, target) }
-                }.awaitAll()
-            }
+        val freshByKey: Map<TranslationCache.Key, GroupTranslation> = if (uncached.isNotEmpty()) {
+            // Single batched waterfall (one HTTP request per backend
+            // pass when the backend implements BatchTranslator —
+            // DeepL, Gemini, OpenAI, Lingva) instead of N parallel
+            // single-text calls. Eliminates the rate-limit thrashing
+            // we saw on free-tier Gemini where parallel pairs of
+            // requests would each lose ~half to 429s. Non-batching
+            // backends (ML Kit, on-device LLMs) keep their per-text
+            // parallel fan-out inside the registry, so today's
+            // structured-cancellation guarantee (children of the
+            // calling capture job) is preserved end-to-end.
+            val outcomes = translateBatch(uncached.map { it.value.text }, target)
 
             // Set the icon/menu state ONCE from the worst outcome in the
             // batch. Each child's `translate` no longer touches the global
@@ -1740,6 +1931,17 @@ class CaptureService : Service() {
                 ?: DegradedWarningKind.None
             setDegraded(aggregateKind)
 
+            // Re-reconcile AFTER translate too. A higher-priority backend
+            // may have cooled down DURING translateBatch — preferredOnlineId
+            // would now return the fallback id, but the pre-call reconcile
+            // didn't see that change. Without this second pass, the new
+            // fallback entry below would be cached under the old
+            // (pre-cooldown) preferred-backend identity; if the user
+            // doesn't translate again before the cooldown expires, identity
+            // never flips and the lower-quality result pins forever. Cheap
+            // (one Map clear on transition, no-op when no cooldown change).
+            ensureLanguageManagersFor(target)
+
             uncached.zip(outcomes).forEach { (indexedKey, outcome) ->
                 // Cache write policy: skip when an on-device LLM was displaced
                 // by transient low memory (outcome.displacedLlmId != null).
@@ -1748,33 +1950,45 @@ class CaptureService : Service() {
                 // the same lower-quality result even after memory recovers.
                 // The existing note-based skip (ML Kit degraded fallback)
                 // still applies in parallel.
+                //
+                // Online-backend cooldowns (rate-limit / quota / billing)
+                // are handled at the cache-identity layer (the
+                // ensureLanguageManagersFor call above ran twice — once
+                // before lookup, once after translate — so any cooldown
+                // entered during this batch is reflected in the identity
+                // before these writes land).
                 if (outcome.note == null && outcome.displacedLlmId == null) {
-                    translationCache[indexedKey.value] = outcome.text to outcome.note
+                    translationCache[indexedKey.value] = outcome.text to outcome.backendDisplayName
                 }
             }
 
-            uncached.map { it.value }.zip(outcomes.map { it.text to it.note }).toMap()
+            uncached.map { it.value }.zip(
+                outcomes.map { GroupTranslation(it.text, it.note, it.backendDisplayName) }
+            ).toMap()
         } else emptyMap()
 
         return keys.map { key ->
-            translationCache[key]
+            translationCache[key]?.let { (text, backendDisplayName) ->
+                GroupTranslation(text, note = null, backendDisplayName = backendDisplayName)
+            }
                 ?: freshByKey[key]
-                ?: Pair("", null)
+                ?: GroupTranslation("", null, null)
         }
     }
 
-    private suspend fun translateGroups(groupTexts: List<String>): Pair<String, String?> {
+    private suspend fun translateGroups(groupTexts: List<String>): GroupTranslation {
         val results = translateGroupsSeparately(groupTexts)
-        val translated = results.joinToString("\n\n") { it.first }
-        val note = results.mapNotNull { it.second }.firstOrNull()
-        return Pair(translated, note)
+        val translated = results.joinToString("\n\n") { it.text }
+        val note = results.mapNotNull { it.note }.firstOrNull()
+        val backendDisplayName = results.mapNotNull { it.backendDisplayName }.firstOrNull()
+        return GroupTranslation(translated, note, backendDisplayName)
     }
 
     /** On-demand translation for a single text string (used by edit overlay, drag-sentence, etc.). */
-    suspend fun translateOnce(text: String): Pair<String, String?> {
+    internal suspend fun translateOnce(text: String): GroupTranslation {
         val outcome = translate(text, snapshotTranslationTarget())
         setDegraded(outcome.kind)
-        return outcome.text to outcome.note
+        return GroupTranslation(outcome.text, outcome.note, outcome.backendDisplayName)
     }
 
     /**
@@ -1808,6 +2022,16 @@ class CaptureService : Service() {
         val note: String?,
         val kind: DegradedWarningKind,
         val displacedLlmId: com.playtranslate.translation.BackendId?,
+        val backendDisplayName: String?,
+    )
+
+    /** Per-group translation triple returned by the batch / single paths.
+     *  Carries the backend's display name so the results view can render
+     *  "Translated by …" alongside the existing warning [note]. */
+    internal data class GroupTranslation(
+        val text: String,
+        val note: String?,
+        val backendDisplayName: String?,
     )
 
     /** Order DegradedWarningKind by severity so a batch's worst outcome
@@ -1821,17 +2045,48 @@ class CaptureService : Service() {
     private suspend fun translate(text: String, target: TranslationTarget): TranslateOutcome {
         // OCR-only bypass: when source and target language are the same, skip
         // translation entirely. This is the universal choke point — every
-        // translation path (batched groups via translateGroupsSeparately, plus
-        // every translateOnce caller: edit overlay, drag-sentence, sentence
-        // tab) flows through here. The earlier bypass in
-        // translateGroupsSeparately is a redundant early-return for the
-        // group/cache path.
+        // single-text translation path (translateOnce callers: edit overlay,
+        // drag-sentence, sentence tab) flows through here. The earlier
+        // bypass in translateGroupsSeparately is a redundant early-return
+        // for the group/cache path.
         if (target.source == target.target) {
-            return TranslateOutcome(text, null, DegradedWarningKind.None, null)
+            return TranslateOutcome(text, null, DegradedWarningKind.None, null, null)
         }
 
         ensureLanguageManagersFor(target)
         val result = TranslationBackendRegistry.translate(text, target.source, target.target)
+        return result.toOutcome()
+    }
+
+    /**
+     * Batched counterpart to [translate]. The fan-out used to live in
+     * [translateGroupsSeparately] as N parallel single-text [translate]
+     * calls; the batch waterfall in [TranslationBackendRegistry.translateBatch]
+     * replaces that fan-out with one HTTP request per backend pass
+     * where the backend implements [com.playtranslate.translation.BatchTranslator].
+     *
+     * Must call [ensureLanguageManagersFor] here once before dispatch —
+     * the per-text [translate] used to do that on every call, and the
+     * cache's preferred-backend reconciliation rides on it. Skipping it
+     * would let a backend toggled mid-session serve stale cache entries.
+     */
+    private suspend fun translateBatch(
+        texts: List<String>,
+        target: TranslationTarget,
+    ): List<TranslateOutcome> {
+        if (target.source == target.target) {
+            return texts.map { TranslateOutcome(it, null, DegradedWarningKind.None, null, null) }
+        }
+        ensureLanguageManagersFor(target)
+        val results = TranslationBackendRegistry.translateBatch(texts, target.source, target.target)
+        return results.map { it.toOutcome() }
+    }
+
+    /** Map a [WaterfallResult] to a [TranslateOutcome] with the per-result
+     *  kind + inline-note logic. Used by both the single-text [translate]
+     *  and the batched [translateBatch] paths so the degraded-state
+     *  semantics stay identical between them. */
+    private fun com.playtranslate.translation.WaterfallResult.toOutcome(): TranslateOutcome {
         // Per-group kind. Displacement that bottomed out at ML Kit is the
         // LowMemory kind; ML Kit chosen for network/service reasons is
         // Offline. Displacement that stayed in the offline tier (Qwen
@@ -1844,8 +2099,8 @@ class CaptureService : Service() {
         // translation. Aggregation happens once per batch in
         // [translateGroupsSeparately] / per call in [translateOnce].
         val kind = when {
-            !result.isDegraded -> DegradedWarningKind.None
-            result.displacedLlmId != null -> DegradedWarningKind.LowMemory
+            !this.isDegraded -> DegradedWarningKind.None
+            this.displacedLlmId != null -> DegradedWarningKind.LowMemory
             else -> DegradedWarningKind.Offline
         }
         // The inline note adds one more bit of detail that the icon doesn't
@@ -1860,7 +2115,7 @@ class CaptureService : Service() {
                 if (isNetworkAvailable()) getString(R.string.note_mlkit_service_unavailable)
                 else getString(R.string.note_mlkit_no_internet)
         }
-        return TranslateOutcome(result.text, note, kind, result.displacedLlmId)
+        return TranslateOutcome(this.text, note, kind, this.displacedLlmId, this.backend.displayName)
     }
 
     /**
@@ -1871,10 +2126,7 @@ class CaptureService : Service() {
         val dm = getSystemService(android.hardware.display.DisplayManager::class.java) ?: return 0
         val display = dm.getDisplay(displayId) ?: return 0
         return try {
-            val displayContext = createDisplayContext(display)
-            val wm = displayContext.getSystemService(android.view.WindowManager::class.java) ?: return 0
-            wm.currentWindowMetrics.windowInsets
-                .getInsets(android.view.WindowInsets.Type.statusBars()).top
+            createDisplayContext(display).statusBarHeightPx()
         } catch (_: Exception) { 0 }
     }
 
@@ -1913,7 +2165,7 @@ class CaptureService : Service() {
      *    hideFloatingIconForDisplay (every per-display add/remove)
      */
     fun updateForegroundState() {
-        val iconShowing = PlayTranslateAccessibilityService.instance?.hasAnyFloatingIcon == true
+        val iconShowing = CaptureBackendResolver.activeOverlayUi?.hasAnyFloatingIcon == true
 
         // Stop live mode if the user can no longer see or manage it.
         if (isLive) {
@@ -1936,11 +2188,78 @@ class CaptureService : Service() {
             }
         }
 
-        if (iconShowing || isLive) {
-            startForeground(NOTIF_ID, buildNotification())
+        // A held MediaProjection must stay backed by a running mediaProjection
+        // foreground service (Android 14+). A one-shot capture
+        // (MediaProjectionCaptureSource.requestClean) can acquire consent and
+        // leave the projection warm with neither live mode nor a floating icon
+        // up — iconShowing || isLive alone would then stopForeground() out
+        // from under an active projection and the system would tear it down.
+        if (iconShowing || isLive || mediaProjectionController.hasConsent) {
+            enterForeground()
         } else {
             stopForeground(STOP_FOREGROUND_REMOVE)
         }
+    }
+
+    /** Promote the foreground service to include the mediaProjection type.
+     *  MUST run before MediaProjectionManager.getMediaProjection() on API
+     *  34+. Routes through [enterForeground], which derives the type from
+     *  [MediaProjectionController.hasConsent] — the call carries the
+     *  mediaProjection type whenever consent is held, and drops it back to
+     *  SPECIAL_USE only once consent goes away. */
+    internal fun ensureMediaProjectionForegroundType() {
+        enterForeground()
+    }
+
+    /** startForeground with the correct service type(s).
+     *
+     *  Pre-34: foreground-service types are declarative-only — no per-type
+     *  permission enforcement, no mediaProjection token rule — so the 2-arg
+     *  call (which applies the manifest-declared type) is all that's needed.
+     *  It is also the exact call v2.2.0 shipped, field-proven across OEMs at
+     *  minSdk 30; the explicit 3-arg + specialUse-int form below is new on
+     *  this branch, so pre-34 deliberately stays on the proven path.
+     *
+     *  API 34+: the type must be passed explicitly, and must include the
+     *  mediaProjection type exactly when [MediaProjectionController.hasConsent]
+     *  is true — single source of truth, no separate flag to drift out of
+     *  sync with the consent token. The catch handles the platform rejecting
+     *  the MP type by invalidating the consent that claimed it, so a
+     *  subsequent ensureProjection short-circuits on null resultData (no
+     *  doomed getMediaProjection) and the user re-prompts on the next
+     *  capture attempt. */
+    private fun enterForeground() {
+        // Pre-34 has none of the FGS-type machinery below — one proven call.
+        if (Build.VERSION.SDK_INT < 34) {
+            startForeground(NOTIF_ID, buildNotification())
+            return
+        }
+        if (mediaProjectionController.hasConsent) {
+            try {
+                startForeground(
+                    NOTIF_ID, buildNotification(),
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE or
+                        ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION,
+                )
+                return
+            } catch (e: Exception) {
+                // The mediaProjection FGS type is only valid while a live
+                // screen-record token is held. The token can lapse out from
+                // under us (single-use on API 34+, or the system stopping
+                // the projection) and the platform then rejects this start
+                // with a SecurityException. Invalidate the consent so
+                // hasConsent reflects reality; the SPECIAL_USE fall-through
+                // below still gets the service to the foreground.
+                Log.w(TAG, "enterForeground: mediaProjection FGS type rejected, " +
+                    "falling back to SPECIAL_USE — ${e.message}")
+                mediaProjectionController.invalidateConsent()
+            }
+        }
+        // SPECIAL_USE only — the no-consent (or rejected-MP-type) state.
+        startForeground(
+            NOTIF_ID, buildNotification(),
+            ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE,
+        )
     }
 
     private fun createNotificationChannel() {

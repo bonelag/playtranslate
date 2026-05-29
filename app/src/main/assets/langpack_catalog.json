@@ -1,39 +1,104 @@
 {
   "catalogVersion": 1,
   "packs": {
-    "engine-translategemma": {
-      "display": "TranslateGemma 4B",
+    "engine-gemma-4-e2b-mnn": {
+      "display": "Gemma 4 E2B (MNN)",
       "type": "engine",
       "script": "",
       "bundled": false,
       "packVersion": 1,
       "additiveFromVersion": 1,
-      "size": 2190470400,
-      "url": "https://huggingface.co/playtranslate/translategemma-4b-it-Q4_0/resolve/main/translategemma-4b-it.Q4_0.gguf",
-      "sha256": "cb7a1b969fdf25bbf64d5d5d94c66005bfac32fb166854675b6e780f20c79cad",
+      "extract": true,
+      "size": 2886914305,
+      "url": "https://huggingface.co/playtranslate/gemma-4-E2B-it-mnn/resolve/main/gemma-4-E2B-it-mnn.zip",
+      "sha256": "72d8b68a9c5d9fc39f5e6e5ce06e60e9ff459d36cc7750208211be0534059d81",
       "licenses": [
         {
-          "component": "TranslateGemma 4B (Gemma 3-based)",
-          "license": "Gemma",
-          "attribution": "© Google. Subject to the Gemma Terms of Use (https://ai.google.dev/gemma/terms)."
+          "component": "Gemma 4 E2B Instruct (MNN format)",
+          "license": "Apache-2.0",
+          "attribution": "© Google. Apache 2.0 — https://www.apache.org/licenses/LICENSE-2.0. MNN conversion by taobao-mnn (https://huggingface.co/taobao-mnn/gemma-4-E2B-it-MNN), Apache 2.0."
+        },
+        {
+          "component": "MNN runtime (libMNN.so / libllm.so / libMNN_Express.so)",
+          "license": "Apache-2.0",
+          "attribution": "© Alibaba. Apache 2.0 — https://www.apache.org/licenses/LICENSE-2.0."
         }
       ]
     },
-    "engine-qwen-1-5b": {
-      "display": "Qwen 2.5 1.5B",
+    "engine-qwen-1-5b-mnn": {
+      "display": "Qwen 2.5 1.5B (MNN)",
       "type": "engine",
       "script": "",
       "bundled": false,
       "packVersion": 1,
       "additiveFromVersion": 1,
-      "size": 937535744,
-      "url": "https://huggingface.co/playtranslate/qwen2.5-1.5b-instruct-Q4_0/resolve/main/Qwen2.5-1.5B-Instruct-Q4_0.gguf",
-      "sha256": "a5ab77ebbd1d6d70250ff415339935bebac619b7acc508f71545f08231369dc1",
+      "extract": true,
+      "size": 728368682,
+      "url": "https://huggingface.co/playtranslate/qwen2.5-1.5b-instruct-mnn/resolve/main/qwen2.5-1.5b-instruct-mnn.zip",
+      "sha256": "644d247eac0f7b26504185664abb0877830a6fc0b15c51cd9fef8fa32cfb4f60",
       "licenses": [
         {
-          "component": "Qwen 2.5 1.5B Instruct",
+          "component": "Qwen 2.5 1.5B Instruct (MNN format)",
           "license": "Apache-2.0",
           "attribution": "© Alibaba Cloud. Apache 2.0 — https://www.apache.org/licenses/LICENSE-2.0."
+        },
+        {
+          "component": "MNN runtime (libMNN.so / libllm.so / libMNN_Express.so)",
+          "license": "Apache-2.0",
+          "attribution": "© Alibaba. Apache 2.0 — https://www.apache.org/licenses/LICENSE-2.0."
+        }
+      ]
+    },
+    "engine-hunyuan-mt1-5-1-8b-mnn": {
+      "display": "Hunyuan-MT 1.5 1.8B (MNN)",
+      "type": "engine",
+      "script": "",
+      "bundled": false,
+      "packVersion": 1,
+      "additiveFromVersion": 1,
+      "size": 1010470397,
+      "files": [
+        {
+          "path": "config.json",
+          "url": "https://huggingface.co/wangjazz/Hunyuan-MT1.5-1.8B-MNN/resolve/main/config.json",
+          "size": 210,
+          "sha256": "c4bd25dbbc950feffccc3b154d634fdfbce96fbed453dd738bda4abfc763b73a"
+        },
+        {
+          "path": "llm.mnn",
+          "url": "https://huggingface.co/wangjazz/Hunyuan-MT1.5-1.8B-MNN/resolve/main/llm.mnn",
+          "size": 575704,
+          "sha256": "b66f4f64caf6907084b26ee4eef48261261cb9af3f3799f50a3a9b2afd42ea04"
+        },
+        {
+          "path": "llm.mnn.weight",
+          "url": "https://huggingface.co/wangjazz/Hunyuan-MT1.5-1.8B-MNN/resolve/main/llm.mnn.weight",
+          "size": 1008538714,
+          "sha256": "e580b0e95da5a0c4612295ac22c977d78b7d3ba64ac253e072b4ceb986e905a4"
+        },
+        {
+          "path": "tokenizer.txt",
+          "url": "https://huggingface.co/wangjazz/Hunyuan-MT1.5-1.8B-MNN/resolve/main/tokenizer.txt",
+          "size": 1354726,
+          "sha256": "4a5b5be3a5d172341df2d118c916401be1faca99d20fe3a160d65a0f828aee5e"
+        },
+        {
+          "path": "llm_config.json",
+          "url": "https://huggingface.co/wangjazz/Hunyuan-MT1.5-1.8B-MNN/resolve/main/llm_config.json",
+          "size": 1043,
+          "sha256": "fe8e28d90da5246d6f78db62182ee410d1c7f83446c55ca43b106d7a714a889b"
+        }
+      ],
+      "licenses": [
+        {
+          "component": "Hunyuan-MT 1.5 1.8B (MNN format)",
+          "license": "Tencent HY Community License",
+          "attribution": "© Tencent. Use, distribution, and outputs are governed by the Tencent HY Community License Agreement (https://huggingface.co/tencent/HY-MT1.5-1.8B/blob/main/License.txt). Use is restricted to outside the European Union, United Kingdom, and South Korea (license §1(l), §5(c)). MNN quantization by @wangjazz (https://huggingface.co/wangjazz/Hunyuan-MT1.5-1.8B-MNN); we fetch each file directly from that repo at the user's request — no re-host."
+        },
+        {
+          "component": "MNN runtime (libMNN.so / libllm.so / libMNN_Express.so)",
+          "license": "Apache-2.0",
+          "attribution": "© Alibaba. Apache 2.0 — https://www.apache.org/licenses/LICENSE-2.0."
         }
       ]
     },

@@ -10,9 +10,17 @@
     <uses-permission android:name="android.permission.BIND_ACCESSIBILITY_SERVICE"
         tools:ignore="ProtectedPermissions" />
     <uses-permission android:name="com.ichi2.anki.permission.READ_WRITE_DATABASE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
 
     <queries>
         <package android:name="com.ichi2.anki" />
+        <!-- TextToSpeech engine services. Without this, API 30+ package
+             visibility hides TTS engines from the app, and TextToSpeech
+             reports no engine even when one is installed and active. -->
+        <intent>
+            <action android:name="android.intent.action.TTS_SERVICE" />
+        </intent>
     </queries>
 
     <application
@@ -37,7 +45,19 @@
             </intent-filter>
         </activity>
 
-        <!-- Lightweight host for Anki review when launched from the floating overlay. -->
+        <!-- Translucent trampoline: ensures the AnkiDroid permission, then
+             forwards to WordAnkiReviewActivity. Asks in place so a missing
+             permission never lands the user on a blank screen. -->
+        <activity
+            android:name=".ui.AnkiPermissionActivity"
+            android:exported="false"
+            android:taskAffinity=""
+            android:excludeFromRecents="true"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden" />
+
+        <!-- Opaque host for the Anki word-review sheet, reached via
+             AnkiPermissionActivity. -->
         <activity
             android:name=".ui.WordAnkiReviewActivity"
             android:exported="false"
@@ -58,6 +78,7 @@
         <activity
             android:name=".ui.LanguageSetupActivity"
             android:exported="false"
+            android:windowSoftInputMode="adjustResize"
             android:theme="@style/Theme.PlayTranslate" />
 
         <!-- DeepL API key entry sub-screen (launched from Settings → Translation Service). -->
@@ -67,11 +88,44 @@
             android:parentActivityName=".MainActivity"
             android:theme="@style/Theme.PlayTranslate" />
 
-<!-- Foreground service that owns the OCR + translation pipeline. -->
+        <!-- Generic LLM backend (OpenAI / Gemini / future) settings sub-screen.
+             One Activity parameterized by EXTRA_BACKEND_ID. -->
+        <activity
+            android:name=".ui.LlmBackendSettingsActivity"
+            android:exported="false"
+            android:parentActivityName=".MainActivity"
+            android:theme="@style/Theme.PlayTranslate" />
+
+        <!-- Full-screen model picker for LLM backends. Reached from the
+             "Model" row on the per-backend sub-screen above OR from the
+             inline "Model" cell under each enabled LLM row in Settings. -->
+        <activity
+            android:name=".ui.LlmModelPickerActivity"
+            android:exported="false"
+            android:parentActivityName=".MainActivity"
+            android:theme="@style/Theme.PlayTranslate" />
+
+        <!-- Per-language Text-to-Speech voice picker (launched from Settings → Text-to-Speech). -->
+        <activity
+            android:name=".ui.TtsVoiceActivity"
+            android:exported="false"
+            android:parentActivityName=".MainActivity"
+            android:theme="@style/Theme.PlayTranslate" />
+
+        <!-- Transparent host for the MediaProjection consent dialog. -->
+        <activity
+            android:name=".capture.MediaProjectionConsentActivity"
+            android:exported="false"
+            android:taskAffinity=""
+            android:excludeFromRecents="true"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden" />
+
+        <!-- Foreground service that owns the OCR + translation pipeline. -->
         <service
             android:name=".CaptureService"
             android:exported="false"
-            android:foregroundServiceType="specialUse">
+            android:foregroundServiceType="specialUse|mediaProjection">
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="OCR and translation pipeline using AccessibilityService screen capture" />

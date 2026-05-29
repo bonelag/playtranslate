@@ -54,7 +54,17 @@ class TranslationResultActivity :
     SentenceContextProvider {
 
     private var captureService: CaptureService? = null
+
+    /** True once [onServiceConnected] has fired — gates reads of
+     *  [captureService] for any caller that needs an active binder. */
     private var serviceConnected = false
+
+    /** True once [bindService] returned true in [onCreate]. Separate
+     *  from [serviceConnected] so [onDestroy] can unbind even when
+     *  [finishCurrentIfAny] tears us down before the connection
+     *  callback arrives — otherwise the ServiceConnection leaks and
+     *  Android logs a "leaked ServiceConnection" warning. */
+    private var serviceBindRequested = false
 
     /** Activity-scoped state mirror of the result/lookups pipeline.
      *  Filled by [TranslationResultFragment] as it produces results;
@@ -80,8 +90,15 @@ class TranslationResultActivity :
 
     private val serviceConnection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName, binder: IBinder) {
+            // Always record the binding so [onDestroy]'s
+            // unbindService can clean it up, even when we're skipping
+            // the actual translation work below. If [finishCurrentIfAny]
+            // finished us while the bind was in flight, kicking off a
+            // translation cycle on the corpse would burn a capture slot
+            // and surface a result no one would see.
             captureService = (binder as CaptureService.LocalBinder).getService()
             serviceConnected = true
+            if (isFinishing || isDestroyed) return
             onServiceReady()
         }
         override fun onServiceDisconnected(name: ComponentName) {
@@ -141,19 +158,30 @@ class TranslationResultActivity :
      *  intent extras during the loading window so a fast Anki tap still
      *  carries the prefetched sentence-word context. */
     override fun currentSentenceContext(): SentenceContext {
-        // All three fields read VM-then-fallback so they're symmetric.
-        // Without VM-first on `original`, the field would be null for
-        // region-capture launches even though the VM has a valid result
-        // — the embedded sheet's `?: args` chain would still recover,
-        // but keeping the read patterns aligned avoids future drift.
+        // All three text fields read VM-then-fallback so they're
+        // symmetric. Without VM-first on `original`, the field would
+        // be null for region-capture launches even though the VM has
+        // a valid result — the embedded sheet's `?: args` chain would
+        // still recover, but keeping the read patterns aligned avoids
+        // future drift.
         val ready = vm.result.value as? ResultState.Ready
+        // Snapshot the settled rows ONCE so the legacy map and the
+        // surface map are guaranteed to come from the same emission.
+        // Reading WordLookupsState twice would risk a fresh emission
+        // sliding in between, and reading surfaces from
+        // LastSentenceCache later (as oneTapSendSentence used to do)
+        // races against live-mode rotating the cache.
+        val settledRows = (vm.wordLookups.value as? WordLookupsState.Settled)?.rows
         return SentenceContext(
             original = ready?.result?.originalText
                 ?: intent.getStringExtra(EXTRA_SENTENCE_TEXT),
             translation = ready?.result?.translatedText
                 ?: intentSeededTranslation,
-            wordResults = (vm.wordLookups.value as? WordLookupsState.Settled)?.rows?.toLegacyMap()
-                ?: intentSeededWordResults,
+            wordResults = settledRows?.toLegacyMap() ?: intentSeededWordResults,
+            // Args fallback has no surfaces — pass null so the
+            // one-tap helper awaits LastSentenceCache, which is
+            // atomic per sentence.
+            surfaceForms = settledRows?.toSurfaceMap(),
         )
     }
 
@@ -168,6 +196,10 @@ class TranslationResultActivity :
         // for the full rationale — prevents OCR feedback loop in multi-window).
         window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
 
+        // Register before any other onCreate work so [finishCurrentIfAny]
+        // can reach this instance.
+        tracker.bind(this)
+
         findViewById<ImageButton>(R.id.btnBack).setOnClickListener { finish() }
 
         if (isDragWordMode) setupDragWordTabs(savedInstanceState)
@@ -180,7 +212,7 @@ class TranslationResultActivity :
         // Start and bind CaptureService
         val svcIntent = Intent(this, CaptureService::class.java)
         ContextCompat.startForegroundService(this, svcIntent)
-        bindService(svcIntent, serviceConnection, Context.BIND_AUTO_CREATE)
+        serviceBindRequested = bindService(svcIntent, serviceConnection, Context.BIND_AUTO_CREATE)
     }
 
     override fun onDestroy() {
@@ -188,7 +220,16 @@ class TranslationResultActivity :
         // they're cancelled automatically when the activity is destroyed.
         // No callback nulling — the service no longer exposes mutable
         // callback slots that one activity could clobber for another.
-        if (serviceConnected) unbindService(serviceConnection)
+        // Unbind whenever the bind was *requested*, not whenever it
+        // completed. A rapid replace-and-finish via [finishCurrentIfAny]
+        // can destroy us before onServiceConnected fires; gating on
+        // serviceConnected would leak the ServiceConnection in that
+        // window.
+        if (serviceBindRequested) {
+            unbindService(serviceConnection)
+            serviceBindRequested = false
+        }
+        tracker.unbind(this)
         super.onDestroy()
     }
 
@@ -477,15 +518,18 @@ class TranslationResultActivity :
         val cachedTranslation = intent.getStringExtra(EXTRA_DRAG_SENTENCE_TRANSLATION)
             ?.takeIf { it.isNotEmpty() }
         if (cachedTranslation != null) {
+            val cachedSource = intent.getStringExtra(EXTRA_DRAG_SENTENCE_TRANSLATION_SOURCE)
+                ?.takeIf { it.isNotEmpty() }
             val timestamp = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
             vm.displayResult(
                 TranslationResult(
-                    originalText = sentenceText,
-                    segments = segments,
-                    translatedText = cachedTranslation,
-                    timestamp = timestamp,
-                    screenshotPath = screenshotPath,
-                    note = null,
+                    originalText       = sentenceText,
+                    segments           = segments,
+                    translatedText     = cachedTranslation,
+                    timestamp          = timestamp,
+                    screenshotPath     = screenshotPath,
+                    note               = null,
+                    backendDisplayName = cachedSource,
                 ),
                 applicationContext,
             )
@@ -500,17 +544,23 @@ class TranslationResultActivity :
 
         vm.showTranslatingPlaceholder(sentenceText, segments, applicationContext)
 
+        // TODO: route through LastSentenceCache.awaitOrStartTranslation so
+        //  this caller joins the drag→Anki sheet's in-flight job (and vice
+        //  versa) instead of double-firing translateOnce against the
+        //  backend. Coalescing only pays off when both call sites use the
+        //  cache helper.
         lifecycleScope.launch {
             try {
-                val (translated, note) = svc.translateOnce(sentenceText)
+                val groupTranslation = svc.translateOnce(sentenceText)
                 val timestamp = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
                 val result = TranslationResult(
-                    originalText = sentenceText,
-                    segments = segments,
-                    translatedText = translated,
-                    timestamp = timestamp,
-                    screenshotPath = screenshotPath,
-                    note = note
+                    originalText       = sentenceText,
+                    segments           = segments,
+                    translatedText     = groupTranslation.text,
+                    timestamp          = timestamp,
+                    screenshotPath     = screenshotPath,
+                    note               = groupTranslation.note,
+                    backendDisplayName = groupTranslation.backendDisplayName,
                 )
                 vm.displayResult(result, applicationContext)
             } catch (e: Exception) {
@@ -526,6 +576,12 @@ class TranslationResultActivity :
     private enum class Tab { SENTENCE, WORD }
 
     companion object {
+        /** See [CurrentActivityTracker]. [DragLookupController.openSentenceInApp]
+         *  calls [finishCurrentIfAny] before launching a new instance so
+         *  MULTIPLE_TASK doesn't leave the old one orphaned in a hidden task. */
+        private val tracker = CurrentActivityTracker<TranslationResultActivity>()
+        fun finishCurrentIfAny() = tracker.finishCurrent()
+
         const val EXTRA_TOP_FRAC = "extra_top_frac"
         const val EXTRA_BOTTOM_FRAC = "extra_bottom_frac"
         const val EXTRA_LEFT_FRAC = "extra_left_frac"
@@ -544,6 +600,11 @@ class TranslationResultActivity :
         const val EXTRA_DRAG_WORD = "extra_drag_word"
         const val EXTRA_DRAG_READING = "extra_drag_reading"
         const val EXTRA_DRAG_SENTENCE_TRANSLATION = "extra_drag_sentence_translation"
+        /** Display name of the backend that produced [EXTRA_DRAG_SENTENCE_TRANSLATION]
+         *  in the lens. Surfaces as "Translated by …" below the cached translation
+         *  in the sentence tab so the cached path matches the regular translate
+         *  path's bottom label. Null when the source wasn't captured at lens time. */
+        const val EXTRA_DRAG_SENTENCE_TRANSLATION_SOURCE = "extra_drag_sentence_translation_source"
         /** Sentence's tokenized word lookups, serialized as four parallel
          *  arrays (mirrors [WordDetailBottomSheet]'s args bundle layout).
          *  Captured by the drag controller at lens-dismiss time so the

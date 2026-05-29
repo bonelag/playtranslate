@@ -8,6 +8,8 @@ import android.os.Build
 import android.provider.Settings
 import android.service.quicksettings.Tile
 import android.service.quicksettings.TileService
+import com.playtranslate.capture.CaptureBackendResolver
+import com.playtranslate.capture.CaptureLifecycle
 
 /**
  * Quick Settings tile that mirrors [Prefs.showOverlayIcon] — tap to hide the
@@ -28,11 +30,52 @@ class PlayTranslateTileService : TileService() {
 
     override fun onStartListening() {
         super.onStartListening()
+        // Pick up permission grants the user made outside the app since the
+        // tile last bound — most commonly "Display over other apps" granted
+        // from this tile's own activation flow. Without this the cached
+        // [CaptureBackendResolver.useMediaProjection] stays on its old value
+        // until MainActivity resumes, and the tile keeps acting on the wrong
+        // backend.
+        CaptureBackendResolver.reresolve(this)
         renderState()
     }
 
     override fun onClick() {
         super.onClick()
+        // Defensive: re-resolve here too in case onStartListening's cached
+        // resolution is stale by the time the user taps (e.g., a permission
+        // toast was acted on between bind and tap). Cheap when nothing
+        // changed — see [CaptureBackendResolver.reresolve].
+        CaptureBackendResolver.reresolve(this)
+        // No capture permission either way — the tile is a control surface,
+        // not an onboarding surface. Defer the backend choice (accessibility
+        // vs MediaProjection) to the app's onboarding flow in MainActivity
+        // rather than baking it into the tile's no-permission fall-through.
+        if (!PlayTranslateAccessibilityService.isEnabled(this) &&
+            !Settings.canDrawOverlays(this)) {
+            openMainActivityOnboarding()
+            return
+        }
+        if (!CaptureBackendResolver.active().requiresAccessibilityService) {
+            // MediaProjection backend — the tile activates / deactivates the
+            // capture lifecycle.
+            if (CaptureLifecycle.isActive(this)) {
+                CaptureLifecycle.deactivate(this)
+                renderState()
+            } else if (!Settings.canDrawOverlays(this)) {
+                // The floating controls need "Display over other apps".
+                openOverlayPermissionSettings()
+            } else {
+                // Activate routes through the service (ACTION_MP_ACTIVATE) so
+                // it works even from a cold start.
+                startForegroundService(
+                    Intent(this, CaptureService::class.java)
+                        .setAction(CaptureService.ACTION_MP_ACTIVATE)
+                )
+                renderState()
+            }
+            return
+        }
         val a11y = PlayTranslateAccessibilityService.instance
         when {
             a11y != null -> {
@@ -41,7 +84,7 @@ class PlayTranslateTileService : TileService() {
                     PlayTranslateAccessibilityService.disable(this, "tile_turn_off")
                 } else {
                     prefs.showOverlayIcon = true
-                    a11y.reconcileFloatingIcons()
+                    com.playtranslate.capture.CaptureBackendResolver.activeOverlayUi?.reconcileFloatingIcons()
                     TileSync.refresh(this)
                 }
                 renderState()
@@ -66,8 +109,46 @@ class PlayTranslateTileService : TileService() {
         }
     }
 
+    /** Open the system "Display over other apps" screen for PlayTranslate and
+     *  collapse the shade. The MediaProjection floating controls need it. */
+    private fun openOverlayPermissionSettings() {
+        val intent = overlayPermissionSettingsIntent()
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        if (Build.VERSION.SDK_INT >= 34) {
+            startActivityAndCollapse(
+                PendingIntent.getActivity(this, 0, intent, PendingIntent.FLAG_IMMUTABLE)
+            )
+        } else {
+            @Suppress("DEPRECATION") startActivityAndCollapse(intent)
+        }
+    }
+
+    /** Open MainActivity (and collapse the shade) so the user can complete
+     *  onboarding. Used when neither accessibility nor "Display over other
+     *  apps" is granted — the backend choice belongs in the app's onboarding
+     *  flow, not in the tile's no-permission fall-through. */
+    private fun openMainActivityOnboarding() {
+        val intent = Intent(this, MainActivity::class.java)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+        if (Build.VERSION.SDK_INT >= 34) {
+            startActivityAndCollapse(
+                PendingIntent.getActivity(this, 0, intent, PendingIntent.FLAG_IMMUTABLE)
+            )
+        } else {
+            @Suppress("DEPRECATION") startActivityAndCollapse(intent)
+        }
+    }
+
     private fun renderState() {
         val tile = qsTile ?: return
+        if (!CaptureBackendResolver.active().requiresAccessibilityService) {
+            // MediaProjection — the tile reflects whether capture is active.
+            tile.state = if (CaptureLifecycle.isActive(this)) Tile.STATE_ACTIVE
+                         else Tile.STATE_INACTIVE
+            tile.subtitle = null
+            tile.updateTile()
+            return
+        }
         val a11yEnabled = PlayTranslateAccessibilityService.isEnabled(this)
         val showing = Prefs(this).showOverlayIcon
         tile.state = if (a11yEnabled && showing) Tile.STATE_ACTIVE else Tile.STATE_INACTIVE

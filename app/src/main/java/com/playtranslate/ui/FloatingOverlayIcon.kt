@@ -2,31 +2,29 @@ package com.playtranslate.ui
 
 import android.animation.ValueAnimator
 import android.content.Context
-import android.graphics.Bitmap
-import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Point
 import android.graphics.Rect
-import android.graphics.RectF
-import android.util.Log
 import android.view.MotionEvent
 import android.view.VelocityTracker
 import android.view.View
 import android.view.WindowManager
-import android.view.WindowMetrics
 import android.view.animation.DecelerateInterpolator
 import com.playtranslate.PlayTranslateAccessibilityService
-import com.playtranslate.R
+import com.playtranslate.overlay.OverlayHost
+import com.playtranslate.displaySizePx
+import com.playtranslate.displayWindowMetrics
 import kotlin.math.abs
 
 /**
- * A circular floating icon that snaps to left/right screen edges,
- * showing only half the circle. Supports drag, fling, and tap.
+ * A circular floating icon that snaps to left/right screen edges, pushed off-
+ * screen so only a ~1/4-circle edge-arrow is visible. Supports drag, fling,
+ * and tap.
  *
- * Position is persisted as edge (LEFT=0, RIGHT=1) + fraction (0..1)
- * along that edge vertically.
+ * Position is persisted as edge (LEFT=0, RIGHT=1) + fraction (0..1) along
+ * that edge vertically.
  *
  * During a drag, switches to a "magnifying glass ring" appearance so the
  * text underneath is visible for screenshot capture.
@@ -35,18 +33,14 @@ class FloatingOverlayIcon(context: Context) : View(context) {
 
     enum class Edge { LEFT, RIGHT }
 
-    /** Diameter of the visible circle. */
+    /** Diameter of the (notional) full circle — only ~1/4 of this lands
+     *  inside the screen since the rest is pushed off the edge. */
     private val circleSizePx = (56 * resources.displayMetrics.density).toInt()
     /** Extra touch padding around the circle for easier grabbing. */
     private val touchPaddingPx = (12 * resources.displayMetrics.density).toInt()
     /** Total view size (circle + padding on each side). */
     val viewSizePx = circleSizePx + touchPaddingPx * 2
-    private val circleHalf = circleSizePx / 2
     private val viewHalf = viewSizePx / 2
-
-    /** Compact mode: shows 1/3 circle with arrow instead of half circle with icon. */
-    var compactMode = false
-        set(value) { field = value; invalidate() }
 
     /** When true, the circle fill turns red to indicate live mode is active. */
     var liveMode = false
@@ -73,13 +67,9 @@ class FloatingOverlayIcon(context: Context) : View(context) {
         color = Color.WHITE
         style = Paint.Style.FILL
     }
-    private val bitmapPaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
-    private val iconBitmap: Bitmap = BitmapFactory.decodeResource(resources, R.drawable.ic_floating_icon)
-
     // Scratch objects reused in onLayout/onDraw — allocating per frame is lint DrawAllocation.
     private val gestureRect = Rect()
     private val gestureRectList = listOf(gestureRect)
-    private val dstRect = RectF()
 
     // ── Loading spinner (separate overlay window) ──────────────────────
     private var spinnerView: View? = null
@@ -122,11 +112,17 @@ class FloatingOverlayIcon(context: Context) : View(context) {
         }
         val spinY = p.y + (viewSizePx - totalSize) / 2
 
+        // On the MediaProjection backend the spinner must stay touchable: a
+        // non-touchable TYPE_APPLICATION_OVERLAY is opacity-capped. The icon's
+        // window owns the hold gesture, so a touchable spinner steals nothing.
+        var flags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+        if (overlayHost?.windowType != WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY) {
+            flags = flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+        }
         val lp = WindowManager.LayoutParams(
             totalSize, totalSize,
             WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE,
+            flags,
             android.graphics.PixelFormat.TRANSLUCENT
         ).apply {
             x = spinX
@@ -134,7 +130,10 @@ class FloatingOverlayIcon(context: Context) : View(context) {
             gravity = android.view.Gravity.TOP or android.view.Gravity.LEFT
         }
 
-        if (!PlayTranslateAccessibilityService.addOverlay(spinner, wm, lp, displayId)) return
+        val host = overlayHost
+        val added = if (host != null) host.addOverlayWindow(spinner, wm, lp, displayId)
+            else PlayTranslateAccessibilityService.addOverlay(spinner, wm, lp, displayId)
+        if (!added) return
         spinnerView = spinner
         spinnerWm = wm
     }
@@ -143,7 +142,9 @@ class FloatingOverlayIcon(context: Context) : View(context) {
         val view = spinnerView
         val w = spinnerWm
         if (view != null && w != null) {
-            PlayTranslateAccessibilityService.removeOverlay(view, w)
+            val host = overlayHost
+            if (host != null) host.removeOverlayWindow(view)
+            else PlayTranslateAccessibilityService.removeOverlay(view, w)
         }
         spinnerView = null
         spinnerWm = null
@@ -184,6 +185,14 @@ class FloatingOverlayIcon(context: Context) : View(context) {
     /** Called on every touch event (for dim controller reset). */
     var onAnyTouch: (() -> Unit)? = null
 
+    /** When true, a hold (long press without movement) begins the drag /
+     *  magnifying-search gesture instead of firing [onHoldStart]. Set by
+     *  [SonarPingIntroView] while it forwards a gesture from the intro
+     *  animation: the intro offers only "tap → menu" and "hold or drag →
+     *  search", so its forwarded holds route into the drag flow. The docked
+     *  icon leaves this false, keeping the hold-for-translation gesture. */
+    var holdStartsDrag = false
+
     var wm: WindowManager? = null
 
     /** The display this icon (and any sub-windows like the loading spinner)
@@ -191,37 +200,13 @@ class FloatingOverlayIcon(context: Context) : View(context) {
      *  blanking scopes correctly. */
     var displayId: Int = android.view.Display.DEFAULT_DISPLAY
     var params: WindowManager.LayoutParams? = null
+    /** Active capture backend's overlay host, used to attach the loading
+     *  spinner sub-window with the right window type. Null falls back to the
+     *  accessibility-service path (which fails on the MediaProjection
+     *  backend, where no accessibility service is connected). */
+    var overlayHost: OverlayHost? = null
 
-    /** Current [WindowMetrics] for this icon's display via a freshly-created
-     *  WindowContext, or `null` if the query fails. Must be fresh per call:
-     *  rotation diagnostics on this device showed a cached WindowContext
-     *  occasionally reporting the previous orientation's bounds inside
-     *  [android.hardware.display.DisplayManager.DisplayListener.onDisplayChanged],
-     *  while a freshly-created one returned the post-rotation bounds. The
-     *  fresh-context binder cost is small and only paid on rotation,
-     *  drag-end, and install — not a hot path.
-     *
-     *  TYPE_APPLICATION_OVERLAY (not TYPE_ACCESSIBILITY_OVERLAY): the latter
-     *  throws SecurityException from createWindowContext on Android 11 / API 30.
-     *  The catch is a safety net for OEM / future-OS variance — callers fall
-     *  back to coarser metrics instead of crashing the accessibility service. */
-    private fun currentWindowMetricsOrNull(): WindowMetrics? = try {
-        context.createWindowContext(WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY, null)
-            .getSystemService(WindowManager::class.java)
-            ?.currentWindowMetrics
-    } catch (e: RuntimeException) {
-        Log.w("FloatingOverlayIcon", "windowMetrics query failed; using fallback metrics", e)
-        null
-    }
-
-    /** Full pixel size of this icon's display in its current rotation. Falls
-     *  back to the display context's [android.util.DisplayMetrics] if the
-     *  window-metrics query fails. */
-    private fun queryScreenSize(): Point {
-        currentWindowMetricsOrNull()?.bounds?.let { return Point(it.width(), it.height()) }
-        val dm = resources.displayMetrics
-        return Point(dm.widthPixels, dm.heightPixels)
-    }
+    private fun queryScreenSize(): Point = context.displaySizePx()
 
     private val screenW: Int get() = queryScreenSize().x
     private val screenH: Int get() = queryScreenSize().y
@@ -233,7 +218,8 @@ class FloatingOverlayIcon(context: Context) : View(context) {
      *  code consults these insets so "Edge.LEFT" means "left of the safe
      *  area" instead of "left of the display". */
     private fun cutoutSafeInsetX(): Pair<Int, Int> {
-        val cutout = currentWindowMetricsOrNull()?.windowInsets?.displayCutout ?: return 0 to 0
+        val cutout = context.displayWindowMetrics()?.windowInsets?.displayCutout
+            ?: return 0 to 0
         return cutout.safeInsetLeft to cutout.safeInsetRight
     }
 
@@ -257,6 +243,13 @@ class FloatingOverlayIcon(context: Context) : View(context) {
      *  immediately without contaminating the captured pixels. */
     var inDragMode = false
         private set
+    /** True while the user's finger is on the icon — ACTION_DOWN until
+     *  ACTION_UP/ACTION_CANCEL. The z-order re-raise (remove + re-add of this
+     *  window) must skip an icon with an active gesture: destroying the
+     *  window mid-gesture drops the in-flight touch stream, so the finger-lift
+     *  never reaches onTouchEvent and onHoldEnd/onDragEnd never fire. */
+    var hasActiveGesture = false
+        private set
     /** Whether onDragStart has already been called for this gesture. */
     private var dragStartFired = false
     /** Whether onHoldStart has fired for this gesture. */
@@ -264,8 +257,15 @@ class FloatingOverlayIcon(context: Context) : View(context) {
     private val holdDelayMs = 400L
     private val holdRunnable = Runnable {
         if (!dragStartFired && totalMovement < tapThresholdPx) {
-            holdFired = true
-            onHoldStart?.invoke()
+            if (holdStartsDrag) {
+                // Forwarded intro gesture: a hold opens the magnifying
+                // search, not the hold-for-translation preview. Anchor the
+                // drag at the press point — the finger hasn't moved.
+                beginDrag(downRawX, downRawY)
+            } else {
+                holdFired = true
+                onHoldStart?.invoke()
+            }
         }
     }
     /** Current snapped edge — used to position icon on the visible half. */
@@ -291,7 +291,6 @@ class FloatingOverlayIcon(context: Context) : View(context) {
     }
 
     override fun onDraw(canvas: Canvas) {
-        if (iconBitmap.isRecycled) return
         val center = viewSizePx / 2f
         val r = circleSizePx / 2f
         circlePaint.color = when {
@@ -308,33 +307,17 @@ class FloatingOverlayIcon(context: Context) : View(context) {
             canvas.drawCircle(center, center, r - ringPaint.strokeWidth / 2, ringPaint)
             // Small magnifying glass icon in center
             drawMagnifyingGlass(canvas, center, center, r * 0.4f)
-        } else if (compactMode) {
-            // Compact: circle pushed off-screen so only ~1/4 is visible
-            val compactOffset = r * 0.5f
-            val cx = if (currentEdge == Edge.LEFT) center - compactOffset else center + compactOffset
-            canvas.drawCircle(cx, center, r, circlePaint)
-            canvas.drawCircle(cx, center, r, borderPaint)
-            // Arrow in the visible slice, nudged toward the screen edge
-            val arrowNudge = r * 0.65f
-            val arrowCx = if (currentEdge == Edge.LEFT) cx + arrowNudge else cx - arrowNudge
-            drawEdgeArrow(canvas, arrowCx, center, r * 0.22f)
-        } else {
-            canvas.drawCircle(center, center, r, circlePaint)
-            canvas.drawCircle(center, center, r, borderPaint)
-            // Draw icon bitmap centered on the visible half, nudged toward screen edge
-            val nudge = 3 * resources.displayMetrics.density
-            val cx = if (currentEdge == Edge.LEFT) {
-                center + circleHalf / 2f - nudge
-            } else {
-                center - circleHalf / 2f + nudge
-            }
-            val targetH = circleSizePx * 0.5f
-            val scale = targetH / iconBitmap.height
-            val drawW = iconBitmap.width * scale
-            val drawH = targetH
-            dstRect.set(cx - drawW / 2f, center - drawH / 2f, cx + drawW / 2f, center + drawH / 2f)
-            canvas.drawBitmap(iconBitmap, null, dstRect, bitmapPaint)
+            return
         }
+        // Compact (always): circle pushed off-screen so only ~1/4 is visible.
+        val compactOffset = r * 0.5f
+        val cx = if (currentEdge == Edge.LEFT) center - compactOffset else center + compactOffset
+        canvas.drawCircle(cx, center, r, circlePaint)
+        canvas.drawCircle(cx, center, r, borderPaint)
+        // Arrow in the visible slice, nudged toward the screen edge.
+        val arrowNudge = r * 0.65f
+        val arrowCx = if (currentEdge == Edge.LEFT) cx + arrowNudge else cx - arrowNudge
+        drawEdgeArrow(canvas, arrowCx, center, r * 0.22f)
     }
 
     /** Draws a small arrow pointing toward the screen center (away from the edge). */
@@ -386,6 +369,30 @@ class FloatingOverlayIcon(context: Context) : View(context) {
         invalidate()
     }
 
+    /** Enters drag mode for a gesture anchored at (rawX, rawY): re-centres
+     *  the icon window on that point, flips to the ring + magnifying-glass
+     *  appearance, and fires [onDragStart] followed by an initial
+     *  [onDragMove]. Shared by the move-threshold path ([onTouchEvent]'s
+     *  ACTION_MOVE) and the hold-to-drag path ([holdRunnable]). */
+    private fun beginDrag(rawX: Float, rawY: Float) {
+        val p = params ?: return
+        // Centre the icon on the finger — the user may have grabbed it
+        // off-centre, or (for a forwarded intro gesture) pressed the
+        // carrier while it was animating inboard of the dock edge.
+        p.x = (rawX - viewHalf).toInt()
+        p.y = (rawY - viewHalf).toInt()
+        // Rebase so future moves are relative to this centred position.
+        downRawX = rawX
+        downRawY = rawY
+        downParamX = p.x
+        downParamY = p.y
+        try { wm?.updateViewLayout(this, p) } catch (_: Exception) {}
+        enterDragMode()
+        dragStartFired = true
+        post { onDragStart?.invoke() }
+        onDragMove?.invoke(rawX, rawY)
+    }
+
     override fun onTouchEvent(event: MotionEvent): Boolean {
         onAnyTouch?.invoke()
         parent?.requestDisallowInterceptTouchEvent(true)
@@ -407,6 +414,7 @@ class FloatingOverlayIcon(context: Context) : View(context) {
                 lastYVel = 0f
                 dragStartFired = false
                 holdFired = false
+                hasActiveGesture = true
                 postDelayed(holdRunnable, holdDelayMs)
                 return true
             }
@@ -424,7 +432,11 @@ class FloatingOverlayIcon(context: Context) : View(context) {
                 p.y = (downParamY + dy).toInt()
                 try { wm?.updateViewLayout(this, p) } catch (_: Exception) {}
 
-                if (totalMovement >= tapThresholdPx) {
+                // Once a drag is under way every move feeds onDragMove —
+                // tapThresholdPx is only the *entry* gate, and totalMovement
+                // can dip back under it when the finger returns toward the
+                // start point.
+                if (dragStartFired || totalMovement >= tapThresholdPx) {
                     removeCallbacks(holdRunnable)
                     // If hold was active, cancel it and transition to drag
                     if (holdFired) {
@@ -432,27 +444,15 @@ class FloatingOverlayIcon(context: Context) : View(context) {
                         onHoldCancel?.invoke()
                     }
                     if (!dragStartFired) {
-                        // Center the icon on the finger (user may have grabbed off-center)
-                        val rawX = event.rawX
-                        val rawY = event.rawY
-                        p.x = (rawX - viewHalf).toInt()
-                        p.y = (rawY - viewHalf).toInt()
-                        // Rebase so future moves are relative to this centered position
-                        downRawX = rawX
-                        downRawY = rawY
-                        downParamX = p.x
-                        downParamY = p.y
-                        try { wm?.updateViewLayout(this, p) } catch (_: Exception) {}
-
-                        enterDragMode()
-                        dragStartFired = true
-                        post { onDragStart?.invoke() }
+                        beginDrag(event.rawX, event.rawY)
+                    } else {
+                        onDragMove?.invoke(event.rawX, event.rawY)
                     }
-                    onDragMove?.invoke(event.rawX, event.rawY)
                 }
                 return true
             }
             MotionEvent.ACTION_UP -> {
+                hasActiveGesture = false
                 velocityTracker?.addMovement(event)
                 velocityTracker?.computeCurrentVelocity(1000)
                 lastXVel = velocityTracker?.xVelocity ?: lastXVel
@@ -496,6 +496,7 @@ class FloatingOverlayIcon(context: Context) : View(context) {
                 return true
             }
             MotionEvent.ACTION_CANCEL -> {
+                hasActiveGesture = false
                 velocityTracker?.recycle()
                 velocityTracker = null
                 removeCallbacks(holdRunnable)
@@ -602,8 +603,10 @@ class FloatingOverlayIcon(context: Context) : View(context) {
         hideSpinnerWindow()
     }
 
-    /** Call when the icon is permanently removed, not just temporarily detached. */
+    /** Call when the icon is permanently removed, not just temporarily detached.
+     *  Currently a no-op (no owned resources to free) — kept as a hook so
+     *  callers don't have to track whether destroy is still meaningful. */
     fun destroy() {
-        if (!iconBitmap.isRecycled) iconBitmap.recycle()
+        // Intentionally empty.
     }
 }

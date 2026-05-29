@@ -4,14 +4,22 @@ import android.app.Activity
 import android.app.Application
 import android.content.ComponentCallbacks2
 import android.os.Bundle
+import com.playtranslate.capture.CaptureBackendResolver
 import com.playtranslate.diagnostics.CrashHandler
+import android.content.Context
+import com.playtranslate.region.RegionPolicy
+import com.playtranslate.translation.CooldownState
 import com.playtranslate.translation.DeepLBackend
+import com.playtranslate.translation.GemmaE2BMnnBackend
+import com.playtranslate.translation.GeminiBackend
+import com.playtranslate.translation.HyMtBackend
 import com.playtranslate.translation.LingvaBackend
 import com.playtranslate.translation.MlKitBackend
-import com.playtranslate.translation.QwenBackend
-import com.playtranslate.translation.TranslateGemmaBackend
+import com.playtranslate.translation.OpenAiBackend
+import com.playtranslate.translation.QwenMnnBackend
 import com.playtranslate.translation.TranslationBackendRegistry
-import com.playtranslate.translation.translategemma.LlamaTranslator
+import com.playtranslate.translation.UsageTracker
+import com.playtranslate.translation.mnn.MnnTranslator
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -21,10 +29,13 @@ import java.lang.ref.WeakReference
 class PlayTranslateApplication : Application() {
 
     /** Application-scoped coroutine scope for fire-and-forget background work
-     *  (onTrimMemory unloads, etc.). Outlives any individual UI lifecycle.
-     *  IO dispatcher because LLM unload has to wait on the engine's
-     *  llamaDispatcher and shouldn't tie up the main thread. */
-    private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+     *  that must outlive any individual UI lifecycle (onTrimMemory unloads,
+     *  post-save key validation that should still fire its Toast after the
+     *  settings sub-screen finishes, etc.). IO dispatcher because LLM unload
+     *  has to wait on the engine's llamaDispatcher and shouldn't tie up the
+     *  main thread; consumers that need Main (UI Toasts) pass it explicitly
+     *  to [launch]. */
+    val appScope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     override fun onCreate() {
         super.onCreate()
@@ -40,25 +51,88 @@ class PlayTranslateApplication : Application() {
         if (BuildConfig.DEBUG) {
             OcrManager.instance.debugLogGroupingEnabled = Prefs(this).debugLogGrouping
         }
+        // Derive the capture backend from the granted permissions (the
+        // accessibility service vs "display over other apps").
+        CaptureBackendResolver.reresolve(this)
         // Build the translation-backend registry once at process start.
         // Backends are stateless or hold pooled HTTP clients that should
         // outlive a single CaptureService instance. The DeepL key is read
         // via closure each call so a Settings change propagates without
         // rebuilding the registry.
+        val sharedPrefs = getSharedPreferences("playtranslate_prefs", Context.MODE_PRIVATE)
         TranslationBackendRegistry.init(
             listOf(
+                GeminiBackend(
+                    keyProvider     = { Prefs(this).geminiApiKey },
+                    enabledProvider = { Prefs(this).geminiEnabled },
+                    modelProvider   = { Prefs(this).geminiModel },
+                    usageTracker    = UsageTracker(sharedPrefs, "gemini"),
+                    cooldownState   = CooldownState(this, "gemini"),
+                ),
+                OpenAiBackend(
+                    id              = "openai",
+                    displayName     = "OpenAI",
+                    priority        = 8,
+                    keyProvider     = { Prefs(this).openaiApiKey },
+                    enabledProvider = { Prefs(this).openaiEnabled },
+                    modelProvider   = { Prefs(this).openaiModel },
+                    // Canonical OpenAI endpoint — no longer user-configurable.
+                    baseUrlProvider = { "https://api.openai.com/v1" },
+                    usageTracker    = UsageTracker(sharedPrefs, "openai"),
+                    filterFineTunes = true,
+                    cooldownState   = CooldownState(this, "openai"),
+                ),
+                OpenAiBackend(
+                    // DeepSeek speaks the OpenAI-compatible chat-completions
+                    // API; the same backend class drives it with a different
+                    // base URL + key + filter setting. priority=9 puts it
+                    // just below OpenAI in the waterfall (typical user adds
+                    // DeepSeek as a cheaper alternative to OpenAI).
+                    id              = "deepseek",
+                    displayName     = "DeepSeek",
+                    priority        = 9,
+                    keyProvider     = { Prefs(this).deepseekApiKey },
+                    enabledProvider = { Prefs(this).deepseekEnabled },
+                    modelProvider   = { Prefs(this).deepseekModel },
+                    baseUrlProvider = { "https://api.deepseek.com/v1" },
+                    // DeepSeek splits its endpoints: /v1/chat/completions
+                    // works (above) but /v1/models returns 200 + empty body.
+                    // The real model-listing endpoint sits at the root.
+                    modelsUrlProvider = { "https://api.deepseek.com" },
+                    usageTracker    = UsageTracker(sharedPrefs, "deepseek"),
+                    // DeepSeek's /models entries all have owned_by="deepseek";
+                    // the OpenAI fine-tune filter would drop the whole catalog.
+                    filterFineTunes = false,
+                    // DeepSeek opts out of v1 cooldown: its 10-min TCP-hold
+                    // makes SocketTimeoutException categorisation ambiguous
+                    // (overload vs dead-key vs slow response). Revisit in v2.
+                    cooldownState   = null,
+                ),
                 DeepLBackend(
                     keyProvider     = { Prefs(this).deeplApiKey },
                     enabledProvider = { Prefs(this).deeplEnabled },
+                    cooldownState   = CooldownState(this, "deepl"),
                 ),
                 LingvaBackend(enabledProvider = { Prefs(this).lingvaEnabled }),
-                TranslateGemmaBackend(
+                GemmaE2BMnnBackend(
                     context         = this,
-                    enabledProvider = { Prefs(this).translateGemmaEnabled },
+                    enabledProvider = { Prefs(this).gemmaE2bEnabled },
                 ),
-                QwenBackend(
+                HyMtBackend(
                     context         = this,
-                    enabledProvider = { Prefs(this).qwenEnabled },
+                    // AND-gate the region check at runtime, not just in the
+                    // Settings UI: a restored backup, a region change after
+                    // install, or any path that leaves hyMtEnabled=true in a
+                    // restricted region would otherwise let the waterfall
+                    // run Hunyuan against the HY Community License.
+                    enabledProvider = {
+                        Prefs(this).hyMtEnabled &&
+                            !RegionPolicy.isHunyuanRestricted(this)
+                    },
+                ),
+                QwenMnnBackend(
+                    context         = this,
+                    enabledProvider = { Prefs(this).qwenMnnEnabled },
                 ),
                 MlKitBackend(),
             )
@@ -72,6 +146,7 @@ class PlayTranslateApplication : Application() {
             override fun onActivityResumed(activity: Activity) {
                 resumedActivity = WeakReference(activity)
                 CaptureService.instance?.reconcileLiveModes("activityResumed=${activity.javaClass.simpleName}")
+                drainPendingForegroundOps(activity)
             }
             override fun onActivityPaused(activity: Activity) {
                 if (resumedActivity?.get() === activity) {
@@ -121,6 +196,34 @@ class PlayTranslateApplication : Application() {
         fun markResumed(activity: Activity) {
             resumedActivity = WeakReference(activity)
         }
+
+        /** Ops queued by [runWithForegroundActivity] when no PlayTranslate
+         *  activity is currently resumed. Drained on the next
+         *  [ActivityLifecycleCallbacks.onActivityResumed]. Main-thread-only;
+         *  no synchronization. */
+        private val pendingForegroundOps = mutableListOf<(Activity) -> Unit>()
+
+        /** Runs [block] with the currently-resumed PlayTranslate activity,
+         *  or defers it until one resumes. Used by [OverlayAlert] /
+         *  [OverlayProgress] so an alert shown before MainActivity has
+         *  reached RESUMED (e.g. fired from onCreate) still attaches once
+         *  the activity is visible — instead of being lost.
+         *
+         *  Main-thread-only. Multiple deferred ops fire in registration
+         *  order on the same resume.
+         */
+        fun runWithForegroundActivity(block: (Activity) -> Unit) {
+            val activity = resumedActivity?.get()
+            if (activity != null) block(activity)
+            else pendingForegroundOps.add(block)
+        }
+
+        private fun drainPendingForegroundOps(activity: Activity) {
+            if (pendingForegroundOps.isEmpty()) return
+            val drained = pendingForegroundOps.toList()
+            pendingForegroundOps.clear()
+            drained.forEach { it(activity) }
+        }
     }
 
     /**
@@ -144,16 +247,16 @@ class PlayTranslateApplication : Application() {
         if (BuildConfig.DEBUG) return
         if (level >= ComponentCallbacks2.TRIM_MEMORY_COMPLETE) {
             OcrManager.instance.releaseAll()
-            // Drop the on-device LLM model + KV cache / scratch (~300-400 MB
-            // of real allocations on top of mmap'd weights). At
+            // Drop the on-device LLM model + KV cache / scratch (E2B's working
+            // set is ~3.3 GB on Thor; Qwen-MNN's is ~1 GB). At
             // TRIM_MEMORY_COMPLETE we're at the top of the LRU kill list;
             // freeing now might defer the kill, and if it doesn't we lose
-            // nothing. Mutex-serialized inside [LlamaTranslator.unloadModel]
+            // nothing. Mutex-serialized inside [MnnTranslator.unloadModel]
             // so it can't race an in-flight translate(). Async because the
             // engine's cleanUp() does runBlocking on its own dispatcher and
             // we don't want to ANR the main thread that delivered onTrimMemory.
             appScope.launch {
-                LlamaTranslator.getInstance(this@PlayTranslateApplication).unloadModel()
+                MnnTranslator.getInstance(this@PlayTranslateApplication).unloadModel()
             }
         }
     }

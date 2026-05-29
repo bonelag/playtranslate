@@ -3,17 +3,18 @@ package com.playtranslate.ui
 import android.content.DialogInterface
 import android.os.Bundle
 import android.view.WindowManager
-import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
-import com.playtranslate.AnkiManager
 import com.playtranslate.Prefs
-import com.playtranslate.R
 import com.playtranslate.language.SourceLangId
 
 /**
- * Lightweight activity that hosts [WordAnkiReviewSheet] when launched from
- * the floating overlay popup. Separate from MainActivity so that pressing
- * back finishes only this activity — without affecting the floating icon.
+ * Opaque activity that hosts [WordAnkiReviewSheet]. Separate from
+ * MainActivity so that pressing back finishes only this activity — without
+ * affecting the floating icon.
+ *
+ * Reached only through [AnkiPermissionActivity], which guarantees the
+ * AnkiDroid permission is held before forwarding here — so this activity
+ * just builds the review sheet from the launch intent.
  */
 class WordAnkiReviewActivity : AppCompatActivity() {
 
@@ -24,6 +25,10 @@ class WordAnkiReviewActivity : AppCompatActivity() {
         // Hide our own UI from accessibility screenshots (see MainActivity
         // for the full rationale — prevents OCR feedback loop in multi-window).
         window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
+
+        // Register before any early-return so [finishCurrentIfAny] can
+        // reach this instance even after a saved-state restore.
+        tracker.bind(this)
 
         if (savedInstanceState != null) {
             // Sheet is already restored by the FragmentManager — attach dismiss listener
@@ -42,21 +47,6 @@ class WordAnkiReviewActivity : AppCompatActivity() {
         val sentenceTranslation = intent.getStringExtra(EXTRA_SENTENCE_TRANSLATION)
         val sourceLangId = SourceLangId.fromCode(intent.getStringExtra(EXTRA_SOURCE_LANG))
             ?: Prefs(applicationContext).sourceLangId
-
-        if (!AnkiManager(this).hasPermission()) {
-            AlertDialog.Builder(this)
-                .setTitle(R.string.anki_permission_rationale_title)
-                .setMessage(R.string.anki_permission_rationale_message)
-                .setPositiveButton(R.string.btn_continue) { _, _ ->
-                    androidx.core.app.ActivityCompat.requestPermissions(
-                        this, arrayOf(AnkiManager.PERMISSION), 0
-                    )
-                }
-                .setNegativeButton(android.R.string.cancel) { _, _ -> finish() }
-                .setOnCancelListener { finish() }
-                .show()
-            return
-        }
 
         // Read word results from cache if sentence context matches
         val cachedWordResults = if (sentenceOriginal != null
@@ -86,11 +76,23 @@ class WordAnkiReviewActivity : AppCompatActivity() {
         sheet.show(supportFragmentManager, WordAnkiReviewSheet.TAG)
     }
 
+    override fun onDestroy() {
+        tracker.unbind(this)
+        super.onDestroy()
+    }
+
     private fun applyTheme() {
         com.playtranslate.applyTheme(this)
     }
 
     companion object {
+        /** See [CurrentActivityTracker] — the drag-flow launch path calls
+         *  [finishCurrentIfAny] to dismiss the previous sheet before
+         *  starting a new one, so MULTIPLE_TASK doesn't leave the old
+         *  sheet orphaned in a hidden task. */
+        private val tracker = CurrentActivityTracker<WordAnkiReviewActivity>()
+        fun finishCurrentIfAny() = tracker.finishCurrent()
+
         const val EXTRA_WORD = "extra_word"
         const val EXTRA_READING = "extra_reading"
         const val EXTRA_POS = "extra_pos"

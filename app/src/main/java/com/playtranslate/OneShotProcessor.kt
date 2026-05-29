@@ -3,7 +3,7 @@ package com.playtranslate
 import android.graphics.Bitmap
 import android.text.TextPaint
 import com.playtranslate.language.SourceLanguageEngine
-import com.playtranslate.ui.TranslationOverlayView
+import com.playtranslate.ui.TextBox
 
 /**
  * Builds overlay boxes from a single OCR result.
@@ -16,8 +16,8 @@ interface OneShotProcessor {
         raw: Bitmap,
         cropLeft: Int, cropTop: Int,
         screenshotW: Int, screenshotH: Int,
-        showOverlay: (List<TranslationOverlayView.TextBox>) -> Unit
-    ): List<TranslationOverlayView.TextBox>
+        showOverlay: (List<TextBox>) -> Unit
+    ): List<TextBox>
 }
 
 /** Builds furigana/pinyin reading boxes. Instant — no network, no shimmer. */
@@ -30,23 +30,23 @@ class FuriganaOneShotProcessor(
         raw: Bitmap,
         cropLeft: Int, cropTop: Int,
         screenshotW: Int, screenshotH: Int,
-        showOverlay: (List<TranslationOverlayView.TextBox>) -> Unit
-    ): List<TranslationOverlayView.TextBox> {
+        showOverlay: (List<TextBox>) -> Unit
+    ): List<TextBox> {
         return OverlayToolkit.buildFuriganaBoxes(ocrResult, engine, furiganaPaint)
     }
 }
 
 /** Builds color-matched translation overlay boxes. Shows shimmer while translating. */
-class TranslationOneShotProcessor(
-    private val translateFn: suspend (List<String>) -> List<Pair<String, String?>>
+internal class TranslationOneShotProcessor(
+    private val translateFn: suspend (List<String>) -> List<CaptureService.GroupTranslation>
 ) : OneShotProcessor {
     override suspend fun buildBoxes(
         ocrResult: OcrManager.OcrResult,
         raw: Bitmap,
         cropLeft: Int, cropTop: Int,
         screenshotW: Int, screenshotH: Int,
-        showOverlay: (List<TranslationOverlayView.TextBox>) -> Unit
-    ): List<TranslationOverlayView.TextBox> {
+        showOverlay: (List<TextBox>) -> Unit
+    ): List<TextBox> {
         // Color sample from scaled reference
         val colorScale = 4
         val colorRef = Bitmap.createScaledBitmap(
@@ -69,7 +69,7 @@ class TranslationOneShotProcessor(
             val lineCount = ocrResult.groupLineCounts.getOrElse(idx) { 1 }
             val orient = ocrResult.groupOrientations.getOrElse(idx) { com.playtranslate.language.TextOrientation.HORIZONTAL }
             val align = ocrResult.groupAlignments.getOrElse(idx) { com.playtranslate.language.TextAlignment.LEFT }
-            TranslationOverlayView.TextBox("", bounds, bgColor, textColor, lineCount, orientation = orient, alignment = align)
+            TextBox("", bounds, bgColor, textColor, lineCount, orientation = orient, alignment = align)
         }
         showOverlay(placeholders)
 
@@ -79,7 +79,7 @@ class TranslationOneShotProcessor(
         // Build final boxes with translated text
         return if (ocrResult.groupBounds.size == perGroup.size) {
             perGroup.zip(placeholders).map { (tr, ph) ->
-                ph.copy(translatedText = tr.first)
+                ph.copy(translatedText = tr.text)
             }
         } else placeholders
     }

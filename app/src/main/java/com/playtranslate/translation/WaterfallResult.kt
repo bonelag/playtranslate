@@ -9,13 +9,20 @@ package com.playtranslate.translation
  * backend on recovery).
  *
  * [displacedLlmId] is the [BackendId] of the first on-device LLM that
- * threw [com.playtranslate.translation.translategemma.TranslateGemmaTransientException]
+ * threw [com.playtranslate.translation.llm.OnDeviceLlmTransientException]
  * on this call (typically a low-availMem fall-through during translate).
  * Non-null means "the user's preferred on-device LLM couldn't run; we
  * fell through to a lower-priority backend." Callers should skip caching
  * the result so the next call can re-attempt the preferred LLM once
  * memory pressure relaxes; without this, a low-quality fallback output
  * outlasts the pressure window.
+ *
+ * Online-backend cooldowns (rate-limit / billing / quota) don't need
+ * an analogous per-result flag — the cache invalidates naturally
+ * because [TranslationBackendRegistry.preferredOnlineId] excludes
+ * cooled-down backends, so the cache's preferred-backend reconcile
+ * step (see [com.playtranslate.TranslationCache.reconcilePreferredBackend])
+ * drops the old entries whenever a cooldown is entered or exited.
  */
 data class WaterfallResult(
     val text: String,

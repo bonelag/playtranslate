@@ -88,12 +88,13 @@ class AnkiCardTypeMapperTest {
         // non-empty per send).
         assertEquals(ContentSource.VOCABULARY_CARD_FLAG,     mapping["IsWordAndSentenceCard"])
         assertEquals(ContentSource.SENTENCE_CARD_FLAG,       mapping["IsSentenceCard"])
-        // Audio, alternative-definition slots, the OTHER state flags
+        // Audio fields carry PT-synthesized TTS.
+        assertEquals(ContentSource.WORD_AUDIO,     mapping["ExpressionAudio"])
+        assertEquals(ContentSource.SENTENCE_AUDIO, mapping["SentenceAudio"])
+        // Alternative-definition slots, the OTHER state flags
         // (IsClickCard / IsAudioCard), pitch — none of which we produce
         // or want to auto-populate — stay null (treated as
         // ContentSource.NONE by the dialog).
-        assertEquals(null, mapping["ExpressionAudio"])
-        assertEquals(null, mapping["SentenceAudio"])
         assertEquals(null, mapping["Glossary"])
         assertEquals(null, mapping["IsClickCard"])
         assertEquals(null, mapping["IsAudioCard"])
@@ -141,11 +142,12 @@ class AnkiCardTypeMapperTest {
         // condition inside the builder.
         assertEquals(ContentSource.SENTENCE_CARD_FLAG,          mapping["IsSentenceCard"])
         assertEquals(ContentSource.TARGETED_SENTENCE_CARD_FLAG, mapping["IsTargetedSentenceCard"])
-        // Audio, secondary definition slots, user-preference flags,
-        // pre-stylized frequency / pitch HTML — none of which PT
-        // produces or auto-populates — stay unmapped.
-        assertEquals(null, mapping["WordAudio"])
-        assertEquals(null, mapping["SentenceAudio"])
+        // Audio fields carry PT-synthesized TTS.
+        assertEquals(ContentSource.WORD_AUDIO,     mapping["WordAudio"])
+        assertEquals(ContentSource.SENTENCE_AUDIO, mapping["SentenceAudio"])
+        // Secondary definition slots, user-preference flags, pre-stylized
+        // frequency / pitch HTML — none of which PT produces or
+        // auto-populates — stay unmapped.
         assertEquals(null, mapping["SecondaryDefinition"])
         assertEquals(null, mapping["IsHoverCard"])
         assertEquals(null, mapping["IsClickCard"])
@@ -185,11 +187,12 @@ class AnkiCardTypeMapperTest {
         assertEquals(ContentSource.PICTURE,               mapping["Screenshot"])
         assertEquals(ContentSource.EXAMPLE_SENTENCES,     mapping["Example Sentences"])
         // Is Vocabulary Card now wired to the mode-aware vocab flag —
-        // fires "x" on word sends, empty on sentence sends. Is Audio
-        // Card stays unmapped (we don't produce audio).
+        // fires "x" on word sends, empty on sentence sends.
         assertEquals(ContentSource.VOCABULARY_CARD_FLAG, mapping["Is Vocabulary Card"])
-        assertEquals(null, mapping["Sentence Audio"])
-        assertEquals(null, mapping["Word Audio"])
+        // Word/Sentence Audio carry PT-synthesized TTS. Is Audio Card
+        // stays unmapped — it's a state flag, not a content slot.
+        assertEquals(ContentSource.SENTENCE_AUDIO, mapping["Sentence Audio"])
+        assertEquals(ContentSource.WORD_AUDIO, mapping["Word Audio"])
         assertEquals(null, mapping["Images"])
         assertEquals(null, mapping["Is Audio Card"])
     }
@@ -219,6 +222,25 @@ class AnkiCardTypeMapperTest {
         val m = model("Migaku Lapis Hybrid", MIGAKU_FIELDS)
         val mapping = AnkiCardTypeMapper.defaultsForModel(m, CardMode.SENTENCE)
         assertEquals(ContentSource.SENTENCE_FURIGANA, mapping["Sentence"])
+    }
+
+    // ─── Audio field defaults ────────────────────────────────────────────
+    // AUDIO_FIELD_DEFAULTS is the field-name → source table the v2.1.0→
+    // v2.2.0 prefs migration (Prefs.migrateAnkiAudioFieldMappings) uses
+    // to back-fill audio fields. It is derived from the per-template
+    // defaults, so this pins the exact result of that derivation.
+
+    @Test fun `AUDIO_FIELD_DEFAULTS exposes every template audio field`() {
+        assertEquals(
+            mapOf(
+                "ExpressionAudio" to ContentSource.WORD_AUDIO,      // Lapis
+                "SentenceAudio"   to ContentSource.SENTENCE_AUDIO,  // Lapis + JPMN
+                "WordAudio"       to ContentSource.WORD_AUDIO,      // JPMN
+                "Word Audio"      to ContentSource.WORD_AUDIO,      // Migaku
+                "Sentence Audio"  to ContentSource.SENTENCE_AUDIO,  // Migaku
+            ),
+            AnkiCardTypeMapper.AUDIO_FIELD_DEFAULTS,
+        )
     }
 
     // ─── Basic shape ─────────────────────────────────────────────────────
@@ -315,6 +337,8 @@ class AnkiCardTypeMapperTest {
         sentenceFurigana = "sent[fur]",
         sentenceTranslation = "trans",
         picture = "pic.jpg",
+        wordAudio = "[sound:word.wav]",
+        sentenceAudio = "[sound:sentence.wav]",
         definition = "<div>def</div>",
         examples = "<div>ex</div>",
         frequency = "★★★",
@@ -432,6 +456,55 @@ class AnkiCardTypeMapperTest {
         assertEquals("x", outputs.sentenceCardFlag)
         assertEquals("x", outputs.targetedSentenceCardFlag)
         assertEquals("x", outputs.alwaysOnMarker)
+    }
+
+    @Test fun `forSentence concatenates per-target-word sound tags into wordAudio`() {
+        // Per-target-word audio is also embedded inline in WORDS_TABLE,
+        // but most structured templates (Lapis / JPMN / Migaku) map
+        // their audio field to ContentSource.WORD_AUDIO — which reads
+        // CardOutputs.wordAudio. If we leave that empty, the user's
+        // audio uploads are silently dropped from the rendered card.
+        // This locks in the routing: every requested word's [sound:…]
+        // tag goes into wordAudio in sentence order.
+        val words = listOf(
+            SentenceAnkiHtmlBuilder.WordEntry("私", "わたし", "I", 0),
+            SentenceAnkiHtmlBuilder.WordEntry("猫", "ねこ", "cat", 0),
+            SentenceAnkiHtmlBuilder.WordEntry("好き", "すき", "fond", 0),
+        )
+        val data = SentenceAnkiContentFragment.CardData(
+            source = "私は猫が好き",
+            target = "I like cats",
+            words = words,
+            selectedWords = setOf("猫", "好き"),
+            screenshotPath = null,
+            sourceLangId = com.playtranslate.language.SourceLangId.JA,
+            targetWordAudioWords = setOf("猫", "好き"),
+        )
+        val outputs = AnkiCardOutputBuilder.forSentence(
+            cardData = data,
+            imageFilename = null,
+            wordAudioFilenames = mapOf("猫" to "cat.mp3", "好き" to "suki.mp3"),
+        )
+        // Sentence-order concatenation: 猫 appears before 好き in the
+        // source, so the tags follow that order regardless of map
+        // iteration.
+        assertEquals("[sound:cat.mp3][sound:suki.mp3]", outputs.wordAudio)
+        // WORDS_TABLE still carries the per-word inline tags too.
+        assertTrue(outputs.wordsTable.contains("[sound:cat.mp3]"))
+        assertTrue(outputs.wordsTable.contains("[sound:suki.mp3]"))
+    }
+
+    @Test fun `forSentence with no wordAudioFilenames leaves wordAudio empty`() {
+        val data = SentenceAnkiContentFragment.CardData(
+            source = "今日はいい天気だ",
+            target = "Nice weather today",
+            words = emptyList(),
+            selectedWords = setOf("天気"),
+            screenshotPath = null,
+            sourceLangId = com.playtranslate.language.SourceLangId.JA,
+        )
+        val outputs = AnkiCardOutputBuilder.forSentence(data, imageFilename = null)
+        assertEquals("", outputs.wordAudio)
     }
 
     @Test fun `forSentence without selectedWords leaves targeted flag empty`() {

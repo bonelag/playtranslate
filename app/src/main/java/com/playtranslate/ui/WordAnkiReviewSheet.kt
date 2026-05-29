@@ -21,6 +21,7 @@ import androidx.core.os.bundleOf
 import androidx.fragment.app.DialogFragment
 import androidx.lifecycle.lifecycleScope
 import com.playtranslate.AnkiManager
+import com.playtranslate.CaptureService
 import com.playtranslate.Prefs
 import com.playtranslate.R
 import com.playtranslate.applyAccentOverlay
@@ -52,6 +53,10 @@ class WordAnkiReviewSheet : DialogFragment() {
     private lateinit var toggleHost: FrameLayout
     private var deckSubtitleView: TextView? = null
 
+    /** Controller for the Save button's idle ↔ loading swap. Bound in
+     *  [onViewCreated], cleared in [onDestroyView]. */
+    private var sendButton: AnkiSendButton? = null
+
     /** Mutable screenshot path. Initialised from [ARG_SCREENSHOT_PATH]
      *  at view creation, set to null when the user removes the photo
      *  via the screenshot card's ×. The Send handler reads from this
@@ -62,6 +67,35 @@ class WordAnkiReviewSheet : DialogFragment() {
     private lateinit var sentenceContainer: FrameLayout
     private lateinit var wordContainer: LinearLayout
     private var definitionsCard: LinearLayout? = null
+    /** Handle to the word-tab Audio card. The switch state is read at
+     *  send time; the Voice row text is refreshed in [onResume]. */
+    private var wordAudioHandle: AnkiAudioToggleHandle? = null
+
+    /** Per-card voice for the word-tab audio cell. Seeded from
+     *  Prefs.ttsVoiceName at buildWordContent time; null after a "Default"
+     *  pick means explicit engine default (not "fall back to pref"). */
+    private var wordTabVoice: String? = null
+
+    /** True while the word-tab pill's picker launch is in flight. The
+     *  sheet doesn't host SentenceAnkiContentFragment's PickTarget
+     *  machinery, so a simple boolean is enough — there's only one
+     *  pill on the word tab. */
+    private var pendingWordTabPick: Boolean = false
+
+    private val voicePickerLauncher = registerForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        val wasOurs = pendingWordTabPick.also { pendingWordTabPick = false }
+        if (!wasOurs) return@registerForActivityResult
+        if (result.resultCode != android.app.Activity.RESULT_OK) return@registerForActivityResult
+        val picked = result.data?.getStringExtra(TtsVoiceActivity.EXTRA_PICKED_VOICE)
+        wordTabVoice = picked
+        // The word tab only ever has one sourceLangId — captured by the
+        // outer onViewCreated; safe to read again from args here.
+        val lang = SourceLangId.fromCode(arguments?.getString(ARG_SOURCE_LANG))
+            ?: SourceLangId.JA
+        wordAudioHandle?.refreshPillLabel(this, lang, picked)
+    }
     /** First child of the Screenshot group inside [wordContainer] (its
      *  header). Tracked so the lazy More examples group can be inserted
      *  immediately above the Screenshot group rather than appended to
@@ -114,6 +148,20 @@ class WordAnkiReviewSheet : DialogFragment() {
      *  resolves). Null = not yet fetched / unsupported / fetch failed. */
     private var tatoebaPairs: List<TatoebaClient.SentencePair>? = null
 
+    /** Number of sentence-translation fetches currently in flight.
+     *  A counter (rather than a boolean) because the user can commit an
+     *  edit to Original while the prior sentence's fetch is still
+     *  running, overlapping two coroutines — a boolean would clear on
+     *  the stale one's finally and hide the indicator while the live
+     *  request is still loading. Drives the left "fields loading"
+     *  indicator on the Save button. */
+    private var translationFillCount: Int = 0
+
+    /** Number of word-lookup fetches currently in flight. Same
+     *  overlap reasoning as [translationFillCount]. */
+    private var wordsFillCount: Int = 0
+
+
     /** Optional listener called when this sheet is dismissed (used by WordAnkiReviewActivity). */
     var onDismissListener: DialogInterface.OnDismissListener? = null
 
@@ -149,9 +197,13 @@ class WordAnkiReviewSheet : DialogFragment() {
         screenshotHeaderView = null
         screenshotCardView = null
         deckSubtitleView = null
+        sendButton = null
         currentScreenshotPath = null
+        wordAudioHandle?.release()
+        wordAudioHandle = null
         super.onDestroyView()
     }
+
 
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
@@ -224,13 +276,52 @@ class WordAnkiReviewSheet : DialogFragment() {
 
         if (hasSentenceData && savedInstanceState == null) {
             val sentenceWords = buildWordEntries(args)
+            // wordsLoading = true tells the fragment "we'll call
+            // applyWords later" so the empty list renders as
+            // "Looking up words…" instead of zero rows. Stays false
+            // when the host already has words in hand.
             val contentFragment = SentenceAnkiContentFragment.newInstance(
                 sentenceOriginal ?: return, sentenceTranslation, sentenceWords,
-                currentScreenshotPath, targetWord = word, sourceLangId = sourceLangId
+                currentScreenshotPath, targetWord = word, sourceLangId = sourceLangId,
+                wordsLoading = sentenceWords.isEmpty(),
             )
             childFragmentManager.beginTransaction()
                 .replace(R.id.wordAnkiSentenceHost, contentFragment, TAG_CONTENT)
                 .commitNow()
+
+            // Fill in any missing pieces asynchronously. Drag → Anki
+            // taps can race the prefetch: a fast tap arrives before
+            // word lookups finish, and the drag flow never runs a
+            // sentence translation. The fragment renders muted
+            // placeholders until these calls land.
+            // (hasSentenceData == (sentenceOriginal != null), so the
+            // outer guard already ensures sentenceOriginal is non-null.)
+            if (sentenceTranslation.isBlank()) {
+                launchTranslationFill(sentenceOriginal)
+            }
+            if (sentenceWords.isEmpty()) {
+                launchWordsFill(sentenceOriginal, word)
+            }
+        }
+
+        // Re-run the translation + words pipeline whenever the user
+        // edits the Original sentence and commits (focus loss / Done).
+        // The fragment has already reset its Translation field and Words
+        // card to a loading state by the time this fires; we just kick
+        // the same fills again. Empty target word: a prior pick may not
+        // exist in the new sentence.
+        //
+        // Wired through getContentFragment() (rather than on the freshly-
+        // created instance inside the `savedInstanceState == null` block)
+        // so a fragment restored after a non-orientation configuration
+        // change (locale / font-scale / etc.) still gets the callback.
+        // Orientation itself is handled by the activity via the
+        // manifest's `configChanges`, so rotation never lands here.
+        if (hasSentenceData) {
+            getContentFragment()?.onOriginalCommitted = { newOriginal ->
+                launchTranslationFill(newOriginal)
+                launchWordsFill(newOriginal, "")
+            }
         }
 
         // Kick off the same dictionary lookup the Word Detail sheet does.
@@ -243,13 +334,19 @@ class WordAnkiReviewSheet : DialogFragment() {
             runDictionaryLookup(word, reading.takeIf { it.isNotBlank() }, sourceLangId)
         }
 
-        view.findViewById<View>(R.id.btnWordAnkiSend).setOnClickListener { btn ->
+        val sendBtn = view.findViewById<FrameLayout>(R.id.btnWordAnkiSend)
+        sendButton = AnkiSendButton(sendBtn)
+        // launchTranslationFill / launchWordsFill above incremented
+        // the in-flight counters before sendButton existed; apply them
+        // now so the left indicator reflects current state.
+        refreshFillingPendingIndicator()
+        sendBtn.setOnClickListener {
             val deckId = Prefs(requireContext()).ankiDeckId
             if (deckId < 0L) {
                 Toast.makeText(requireContext(), getString(R.string.anki_no_deck_selected), Toast.LENGTH_SHORT).show()
                 return@setOnClickListener
             }
-            btn.isEnabled = false
+            sendButton?.setLoading(true)
             viewLifecycleOwner.lifecycleScope.launch {
                 if (isSentenceMode) {
                     sendSentenceToAnki(deckId)
@@ -261,7 +358,6 @@ class WordAnkiReviewSheet : DialogFragment() {
                         fallbackDefinition, freqScore, deckId, currentScreenshotPath,
                         sourceLangId)
                 }
-                btn.isEnabled = true
             }
         }
     }
@@ -383,6 +479,28 @@ class WordAnkiReviewSheet : DialogFragment() {
             })
         }
         parent.addView(header)
+
+        // ── Audio group: TTS of the headword, attached as [sound:]. ──
+        // Per-cell voice mirrors the sentence sheet's pattern. Seed
+        // wordTabVoice from the global pref AT view-create so the
+        // picker's "Default" pick (null) means engine default, not
+        // "look up the pref again".
+        wordTabVoice = Prefs(ctx).ttsVoiceName(sourceLangId)
+        wordAudioHandle = addAnkiAudioSection(
+            parent = parent,
+            lang = sourceLangId,
+            rowLabel = word,
+            previewText = { word },
+            initialChecked = Prefs(ctx).ankiWordAudioEnabled,
+            onCheckedChange = { Prefs(ctx).ankiWordAudioEnabled = it },
+            voiceOverride = { wordTabVoice },
+            onVoicePillTap = {
+                pendingWordTabPick = true
+                voicePickerLauncher.launch(
+                    TtsVoiceActivity.intent(ctx, sourceLangId, wordTabVoice),
+                )
+            },
+        )
 
         // ── Definitions group: starts with a loading placeholder. The
         //    async lookup in onViewCreated replaces it with per-sense
@@ -1135,6 +1253,75 @@ class WordAnkiReviewSheet : DialogFragment() {
     private fun getContentFragment(): SentenceAnkiContentFragment? =
         childFragmentManager.findFragmentByTag(TAG_CONTENT) as? SentenceAnkiContentFragment
 
+    /** Fetch a sentence translation via the on-demand backend waterfall and
+     *  push the result into the embedded sentence fragment. Routes through
+     *  [LastSentenceCache.awaitOrStartTranslation] so a second open for the
+     *  same sentence joins the in-flight job instead of re-firing.
+     *
+     *  Uses [CaptureService.instance] directly — the sheet is only ever
+     *  reached from the in-process drag flow (AccessibilityService →
+     *  AnkiPermissionActivity → WordAnkiReviewActivity), so the service is
+     *  guaranteed alive. A null instance is treated as a translation
+     *  failure and surfaces the "Couldn't translate" placeholder. */
+    private fun launchTranslationFill(sentence: String) {
+        translationFillCount++
+        refreshFillingPendingIndicator()
+        viewLifecycleOwner.lifecycleScope.launch {
+            try {
+                val outcome = LastSentenceCache.awaitOrStartTranslation(sentence) { text ->
+                    val svc = CaptureService.instance
+                        ?: error("CaptureService unavailable")
+                    val gt = svc.translateOnce(text)
+                    LastSentenceCache.TranslationOutcome(gt.text, gt.backendDisplayName)
+                }
+                getContentFragment()?.applyTranslation(sentence, outcome?.text)
+            } finally {
+                translationFillCount--
+                refreshFillingPendingIndicator()
+            }
+        }
+    }
+
+    /** Fetch the sentence's per-word breakdown and push it into the
+     *  embedded sentence fragment. Joins any in-flight word-lookup
+     *  started by the drag controller's prefetch.
+     *
+     *  The payload's surfaces map is paired with its results at the
+     *  point the deferred completed — reading
+     *  [LastSentenceCache.surfaceForms] separately would race with
+     *  live mode rotating the cache to a different sentence and
+     *  attach the wrong inflected forms to this sheet's words. */
+    private fun launchWordsFill(sentence: String, targetWord: String) {
+        wordsFillCount++
+        refreshFillingPendingIndicator()
+        viewLifecycleOwner.lifecycleScope.launch {
+            try {
+                val payload = LastSentenceCache.awaitOrStartWordLookups(
+                    requireContext().applicationContext,
+                    sentence,
+                )
+                val entries = payload.results.map { (w, triple) ->
+                    SentenceAnkiHtmlBuilder.WordEntry(
+                        w, triple.first, triple.second, triple.third,
+                        surfaceForm = payload.surfaces[w].orEmpty(),
+                    )
+                }
+                getContentFragment()?.applyWords(sentence, entries, targetWord)
+            } finally {
+                wordsFillCount--
+                refreshFillingPendingIndicator()
+            }
+        }
+    }
+
+    /** Drives the small left spinner on the Save button. Visible whenever
+     *  either of the async sentence-fill jobs is still running. Safe to
+     *  call after [onDestroyView] — [sendButton] is null and the call
+     *  becomes a no-op. */
+    private fun refreshFillingPendingIndicator() {
+        sendButton?.setFillingPending(translationFillCount > 0 || wordsFillCount > 0)
+    }
+
     private fun buildWordEntries(args: Bundle): List<SentenceAnkiHtmlBuilder.WordEntry> {
         val wordArr    = args.getStringArray(ARG_SENTENCE_WORDS) ?: return emptyList()
         val readingArr = args.getStringArray(ARG_SENTENCE_READINGS) ?: emptyArray()
@@ -1159,115 +1346,51 @@ class WordAnkiReviewSheet : DialogFragment() {
         freqScore: Int, deckId: Long, screenshotPath: String?,
         sourceLangId: SourceLangId,
     ) {
-        val result = dispatchSendToAnki(
-            deckId = deckId,
-            mode = CardMode.WORD,
+        // The legacy back's definition body uses classStyler (its
+        // surrounding <style> block carries the gl-* CSS). The
+        // structured path uses inlineStyler since the structured
+        // outputs ship with no <style>. Build both eagerly so the
+        // pipeline can hand each to the right builder.
+        val classDefinitionHtml = buildString {
+            val entry = resolvedEntry
+            if (entry != null) {
+                appendSensesHtml(entry, fallbackDefinition, classStyler)
+                appendMoreExamplesHtml(classStyler)
+            } else {
+                append(WordAnkiHtmlBuilder.wrapFlatDefinitionHtml(fallbackDefinition))
+            }
+        }
+        val input = WordSendInput(
+            word = word,
+            reading = reading,
+            pos = pos,
+            freqScore = freqScore,
+            sourceLangId = sourceLangId,
             screenshotPath = screenshotPath,
-            legacyFront = { buildWordFrontHtml(word) },
-            legacyBack = { imageFilename ->
-                buildWordBackHtml(word, reading, pos, fallbackDefinition,
-                    freqScore, imageFilename)
-            },
-            structured = { imageFilename ->
-                AnkiCardOutputBuilder.forWord(
-                    word = word,
-                    reading = reading,
-                    pos = pos,
-                    definitionHtml = buildWordDefinitionHtml(inlineStyler),
-                    freqScore = freqScore,
-                    imageFilename = imageFilename,
-                    examplesHtml = buildExamplesHtml(inlineStyler),
-                    sourceLangId = sourceLangId,
-                )
-            },
+            includeWordAudio = wordAudioHandle?.switch?.isChecked == true,
+            // wordTabVoice carries the per-cell pick (null = the user's
+            // explicit "Default" choice, which is exactly what
+            // TtsEngine takes null to mean too).
+            wordVoice = wordTabVoice,
+            classDefinitionHtml = classDefinitionHtml,
+            inlineDefinitionHtml = buildWordDefinitionHtml(inlineStyler),
+            inlineExamplesHtml = buildExamplesHtml(inlineStyler),
         )
-        when (result) {
-            AnkiSendResult.Success -> {
-                Toast.makeText(requireContext(), R.string.anki_added, Toast.LENGTH_SHORT).show()
+        // Fragment receiver so NeedsMapping opens the mapping dialog
+        // (Context.sendWordCard would skip it).
+        val result = sendWordCard(input, deckId)
+        val audioMissing = (result as? AnkiSendResult.Success)?.audioDropped == true
+        applyAnkiSendResult(
+            result,
+            onSuccess = {
+                if (audioMissing) {
+                    Toast.makeText(requireContext(), R.string.anki_added_no_audio,
+                        Toast.LENGTH_SHORT).show()
+                }
                 dismiss()
-            }
-            AnkiSendResult.Failed -> {
-                Toast.makeText(requireContext(), R.string.anki_failed, Toast.LENGTH_SHORT).show()
-            }
-            AnkiSendResult.NeedsMapping -> { /* dispatcher already handled */ }
-        }
-    }
-
-    private fun buildWordFrontHtml(word: String): String = buildString {
-        append("<style>")
-        append("body{margin:0;padding:0;}")
-        append("</style>")
-        append("<div class=\"gl-front\" style=\"text-align:center;font-size:2.2em;padding:32px 16px;\">")
-        append(htmlEscape(word))
-        append("</div>")
-    }
-
-    /**
-     * Renders the back of the Anki word card. Prefers the resolved
-     * dictionary entry (per-sense glosses + accent-rail example blocks
-     * + Tatoeba "More examples"), filtered by the [removedSenses],
-     * [removedExamples], and [removedTatoebaIdx] sets so what the user
-     * sees on screen is exactly what lands on the card. Falls back to
-     * the flat [fallbackDefinition] string when no entry is resolved.
-     */
-    private fun buildWordBackHtml(
-        word: String, reading: String, pos: String,
-        fallbackDefinition: String, freqScore: Int, imageFilename: String?,
-    ): String = buildString {
-        append("<style>")
-        append("body{visibility:hidden!important;white-space:normal!important;}")
-        append(".gl-front{display:none!important;}")
-        append("#answer{display:none!important;}")
-        append(".gl-back{visibility:visible!important;}")
-        append(".gl-sense{margin:14px 4px;}")
-        append(".gl-pos{font-size:0.78em;letter-spacing:0.08em;color:#888;text-transform:uppercase;}")
-        append(".gl-gloss{font-size:1.1em;margin-top:4px;}")
-        append(".gl-misc{font-size:0.85em;color:#888;font-style:italic;margin-top:2px;}")
-        append(".gl-ex{margin:8px 0 0 8px;padding-left:10px;border-left:2px solid #6cd1c2;}")
-        append(".gl-ex-tr{font-size:0.92em;color:#888;margin-top:2px;}")
-        append(".gl-section{font-size:0.78em;letter-spacing:0.08em;color:#888;text-transform:uppercase;margin:18px 4px 6px;}")
-        append("</style>")
-        append("<div class=\"gl-back\">")
-        if (imageFilename != null) {
-            append("<div style=\"text-align:center;margin:12px 0;\">")
-            append("<img src=\"")
-            append(htmlEscape(imageFilename))
-            append("\" style=\"max-width:100%;border-radius:6px;\">")
-            append("</div>")
-        }
-        append("<div style=\"text-align:center;font-size:1.8em;padding:12px 4px;\">")
-        append(htmlEscape(word))
-        append("</div>")
-        if (reading.isNotEmpty()) {
-            append("<div style=\"text-align:center;font-size:1.1em;color:#888;\">")
-            append(htmlEscape(reading))
-            append("</div>")
-        }
-        if (pos.isNotEmpty()) {
-            append("<div style=\"text-align:center;font-size:0.85em;color:#888;\">")
-            append(htmlEscape(pos))
-            append("</div>")
-        }
-        if (freqScore > 0) {
-            // starsString emits only ★ glyphs — safe.
-            val stars = SentenceAnkiHtmlBuilder.starsString(freqScore)
-            append("<div style=\"text-align:center;font-size:0.9em;color:#888;margin-top:4px;\">$stars</div>")
-        }
-        append("<div style=\"margin-bottom:12px;\"></div>")
-        append("<hr>")
-
-        val entry = resolvedEntry
-        if (entry != null) {
-            // Legacy v004 path — surrounding <style> block provides the
-            // gl-* CSS, so emit class refs.
-            appendSensesHtml(entry, fallbackDefinition, classStyler)
-            appendMoreExamplesHtml(classStyler)
-        } else {
-            val defHtml = fallbackDefinition.lines().filter { it.isNotBlank() }
-                .joinToString("<br>") { htmlEscape(it.trimStart()) }
-            append("<div style=\"font-size:1.1em;margin:12px 4px;\">$defHtml</div>")
-        }
-        append("</div>")
+            },
+            onRestore = { sendButton?.setLoading(false) },
+        )
     }
 
     /**
@@ -1299,11 +1422,12 @@ class WordAnkiReviewSheet : DialogFragment() {
     /**
      * Builds the per-sense Definition HTML for the structured-path
      * word-card send (DEFINITION ContentSource). Mirrors the legacy
-     * branch logic in [buildWordBackHtml] but emits inline styles (no
-     * surrounding `<style>` block ships in the structured path) via
-     * [inlineStyler]. Honors the same curation state
-     * ([removedSenses] / [removedExamples] / [removedTatoebaIdx]) so
-     * what the user sees on the sheet is what lands on the card.
+     * `classStyler` branch in [sendWordToAnki]'s `classDefinitionHtml`
+     * builder but emits inline styles (no surrounding `<style>` block
+     * ships in the structured path) via [inlineStyler]. Honors the
+     * same curation state ([removedSenses] / [removedExamples] /
+     * [removedTatoebaIdx]) so what the user sees on the sheet is
+     * what lands on the card.
      */
     internal fun buildWordDefinitionHtml(styler: HtmlStyler): String {
         val entry = resolvedEntry
@@ -1464,42 +1588,43 @@ class WordAnkiReviewSheet : DialogFragment() {
     // ── Send: sentence mode ──────────────────────────────────────────────────
 
     private suspend fun sendSentenceToAnki(deckId: Long) {
-        val data = getContentFragment()?.getCardData() ?: return
-        val result = dispatchSendToAnki(
-            deckId = deckId,
-            mode = CardMode.SENTENCE,
+        val content = getContentFragment() ?: run { sendButton?.setLoading(false); return }
+        val data = content.getCardData()
+        val input = SentenceSendInput(
+            original = data.source,
+            translation = data.target,
+            words = data.words,
+            selectedWords = data.selectedWords,
+            sourceLangId = data.sourceLangId,
             screenshotPath = data.screenshotPath,
-            legacyFront = {
-                SentenceAnkiHtmlBuilder.buildFrontHtml(
-                    data.source, data.words, data.selectedWords, data.sourceLangId,
-                )
-            },
-            legacyBack = { imageFilename ->
-                SentenceAnkiHtmlBuilder.buildBackHtml(
-                    data.source, data.target, data.words,
-                    imageFilename, data.selectedWords, data.sourceLangId,
-                )
-            },
-            structured = { imageFilename ->
-                AnkiCardOutputBuilder.forSentence(
-                    cardData = data,
-                    imageFilename = imageFilename,
-                    examplesHtml = buildExamplesHtml(inlineStyler),
-                )
-            },
+            includeSentenceAudio = content.sentenceAudioEnabled,
+            sentenceVoice = data.sentenceVoice,
+            targetWordAudioWords = data.targetWordAudioWords,
+            wordAudioVoices = data.wordAudioVoices,
+            // Word-sheet's sentence tab carries Tatoeba "more examples"
+            // for the structured path. Built with inlineStyler since the
+            // structured outputs have no surrounding <style> block.
+            examplesHtml = buildExamplesHtml(inlineStyler),
         )
-        when (result) {
-            AnkiSendResult.Success -> {
-                Toast.makeText(requireContext(), R.string.anki_added, Toast.LENGTH_SHORT).show()
+        // Fragment receiver so NeedsMapping opens the mapping dialog
+        // (Context.sendSentenceCard would skip it).
+        val result = sendSentenceCard(input, deckId)
+        val success = result as? AnkiSendResult.Success
+        val audioMissing = success?.audioDropped == true
+        val wordAudioMissing = success?.wordAudioDropped == true
+        applyAnkiSendResult(
+            result,
+            onSuccess = {
+                if (audioMissing || wordAudioMissing) {
+                    Toast.makeText(requireContext(), R.string.anki_added_no_audio,
+                        Toast.LENGTH_SHORT).show()
+                }
                 parentFragmentManager.setFragmentResult(
                     AnkiReviewBottomSheet.RESULT_ANKI_ADDED, bundleOf())
                 dismiss()
-            }
-            AnkiSendResult.Failed -> {
-                Toast.makeText(requireContext(), R.string.anki_failed, Toast.LENGTH_SHORT).show()
-            }
-            AnkiSendResult.NeedsMapping -> { /* dispatcher already handled */ }
-        }
+            },
+            onRestore = { sendButton?.setLoading(false) },
+        )
     }
 
     companion object {

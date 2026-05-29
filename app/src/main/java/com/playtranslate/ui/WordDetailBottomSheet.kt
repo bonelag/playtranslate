@@ -1,8 +1,10 @@
 package com.playtranslate.ui
 
 import android.content.Context
+import android.content.res.ColorStateList
 import android.graphics.Color
 import android.graphics.Typeface
+import android.graphics.drawable.GradientDrawable
 import android.os.Bundle
 import android.util.Log
 import android.util.TypedValue
@@ -10,10 +12,12 @@ import android.view.Gravity
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
+import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
+import android.widget.ProgressBar
 import android.widget.TextView
-import androidx.appcompat.app.AlertDialog
+import android.widget.Toast
 import androidx.core.widget.NestedScrollView
 import com.google.android.material.card.MaterialCardView
 import com.playtranslate.themeColor
@@ -40,7 +44,9 @@ import com.playtranslate.model.HanziDetail
 import com.playtranslate.model.KanjiDetail
 import com.playtranslate.model.headwordDisplay
 import com.playtranslate.model.unambiguousFallbackPos
+import com.playtranslate.tts.TtsEngine
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.launch
@@ -112,6 +118,8 @@ class WordDetailBottomSheet : DialogFragment() {
     ): View = inflater.inflate(R.layout.bottom_sheet_word_detail, container, false)
 
     override fun onDestroyView() {
+        speakJob?.cancel()
+        TtsEngine.stop()
         moreExamplesGroup = null
         moreExamplesBody = null
         bigHeadwordView = null
@@ -149,7 +157,9 @@ class WordDetailBottomSheet : DialogFragment() {
 
         val content     = view.findViewById<LinearLayout>(R.id.detailContent)
         val scrollView  = view.findViewById<NestedScrollView>(R.id.detailScrollView)
-        val btnAddAnki  = view.findViewById<View>(R.id.btnWordAddToAnki)
+        // FrameLayout so PillAnkiButton can overlay a centered spinner
+        // during one-tap sends.
+        val btnAddAnki  = view.findViewById<FrameLayout>(R.id.btnWordAddToAnki)
         val tvHeadword  = view.findViewById<TextView>(R.id.tvDetailHeadword)
         // The detailContent paddingTop math below reserves the toolbar's
         // 56dp slot so the headword overlay can shrink into it on scroll.
@@ -194,17 +204,17 @@ class WordDetailBottomSheet : DialogFragment() {
             ).apply {
                 marginStart = dp(4)
                 topMargin = dp(12)
-                bottomMargin = dp(8)
+                bottomMargin = dp(2)
             }
             content.addView(tvHeadword, 0)
         } else {
             // Reserve detailContent paddingTop equal to the overlay's
-            // measured height + 8dp gap, so the reading/badges/definitions
+            // measured height + 2dp gap, so the reading/badges/definitions
             // sit just below the headword regardless of whether it wraps to
             // multiple lines. setText triggers requestLayout which fires
             // this listener, so the padding tracks text changes.
             tvHeadword.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ ->
-                val target = (tvHeadword.bottom - toolbarSlotPx) + dp(8)
+                val target = (tvHeadword.bottom - toolbarSlotPx) + dp(2)
                 if (content.paddingTop != target && target > 0) {
                     content.setPadding(
                         content.paddingStart,
@@ -263,12 +273,24 @@ class WordDetailBottomSheet : DialogFragment() {
 
             val ankiManager = AnkiManager(requireContext())
             btnAddAnki.visibility = View.VISIBLE
+            val pill = PillAnkiButton(btnAddAnki)
+            // Tap opens the editable review sheet (default action).
+            // Long-press is the headless one-tap shortcut — documented
+            // by the pro-tip footer in Settings → Anki.
             btnAddAnki.setOnClickListener {
                 if (!ankiManager.isAnkiDroidInstalled()) {
-                    showAnkiNotInstalledDialog(requireContext())
+                    showAnkiNotInstalledDialog(requireActivity())
                 } else {
                     openWordAnkiReview(word, primary, screenshotPath, defResult)
                 }
+            }
+            btnAddAnki.setOnLongClickListener {
+                if (!ankiManager.isAnkiDroidInstalled()) {
+                    showAnkiNotInstalledDialog(requireActivity())
+                } else {
+                    oneTapWordFromDetail(pill, word, primary, screenshotPath, defResult)
+                }
+                true
             }
 
             if (targetLangCode != "en") {
@@ -337,22 +359,17 @@ class WordDetailBottomSheet : DialogFragment() {
         }
     }
 
-    private fun openWordAnkiReview(word: String, entry: DictionaryEntry, screenshotPath: String?, defResult: DefinitionResult?) {
-        if (!AnkiManager(requireContext()).hasPermission()) {
-            AlertDialog.Builder(requireContext())
-                .setTitle(R.string.anki_permission_rationale_title)
-                .setMessage(R.string.anki_permission_rationale_message)
-                .setPositiveButton(R.string.btn_continue) { _, _ ->
-                    androidx.core.app.ActivityCompat.requestPermissions(
-                        requireActivity(),
-                        arrayOf(AnkiManager.PERMISSION), 0
-                    )
-                }
-                .setNegativeButton(android.R.string.cancel, null)
-                .show()
-            return
-        }
-
+    /**
+     * Computes the (reading, pos, definition) triple shared by both
+     * the sheet-open path ([openWordAnkiReview]) and the one-tap path
+     * ([oneTapWordFromDetail]). Pulling this out keeps the two paths
+     * in lockstep on which definition the user sees and what lands on
+     * the card.
+     */
+    private fun buildAnkiWordFields(
+        entry: DictionaryEntry,
+        defResult: DefinitionResult?,
+    ): Triple<String, String, String> {
         val reading = entry.headwords.firstOrNull()?.reading
             ?.takeIf { it != entry.headwords.firstOrNull()?.written } ?: ""
 
@@ -393,6 +410,138 @@ class WordDetailBottomSheet : DialogFragment() {
                 }
                 .joinToString("\n")
         }
+        return Triple(reading, pos, definition)
+    }
+
+    /**
+     * One-tap card-send from the word-detail Anki button. Mirrors the
+     * sheet's mode default: when sentence context is available
+     * (host implements [SentenceContextProvider] or args carry
+     * sentence extras), the sheet opens in sentence mode with the
+     * looked-up word as target — one-tap matches that by routing to
+     * the sentence pipeline with `targetWord = word`. Otherwise sends
+     * a word card. Falls back to the sheet on permission gates /
+     * missing deck. NeedsMapping opens the mapping dialog inline.
+     */
+    private fun oneTapWordFromDetail(
+        pill: PillAnkiButton,
+        word: String,
+        entry: DictionaryEntry,
+        screenshotPath: String?,
+        defResult: DefinitionResult?,
+    ) {
+        val ankiManager = AnkiManager(requireContext())
+        if (!ankiManager.hasPermission()) {
+            openWordAnkiReview(word, entry, screenshotPath, defResult)
+            return
+        }
+        val prefs = Prefs(requireContext().applicationContext)
+        if (prefs.ankiDeckId < 0L) {
+            openWordAnkiReview(word, entry, screenshotPath, defResult)
+            return
+        }
+        val sourceLangId = prefs.sourceLangId
+
+        // Read sentence context the same way openWordAnkiReview does
+        // (embedded host activity OR launch-time args). When present,
+        // route to a sentence card with the word as target.
+        val args = arguments
+        val hostContext = (activity as? SentenceContextProvider)?.currentSentenceContext()
+        val sentenceOriginal = hostContext?.original
+            ?: args?.getString(ARG_SENTENCE_ORIGINAL)
+        val sentenceTranslation = hostContext?.translation
+            ?: args?.getString(ARG_SENTENCE_TRANSLATION)
+        // Build a WordsPayload only when both halves come from the
+        // same atomic source (the host's SentenceContext, populated
+        // from a single Settled emission). Args-only fallback has no
+        // surfaces — pass null and let oneTapSendSentence await the
+        // per-sentence cache lookup, which is atomic.
+        val sentenceWordsPayload: LastSentenceCache.WordsPayload? = run {
+            val hostWords = hostContext?.wordResults
+            val hostSurfaces = hostContext?.surfaceForms
+            if (hostWords != null && hostSurfaces != null) {
+                LastSentenceCache.WordsPayload(hostWords, hostSurfaces)
+            } else null
+        }
+
+        pill.setLoading(true)
+        viewLifecycleOwner.lifecycleScope.launch {
+            val result = if (sentenceOriginal != null) {
+                requireContext().oneTapSendSentence(
+                    original = sentenceOriginal,
+                    translation = sentenceTranslation,
+                    wordsPayload = sentenceWordsPayload,
+                    screenshotPath = screenshotPath,
+                    sourceLangId = sourceLangId,
+                    targetWord = word,
+                )
+            } else {
+                val (reading, pos, definition) = buildAnkiWordFields(entry, defResult)
+                requireContext().oneTapSendWord(
+                    word = word,
+                    reading = reading,
+                    pos = pos,
+                    fallbackDefinition = definition,
+                    freqScore = entry.freqScore,
+                    screenshotPath = screenshotPath,
+                    sourceLangId = sourceLangId,
+                )
+            }
+            // CardMode informs the NeedsMapping dialog's defaults; pick
+            // the same mode the user just saw the card go out as.
+            val mode = if (sentenceOriginal != null) CardMode.SENTENCE else CardMode.WORD
+            handleOneTapWordResult(result, pill, mode)
+        }
+    }
+
+    private fun handleOneTapWordResult(
+        result: AnkiSendResult,
+        pill: PillAnkiButton,
+        mode: CardMode,
+    ) {
+        when (result) {
+            is AnkiSendResult.Success -> {
+                val msgRes = if (result.audioDropped || result.wordAudioDropped)
+                    R.string.anki_added_no_audio
+                else
+                    R.string.anki_added_success
+                Toast.makeText(requireContext(), msgRes, Toast.LENGTH_SHORT).show()
+                pill.setLoading(false)
+            }
+            is AnkiSendResult.Failed -> {
+                val ctx = requireContext()
+                OverlayAlert.Builder(requireActivity())
+                    .hideIcon()
+                    .setTitle(getString(R.string.anki_send_failed_title))
+                    .setMessage(getString(result.messageRes))
+                    .addButton(
+                        getString(android.R.string.ok),
+                        ctx.themeColor(R.attr.ptAccent),
+                        ctx.themeColor(R.attr.ptAccentOn),
+                    ) {}
+                    .show()
+                pill.setLoading(false)
+            }
+            is AnkiSendResult.NeedsMapping -> {
+                // Dispatcher already toasted; open the mapping dialog.
+                showAnkiCardTypeMappingDialog(result.model, mode) { _, _ -> }
+                pill.setLoading(false)
+            }
+        }
+    }
+
+    private fun openWordAnkiReview(word: String, entry: DictionaryEntry, screenshotPath: String?, defResult: DefinitionResult?) {
+        if (!AnkiManager(requireContext()).hasPermission()) {
+            showAnkiPermissionRationaleDialog(requireActivity()) {
+                androidx.core.app.ActivityCompat.requestPermissions(
+                    requireActivity(),
+                    arrayOf(AnkiManager.PERMISSION), 0
+                )
+            }
+            return
+        }
+
+        val (reading, pos, definition) = buildAnkiWordFields(entry, defResult)
 
         val args = arguments
         // Embedded mode (drag-flow Sentence/Word tab): the host activity
@@ -442,6 +591,10 @@ class WordDetailBottomSheet : DialogFragment() {
      *  scroll listener drives its translationY + scale so it shrinks
      *  down into the toolbar's empty left slot as the user scrolls. */
     private var bigHeadwordView: TextView? = null
+
+    /** In-flight TTS request from the header speak chip — cancelled when the
+     *  view is torn down so a tapped pronunciation doesn't outlive the sheet. */
+    private var speakJob: Job? = null
 
     private suspend fun buildContent(
         content: LinearLayout,
@@ -664,16 +817,17 @@ class WordDetailBottomSheet : DialogFragment() {
     // ── Section builders ──────────────────────────────────────────────────
 
     /**
-     * Reading + badge row that lives in the scroll content beneath the
-     * overlay headword. The overlay TextView itself is set up in
-     * [onViewCreated] (typeface, pivot, scroll listener); here we just
-     * rewrite its text to the canonical headword from the resolved
-     * entry and emit the reading + Common pill + stars row.
+     * Reading + speak chip + badge block that lives in the scroll content
+     * beneath the overlay headword. The overlay TextView itself is set up
+     * in [onViewCreated] (typeface, pivot, scroll listener); here we just
+     * rewrite its text to the canonical headword from the resolved entry
+     * and emit the reading line (with its speak chip) plus the Common pill
+     * and stars badge row.
      */
     private fun addHeaderBlock(
         parent: LinearLayout,
         entry: DictionaryEntry,
-        @Suppress("UNUSED_PARAMETER") sourceLangId: SourceLangId,
+        sourceLangId: SourceLangId,
         queriedWord: String,
     ) {
         val ctx = requireContext()
@@ -693,21 +847,32 @@ class WordDetailBottomSheet : DialogFragment() {
 
         val isCommon = entry.isCommon == true
         val freqStars = entry.freqScore.coerceIn(0, 5)
-        if (reading == null && !isCommon && freqStars == 0) return
 
         val block = LinearLayout(ctx).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(4), 0, dp(4), dp(12))
+            setPadding(dp(4), 0, dp(4), dp(8))
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
             )
         }
 
+        // Reading line with the speak chip placed just after the reading.
+        // The row is emitted even without a reading — the chip speaks the
+        // word regardless of script — leaving the chip flush left in that
+        // case.
+        val readingRow = LinearLayout(ctx).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            )
+        }
         if (reading != null) {
-            block.addView(TextView(ctx).apply {
+            readingRow.addView(TextView(ctx).apply {
                 text = reading
-                textSize = 16f
+                textSize = 18f
                 setTextColor(ctx.themeColor(R.attr.ptTextMuted))
                 layoutParams = LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.WRAP_CONTENT,
@@ -715,6 +880,8 @@ class WordDetailBottomSheet : DialogFragment() {
                 )
             })
         }
+        readingRow.addView(buildSpeakChip(written, sourceLangId, leading = reading == null))
+        block.addView(readingRow)
 
         if (isCommon || freqStars > 0) {
             val badgeRow = LinearLayout(ctx).apply {
@@ -723,7 +890,7 @@ class WordDetailBottomSheet : DialogFragment() {
                 layoutParams = LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.MATCH_PARENT,
                     LinearLayout.LayoutParams.WRAP_CONTENT
-                ).also { it.topMargin = if (reading != null) dp(12) else 0 }
+                ).also { it.topMargin = dp(8) }
             }
             if (isCommon) {
                 badgeRow.addView(buildCommonPill())
@@ -735,6 +902,92 @@ class WordDetailBottomSheet : DialogFragment() {
         }
 
         parent.addView(block)
+    }
+
+    /**
+     * Speak chip for the header reading row. Tapping it reads [word] aloud
+     * through [TtsEngine], swapping the icon for an indeterminate spinner
+     * while the request is in flight. A bordered circle roughly the height
+     * of the reading line sits inside a larger 44dp tap target.
+     *
+     * When [leading] — the chip starts the row, with no reading before it —
+     * the circle is pinned to the start edge so it lines up under the
+     * headword; otherwise it is centred in the tap target and offset a
+     * little past the reading.
+     */
+    private fun buildSpeakChip(word: String, lang: SourceLangId, leading: Boolean): View {
+        val ctx = requireContext()
+        val muted = ctx.themeColor(R.attr.ptTextMuted)
+        val tint = ColorStateList.valueOf(muted)
+        val icon = ImageView(ctx).apply {
+            setImageResource(R.drawable.ic_lens_speak)
+            imageTintList = tint
+            scaleType = ImageView.ScaleType.CENTER_INSIDE
+            layoutParams = FrameLayout.LayoutParams(dp(16), dp(16), Gravity.CENTER)
+        }
+        val spinner = ProgressBar(ctx, null, android.R.attr.progressBarStyleSmall).apply {
+            isIndeterminate = true
+            indeterminateTintList = tint
+            layoutParams = FrameLayout.LayoutParams(dp(16), dp(16), Gravity.CENTER)
+            visibility = View.GONE
+        }
+        // The icon/spinner ride inside the bordered circle, centred, so they
+        // follow it when the circle shifts within the tap area.
+        val circle = FrameLayout(ctx).apply {
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.OVAL
+                setColor(Color.TRANSPARENT)
+                setStroke(dp(1).coerceAtLeast(1), muted)
+            }
+            layoutParams = FrameLayout.LayoutParams(
+                dp(30), dp(30),
+                if (leading) Gravity.START or Gravity.CENTER_VERTICAL else Gravity.CENTER,
+            )
+            addView(icon)
+            addView(spinner)
+        }
+        val rippleBg = TypedValue().also {
+            ctx.theme.resolveAttribute(
+                android.R.attr.selectableItemBackgroundBorderless, it, true,
+            )
+        }.resourceId
+        return FrameLayout(ctx).apply {
+            layoutParams = LinearLayout.LayoutParams(dp(44), dp(44)).apply {
+                // No leading inset when the chip starts the row, so the circle
+                // lands flush under the headword.
+                marginStart = if (leading) 0 else dp(8)
+            }
+            isClickable = true
+            setBackgroundResource(rippleBg)
+            contentDescription = "Read word aloud"
+            addView(circle)
+            setOnClickListener {
+                if (speakJob?.isActive == true) return@setOnClickListener
+                speakJob = viewLifecycleOwner.lifecycleScope.launch {
+                    icon.visibility = View.GONE
+                    spinner.visibility = View.VISIBLE
+                    try {
+                        // Live-mode caller — resolve the global voice pref
+                        // ourselves now that TtsEngine treats null as
+                        // "engine default" rather than "look up pref."
+                        val voice = Prefs(ctx).ttsVoiceName(lang)
+                        val failure: String? = when (TtsEngine.speak(ctx, word, lang, voiceNameOverride = voice)) {
+                            TtsEngine.SpeakResult.Spoken -> null
+                            TtsEngine.SpeakResult.NoEngine ->
+                                "No text-to-speech engine is available"
+                            is TtsEngine.SpeakResult.LanguageUnsupported ->
+                                "Text-to-speech isn't available for ${lang.displayName()}"
+                        }
+                        if (failure != null) {
+                            Toast.makeText(ctx, failure, Toast.LENGTH_SHORT).show()
+                        }
+                    } finally {
+                        icon.visibility = View.VISIBLE
+                        spinner.visibility = View.GONE
+                    }
+                }
+            }
+        }
     }
 
     private fun buildCommonPill(): TextView {

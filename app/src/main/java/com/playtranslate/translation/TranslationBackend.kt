@@ -2,22 +2,12 @@ package com.playtranslate.translation
 
 typealias BackendId = String
 
-/** Coarse quality label for a translation backend, surfaced in the
- *  Settings row's line-1 subtitle. The renderer maps:
- *  - [Bad]    → "Bad quality"   (danger color)
- *  - [Okay]   → "Okay quality"  (default tint)
- *  - [Good]   → "Good quality"  (default tint)
- *  - [Better] → "Better quality" (accent color)
- *
- *  Subjective by nature; intended as a rough hint to help the user
- *  decide which backend to enable. Not load-bearing in the waterfall. */
-enum class BackendQuality { Bad, Okay, Good, Better }
-
-/** Coarse speed label for offline backends, surfaced in the Settings
- *  row's line-1 subtitle alongside [BackendQuality]. Online backends
- *  leave [TranslationBackend.speed] null — their perceived speed is
- *  network-bound, not a useful comparison axis. */
-enum class BackendSpeed { VerySlow, Slow, Fast }
+/** Half-star resolution rating (0.0 .. 5.0) for the Settings row's
+ *  line-1 subtitle. The renderer paints 5 star slots, filled / half /
+ *  outlined based on the value, and tinted by tone. Values outside
+ *  [0.0, 5.0] are clamped. Subjective by nature; intended as a rough
+ *  hint to help the user decide which backend to enable. */
+typealias StarRating = Float
 
 /**
  * A pluggable translation source. Implementations are pair-agnostic
@@ -50,13 +40,17 @@ interface TranslationBackend {
     /** Whether the backend needs network connectivity to function. */
     val requiresInternet: Boolean
 
-    /** Coarse quality hint shown in Settings. Default [BackendQuality.Good]. */
-    val quality: BackendQuality get() = BackendQuality.Good
+    /** 0.0-5.0 quality rating rendered in Settings as half-step stars.
+     *  Subjective. Default 4.0 for safety — implementations should
+     *  override with a deliberate value (see existing backends for
+     *  calibrated examples). */
+    val qualityStars: StarRating get() = 4.0f
 
-    /** Coarse speed hint shown in Settings for offline backends only.
-     *  Default null = no speed indicator (online backends, where speed
-     *  is dominated by network conditions rather than the backend itself). */
-    val speed: BackendSpeed? get() = null
+    /** 0.0-5.0 speed rating rendered in Settings as half-step stars.
+     *  Null = no speed indicator (online backends, where speed is
+     *  dominated by network conditions rather than the backend itself,
+     *  leave it null). */
+    val speedStars: StarRating? get() = null
 
     /** True for backends whose translations are signalled to the user as
      *  lower-quality / "degraded" (currently only the on-device ML Kit

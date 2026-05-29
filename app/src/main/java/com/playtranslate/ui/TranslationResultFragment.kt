@@ -1,13 +1,17 @@
 package com.playtranslate.ui
 
+import android.app.Activity
 import android.content.Context
+import android.content.Intent
 import android.graphics.Color
+import android.graphics.Typeface
 import android.os.Bundle
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
+import android.widget.FrameLayout
 import android.widget.ImageButton
 import android.widget.LinearLayout
 import android.widget.PopupWindow
@@ -15,7 +19,6 @@ import android.text.StaticLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
-import androidx.appcompat.app.AlertDialog
 import androidx.fragment.app.Fragment
 import androidx.fragment.app.activityViewModels
 import androidx.lifecycle.Lifecycle
@@ -109,6 +112,7 @@ class TranslationResultFragment : Fragment() {
     private lateinit var btnCopyOriginal: ImageButton
     private lateinit var btnCopyTranslation: ImageButton
     private lateinit var btnEditOriginal: ImageButton
+    private lateinit var btnSpeakOriginal: ImageButton
     private lateinit var btnToggleTranslation: ImageButton
     private lateinit var btnToggleOriginal: ImageButton
     private lateinit var btnToggleFurigana: ImageButton
@@ -124,7 +128,10 @@ class TranslationResultFragment : Fragment() {
     private lateinit var tvNoWords: TextView
     private lateinit var resultActionButtons: View
     private lateinit var btnResultClear: View
-    private lateinit var btnResultAnki: View
+    // FrameLayout so PillAnkiButton can overlay a centered spinner during
+    // one-tap sends without breaking the pill's horizontal icon+label.
+    private lateinit var btnResultAnki: FrameLayout
+    private var pillAnkiButton: PillAnkiButton? = null
 
     /** Maps character ranges in original text to (displayWord, reading).
      *  Recomputed in [renderWordLookups] Settled branch from the VM's
@@ -132,6 +139,11 @@ class TranslationResultFragment : Fragment() {
      *  text (which has OCR newlines). */
     private var wordSpans = mutableListOf<Triple<IntRange, String, String>>()
     private var furiganaPopup: PopupWindow? = null
+
+    /** Drives the original-text speak button — TTS playback plus the icon
+     *  highlight. Created per view in [setupButtons], released in
+     *  [onDestroyView]. */
+    private var speakButton: OriginalSpeakButton? = null
 
     /** Char range currently highlighted with the accent background while a
      *  word-lookup popup is active. Tracked separately from the span object
@@ -188,6 +200,9 @@ class TranslationResultFragment : Fragment() {
     override fun onDestroyView() {
         dismissFurigana()
         dismissWordPopup()
+        speakButton?.release()
+        speakButton = null
+        pillAnkiButton = null
         super.onDestroyView()
     }
 
@@ -205,6 +220,7 @@ class TranslationResultFragment : Fragment() {
         btnCopyOriginal      = view.findViewById(R.id.btnCopyOriginal)
         btnCopyTranslation   = view.findViewById(R.id.btnCopyTranslation)
         btnEditOriginal      = view.findViewById(R.id.btnEditOriginal)
+        btnSpeakOriginal     = view.findViewById(R.id.btnSpeakOriginal)
         btnToggleTranslation = view.findViewById(R.id.btnToggleTranslation)
         btnToggleOriginal    = view.findViewById(R.id.btnToggleOriginal)
         btnToggleFurigana    = view.findViewById(R.id.btnToggleFurigana)
@@ -257,8 +273,26 @@ class TranslationResultFragment : Fragment() {
             // to idle status; the fragment will re-render from the VM.
             vm.showStatus(getString(R.string.status_idle), showHint = true)
         }
+        // Tap opens the editable review sheet — the default and
+        // discoverable action. Long-press is the power-user shortcut
+        // that auto-creates the card with no review, documented by the
+        // pro-tip footer in Settings → Anki.
         btnResultAnki.setOnClickListener {
             onAnkiClicked()
+        }
+        btnResultAnki.setOnLongClickListener {
+            oneTapSentenceFromResult()
+            true
+        }
+        pillAnkiButton = PillAnkiButton(btnResultAnki)
+        speakButton = OriginalSpeakButton(
+            btnSpeakOriginal,
+            viewLifecycleOwner.lifecycleScope,
+            TtsAlertTarget.InActivity(requireActivity()),
+        ) {
+            val text = getDisplayedOriginalText()
+            if (text.isBlank()) null
+            else OriginalSpeakButton.Request(text, prefs.sourceLangId)
         }
     }
 
@@ -274,6 +308,7 @@ class TranslationResultFragment : Fragment() {
         cardOriginal.visibility = if (hidden) View.GONE else View.VISIBLE
         btnCopyOriginal.visibility = if (hidden) View.INVISIBLE else View.VISIBLE
         btnEditOriginal.visibility = if (hidden) View.INVISIBLE else View.VISIBLE
+        btnSpeakOriginal.visibility = if (hidden) View.INVISIBLE else View.VISIBLE
         val hintKind = SourceLanguageProfiles[prefs.sourceLangId].hintTextKind
         val hasHintText = hintKind != HintTextKind.NONE
         btnToggleFurigana.visibility = if (hidden || !hasHintText) View.GONE else View.VISIBLE
@@ -364,8 +399,17 @@ class TranslationResultFragment : Fragment() {
                 tvOriginal.setSegments(result.segments)
                 tvOriginal.onTapAtOffset = { offset -> onOriginalTapped(offset) }
                 tvTranslation.text = result.translatedText
-                tvTranslationNote.text = result.note ?: ""
-                tvTranslationNote.visibility = if (result.note != null) View.VISIBLE else View.GONE
+                val warning = result.note
+                val sourceLabel = result.backendDisplayName?.let {
+                    getString(R.string.translation_source_label, it)
+                }
+                val bottomLabel = warning ?: sourceLabel
+                tvTranslationNote.text = bottomLabel ?: ""
+                tvTranslationNote.visibility = if (bottomLabel != null) View.VISIBLE else View.GONE
+                tvTranslationNote.setTypeface(
+                    null,
+                    if (warning == null && sourceLabel != null) Typeface.ITALIC else Typeface.NORMAL,
+                )
                 applyTranslationVisibility()
                 applyOriginalVisibility()
                 applyWordsVisibility()
@@ -450,27 +494,257 @@ class TranslationResultFragment : Fragment() {
         tv.setTextSize(TypedValue.COMPLEX_UNIT_SP, sizeSp)
     }
 
+    /** Lens Anki chip handler — adds the tapped word (not the sentence)
+     *  to Anki. Mirrors [DragLookupController.openAnkiReviewForLens]:
+     *  installation gate here, permission gate handled by the launched
+     *  [AnkiPermissionActivity]. Sentence context comes from the current
+     *  VM result so the card carries the source sentence + translation +
+     *  screenshot. */
+    private fun launchWordAnki(
+        activity: Activity,
+        word: String,
+        reading: String?,
+        entry: com.playtranslate.model.DictionaryEntry?,
+    ) {
+        val ankiManager = AnkiManager(activity)
+        if (!ankiManager.isAnkiDroidInstalled()) {
+            showAnkiNotInstalledDialog(activity)
+            return
+        }
+        val pos = entry?.senses?.firstOrNull()?.partsOfSpeech
+            ?.filter { it.isNotBlank() }?.joinToString(" · ") ?: ""
+        val nonEmptySenses = entry?.senses
+            ?.filter { it.targetDefinitions.isNotEmpty() }
+            ?: emptyList()
+        val definition = nonEmptySenses.mapIndexed { i, sense ->
+            val prefix = if (nonEmptySenses.size > 1) "${i + 1}. " else ""
+            prefix + sense.targetDefinitions.joinToString("; ")
+        }.joinToString("\n")
+        val ready = (vm.result.value as? ResultState.Ready)?.result
+        val readingForExtra = reading?.takeIf { it != word } ?: ""
+        dismissWordPopup()
+        val intent = Intent(activity, AnkiPermissionActivity::class.java).apply {
+            putExtra(WordAnkiReviewActivity.EXTRA_WORD, word)
+            putExtra(WordAnkiReviewActivity.EXTRA_READING, readingForExtra)
+            putExtra(WordAnkiReviewActivity.EXTRA_POS, pos)
+            putExtra(WordAnkiReviewActivity.EXTRA_DEFINITION, definition)
+            putExtra(WordAnkiReviewActivity.EXTRA_FREQ_SCORE, entry?.freqScore ?: 0)
+            ready?.screenshotPath?.let {
+                putExtra(WordAnkiReviewActivity.EXTRA_SCREENSHOT_PATH, it)
+            }
+            ready?.originalText?.let {
+                putExtra(WordAnkiReviewActivity.EXTRA_SENTENCE_ORIGINAL, it)
+            }
+            ready?.translatedText?.let {
+                putExtra(WordAnkiReviewActivity.EXTRA_SENTENCE_TRANSLATION, it)
+            }
+            putExtra(WordAnkiReviewActivity.EXTRA_SOURCE_LANG, prefs.sourceLangId.code)
+        }
+        activity.startActivity(intent)
+    }
+
+    /**
+     * One-tap sentence-card send from the result-screen Anki button.
+     * Falls back to the existing sheet flow ([onAnkiClicked]) on any
+     * gate failure (AnkiDroid missing, permission denied, no deck
+     * picked) so the user can still resolve the prerequisite. On
+     * success/failure the button restores; NeedsMapping opens the
+     * field-mapping dialog inline so the user can configure their
+     * custom card type without leaving the result screen.
+     */
+    private fun oneTapSentenceFromResult() {
+        host?.onInteraction()
+        val result = (vm.result.value as? ResultState.Ready)?.result ?: return
+        val activity = activity ?: return
+        val ankiManager = AnkiManager(activity)
+        if (!ankiManager.isAnkiDroidInstalled() || !ankiManager.hasPermission()) {
+            onAnkiClicked()  // existing dialogs handle these gates
+            return
+        }
+        if (prefs.ankiDeckId < 0L) {
+            onAnkiClicked()  // sheet shows the deck picker
+            return
+        }
+        val original = getDisplayedOriginalText()
+        val translation = result.translatedText.takeIf { it.isNotEmpty() }
+        // Snapshot rows ONCE so the words map and the surface map
+        // come from the same Settled emission — no surfaceForms race
+        // (see LastSentenceCache.awaitOrStartWordLookups docs).
+        val settledRows = (vm.wordLookups.value as? WordLookupsState.Settled)?.rows
+        val wordsPayload = settledRows?.let {
+            LastSentenceCache.WordsPayload(it.toLegacyMap(), it.toSurfaceMap())
+        }
+        val screenshotPath = result.screenshotPath
+        val pill = pillAnkiButton ?: return
+        pill.setLoading(true)
+        viewLifecycleOwner.lifecycleScope.launch {
+            val sendResult = requireContext().oneTapSendSentence(
+                original = original,
+                translation = translation,
+                wordsPayload = wordsPayload,
+                screenshotPath = screenshotPath,
+                sourceLangId = prefs.sourceLangId,
+            )
+            handleOneTapResult(sendResult, pill, CardMode.SENTENCE)
+        }
+    }
+
+    /** Maps a one-tap [AnkiSendResult] to the result-screen UX. */
+    private fun handleOneTapResult(
+        sendResult: AnkiSendResult,
+        pill: PillAnkiButton,
+        mode: CardMode,
+    ) {
+        when (sendResult) {
+            is AnkiSendResult.Success -> {
+                val msgRes = if (sendResult.audioDropped || sendResult.wordAudioDropped)
+                    R.string.anki_added_no_audio
+                else
+                    R.string.anki_added_success
+                Toast.makeText(requireContext(), msgRes, Toast.LENGTH_SHORT).show()
+                pill.setLoading(false)
+            }
+            is AnkiSendResult.Failed -> {
+                val ctx = requireContext()
+                OverlayAlert.Builder(requireActivity())
+                    .hideIcon()
+                    .setTitle(getString(R.string.anki_send_failed_title))
+                    .setMessage(getString(sendResult.messageRes))
+                    .addButton(
+                        getString(android.R.string.ok),
+                        ctx.themeColor(R.attr.ptAccent),
+                        ctx.themeColor(R.attr.ptAccentOn),
+                    ) {}
+                    .show()
+                pill.setLoading(false)
+            }
+            is AnkiSendResult.NeedsMapping -> {
+                // Dispatcher already toasted; open the mapping dialog
+                // so the user can fix the unmapped card type.
+                showAnkiCardTypeMappingDialog(sendResult.model, mode) { _, _ -> }
+                pill.setLoading(false)
+            }
+        }
+    }
+
+    /**
+     * Headless one-tap counterpart to [launchWordAnki] for the in-app
+     * word popup. Same data extraction (POS, joined definition) and
+     * the same fallback to the existing Activity flow on gate failure.
+     * Result Toast lands on the result screen so the user has feedback
+     * without the popup needing to stay open during the send.
+     */
+    private fun oneTapWordFromPopup(
+        activity: Activity,
+        word: String,
+        reading: String?,
+        entry: com.playtranslate.model.DictionaryEntry?,
+    ) {
+        val ankiManager = AnkiManager(activity)
+        if (!ankiManager.isAnkiDroidInstalled() || !ankiManager.hasPermission()) {
+            launchWordAnki(activity, word, reading, entry)
+            return
+        }
+        if (prefs.ankiDeckId < 0L) {
+            launchWordAnki(activity, word, reading, entry)
+            return
+        }
+        if (entry == null) {
+            // No resolved entry — fall back so the user sees the error
+            // path from inside the sheet rather than silently failing.
+            launchWordAnki(activity, word, reading, entry)
+            return
+        }
+        val pos = entry.senses.firstOrNull()?.partsOfSpeech
+            ?.filter { it.isNotBlank() }?.joinToString(" · ") ?: ""
+        val nonEmptySenses = entry.senses.filter { it.targetDefinitions.isNotEmpty() }
+        val definition = nonEmptySenses.mapIndexed { i, sense ->
+            val prefix = if (nonEmptySenses.size > 1) "${i + 1}. " else ""
+            prefix + sense.targetDefinitions.joinToString("; ")
+        }.joinToString("\n")
+        val ready = (vm.result.value as? ResultState.Ready)?.result
+        val screenshotPath = ready?.screenshotPath
+        val readingClean = reading?.takeIf { it != word } ?: ""
+        // The popup is anchored inside a translated sentence on the
+        // result screen — the same context the lens chip has. Match
+        // the lens behavior: send a sentence card with the tapped
+        // word highlighted when sentence context is available, and
+        // only fall back to a word card when the source text isn't a
+        // sentence we have.
+        val ready_sentence = ready?.originalText?.takeIf { it.isNotEmpty() }
+        val ready_translation = ready?.translatedText?.takeIf { it.isNotEmpty() }
+        // Atomic snapshot — see oneTapSentenceFromResult for the
+        // surface-forms-race rationale.
+        val settledRows = (vm.wordLookups.value as? WordLookupsState.Settled)?.rows
+        val wordsPayload = settledRows?.let {
+            LastSentenceCache.WordsPayload(it.toLegacyMap(), it.toSurfaceMap())
+        }
+        dismissWordPopup()
+        Toast.makeText(
+            activity, R.string.anki_adding_in_progress, Toast.LENGTH_SHORT,
+        ).show()
+        viewLifecycleOwner.lifecycleScope.launch {
+            val result = if (ready_sentence != null) {
+                requireContext().oneTapSendSentence(
+                    original = ready_sentence,
+                    translation = ready_translation,
+                    wordsPayload = wordsPayload,
+                    screenshotPath = screenshotPath,
+                    sourceLangId = prefs.sourceLangId,
+                    targetWord = word,
+                )
+            } else {
+                requireContext().oneTapSendWord(
+                    word = word,
+                    reading = readingClean,
+                    pos = pos,
+                    fallbackDefinition = definition,
+                    freqScore = entry.freqScore,
+                    screenshotPath = screenshotPath,
+                    sourceLangId = prefs.sourceLangId,
+                )
+            }
+            when (result) {
+                is AnkiSendResult.Success -> {
+                    // Sentence-mode one-tap can drop per-target-word
+                    // audio (the target word may fail TTS or upload);
+                    // surface that the same way the other handlers do.
+                    val msgRes = if (result.audioDropped || result.wordAudioDropped)
+                        R.string.anki_added_no_audio
+                    else
+                        R.string.anki_added_success
+                    Toast.makeText(requireContext(), msgRes, Toast.LENGTH_SHORT).show()
+                }
+                is AnkiSendResult.Failed -> {
+                    Toast.makeText(requireContext(), result.messageRes,
+                        Toast.LENGTH_LONG).show()
+                }
+                is AnkiSendResult.NeedsMapping -> {
+                    // Re-launch the Activity so the user can configure
+                    // the mapping inside the sheet (dialog needs
+                    // Fragment infrastructure).
+                    launchWordAnki(activity, word, reading, entry)
+                }
+            }
+        }
+    }
+
     /** Anki button tap handler — view-side dialog work, kept fragment-
      *  internal. Reads sentence + word data from VM state. */
     private fun onAnkiClicked() {
         host?.onInteraction()
         val result = (vm.result.value as? ResultState.Ready)?.result ?: return
-        val ctx = context ?: return
-        val ankiManager = AnkiManager(ctx)
+        val activity = activity ?: return
+        val ankiManager = AnkiManager(activity)
         val wordResults = (vm.wordLookups.value as? WordLookupsState.Settled)
             ?.rows?.toLegacyMap() ?: emptyMap()
         when {
             !ankiManager.isAnkiDroidInstalled() ->
-                showAnkiNotInstalledDialog(ctx)
+                showAnkiNotInstalledDialog(activity)
             !ankiManager.hasPermission() ->
-                AlertDialog.Builder(ctx)
-                    .setTitle(R.string.anki_permission_rationale_title)
-                    .setMessage(R.string.anki_permission_rationale_message)
-                    .setPositiveButton(R.string.btn_continue) { _, _ ->
-                        host?.getAnkiPermissionLauncher()?.launch(AnkiManager.PERMISSION)
-                    }
-                    .setNegativeButton(android.R.string.cancel, null)
-                    .show()
+                showAnkiPermissionRationaleDialog(activity) {
+                    host?.getAnkiPermissionLauncher()?.launch(AnkiManager.PERMISSION)
+                }
             else ->
                 AnkiReviewBottomSheet.newInstance(
                     getDisplayedOriginalText(), result.translatedText, wordResults,
@@ -657,45 +931,94 @@ class TranslationResultFragment : Fragment() {
                 val loc = IntArray(2)
                 tvOriginal.getLocationOnScreen(loc)
                 val screenX = loc[0] + wordCenterX
-                val screenY = loc[1] + lineTop
 
                 val dm = resources.displayMetrics
+                // Anchor on the tapped line's top edge — paired with
+                // [anchorHeight] = lineH, the lens lands cleanly above
+                // the line when there's room and cleanly below the
+                // line when it has to flip. Passing center + height=0
+                // (the drag-flow default) lands the flipped lens on
+                // top of the line itself.
+                val anchorY = loc[1] + lineTop
                 dismissWordPopup()
-                wordPopup = WordLookupPopup(activity, activity.windowManager).apply {
-                    useActivityWindow = true
-                    verticalMarginDp = 5
-                    // Open-in-app would just re-run the same failing lookup,
-                    // so suppress the button when we're in the fallback path.
-                    showOpenButton = entry != null
-                    onOpenTap = {
-                        dismissWordPopup()
-                        host?.onInteraction()
-                        val ready = (vm.result.value as? ResultState.Ready)?.result
-                        val wr = (vm.wordLookups.value as? WordLookupsState.Settled)
-                            ?.rows?.toLegacyMap() ?: emptyMap()
-                        host?.onWordTapped(
-                            word, popupReading,
-                            ready?.screenshotPath,
-                            ready?.originalText,
-                            ready?.translatedText,
-                            wr,
-                        )
+                val canOpen = entry != null
+                val displayEntry = entry
+                val lensData = MagnifierLens.LensDefinitionData(
+                    word = word,
+                    reading = popupReading?.takeIf { it != word },
+                    senses = senses,
+                    freqScore = freqScore,
+                    isCommon = isCommon,
+                )
+                wordLens = MagnifierLens(
+                    activity,
+                    activity.windowManager,
+                    android.view.Display.DEFAULT_DISPLAY,
+                ).apply {
+                    if (canOpen) {
+                        onOpenTap = {
+                            dismissWordPopup()
+                            host?.onInteraction()
+                            val ready = (vm.result.value as? ResultState.Ready)?.result
+                            val wr = (vm.wordLookups.value as? WordLookupsState.Settled)
+                                ?.rows?.toLegacyMap() ?: emptyMap()
+                            host?.onWordTapped(
+                                word, popupReading,
+                                ready?.screenshotPath,
+                                ready?.originalText,
+                                ready?.translatedText,
+                                wr,
+                            )
+                        }
                     }
-                    onDismiss = { setWordHighlight(null) }
+                    // Tap opens the editable review sheet (default).
+                    // Long-press is the headless one-tap shortcut —
+                    // documented by the pro-tip footer in Settings.
+                    onAnkiTap = {
+                        host?.onInteraction()
+                        launchWordAnki(activity, word, popupReading, displayEntry)
+                    }
+                    onAnkiLongPress = {
+                        host?.onInteraction()
+                        oneTapWordFromPopup(activity, word, popupReading, displayEntry)
+                    }
+                    // onDismiss is the single funnel for every teardown path
+                    // (tap-outside, LensSpeakChip's no-engine action,
+                    // dismissWordPopup), so speak-chip + lens cleanup lives
+                    // here, not only in dismissWordPopup.
+                    onDismiss = {
+                        setWordHighlight(null)
+                        wordSpeakChip?.release()
+                        wordSpeakChip = null
+                        wordLens = null
+                    }
+                }
+                wordSpeakChip = wordLens?.let { lens ->
+                    LensSpeakChip(
+                        lens,
+                        viewLifecycleOwner.lifecycleScope,
+                        TtsAlertTarget.InActivity(activity),
+                    ) { LensSpeakChip.Request(word, prefs.sourceLangId) }
                 }
                 setWordHighlight(span.first)
-                wordPopup?.show(word, popupReading, senses, freqScore,
-                    isCommon, screenX, screenY, dm.widthPixels, dm.heightPixels,
-                    anchorHeight = lineH, label = popupLabel)
+                wordLens?.show(
+                    screenX, anchorY,
+                    dm.widthPixels, dm.heightPixels,
+                    anchorHeight = lineH,
+                )
+                wordLens?.setDefinitions(lensData, popupLabel)
+                wordLens?.makeInteractive()
             } catch (_: Exception) {}
         }
     }
 
-    private var wordPopup: WordLookupPopup? = null
+    private var wordLens: MagnifierLens? = null
+    private var wordSpeakChip: LensSpeakChip? = null
 
     private fun dismissWordPopup() {
-        wordPopup?.dismiss()
-        wordPopup = null
+        // dismiss() fires the lens's onDismiss, which releases the speak chip
+        // and clears wordLens / wordSpeakChip.
+        wordLens?.dismiss()
     }
 
     /**
