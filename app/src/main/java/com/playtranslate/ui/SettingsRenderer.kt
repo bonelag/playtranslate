@@ -471,12 +471,6 @@ class SettingsRenderer(
         setupAddQuickTileRow()
     }
 
-    private fun updateCompactIconVisibility() {
-        val showCompact = prefs.showOverlayIcon && PlayTranslateAccessibilityService.isEnabled(ctx)
-        rowCompactIcon.visibility = if (showCompact) View.VISIBLE else View.GONE
-        dividerCompactIcon.visibility = if (showCompact) View.VISIBLE else View.GONE
-    }
-
     /** "Add Quick Settings tile" row — only present on API 33+ (where
      *  [android.app.StatusBarManager.requestAddTileService] exists) and only
      *  while the user hasn't already confirmed adding the tile (tracked in
